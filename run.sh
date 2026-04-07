@@ -151,12 +151,16 @@ for ((i = 1; i <= $1; i++)); do
 	} >"$prompt_file"
 
 	# No -u flag — overriding the user breaks $HOME resolution inside the container.
-	# Attach to the compose network if one exists so Ralph can reach services like postgres.
-	COMPOSE_NETWORK=$(docker network ls --filter "name=_default" --format '{{.Name}}' | head -1)
-	NETWORK_FLAG=""
-	if [ -n "$COMPOSE_NETWORK" ]; then
-		NETWORK_FLAG="--network ${COMPOSE_NETWORK}"
-	fi
+	# Attach to the compose network for this project so Ralph can reach services like postgres.
+	# Containers carry com.docker.compose.project.working_dir; use that to get the project
+	# name, then find its networks — no _default suffix assumed (handles named networks too).
+	_proj=$(docker ps \
+		--filter "label=com.docker.compose.project.working_dir=$(pwd)" \
+		--format '{{.Label "com.docker.compose.project"}}' | head -1)
+	COMPOSE_NETWORK=$(docker network ls \
+		--filter "label=com.docker.compose.project=${_proj}" \
+		--format '{{.Name}}' | head -1)
+	NETWORK_FLAG="${COMPOSE_NETWORK:+--network ${COMPOSE_NETWORK}}"
 
 	# .ralph/.env can override values for the container context (e.g. service hostnames
 	# instead of localhost).

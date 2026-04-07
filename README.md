@@ -2,6 +2,8 @@
 
 Runs Claude Code inside a Docker container against your repo, working through GitHub issues autonomously.
 
+> **Note:** This is for my own simple usage for now. It works for me and my setup (Arch Linux) but if you're going to use it you'll probably need some tweaking.
+
 Each iteration assembles a prompt from recent commits and open issues, runs Claude Code in an isolated container, and loops until Claude signals it has no more tasks or the iteration limit is reached.
 
 ## Requirements

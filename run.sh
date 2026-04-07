@@ -33,9 +33,9 @@ if [ "$(id -u)" -ne 1000 ]; then
 fi
 
 # Warn if the working tree is dirty — Claude will commit on top of this state.
-if ! git diff --quiet HEAD 2>/dev/null; then
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
 	echo "⚠️  You have uncommitted changes. Claude will commit on top of them."
-	echo "   Consider stashing first (git stash). Press Enter to continue anyway."
+	echo "   Consider stashing first. Press Enter to continue anyway."
 	read -r
 fi
 
@@ -190,7 +190,8 @@ for ((i = 1; i <= $1; i++)); do
 		-e GIT_COMMITTER_EMAIL="$(git config user.email)" \
 		"${RUN_IMAGE}" |
 		tee "$tmpfile" |
-		jq --unbuffered -Rr "$stream_display" 2>/dev/null; docker_exit=${PIPESTATUS[0]}
+		jq --unbuffered -Rr "$stream_display" 2>/dev/null
+	docker_exit=${PIPESTATUS[0]}
 
 	if grep -q '"error":"authentication_failed"' "$tmpfile" 2>/dev/null; then
 		echo ""

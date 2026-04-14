@@ -3,3 +3,5 @@
 *.swo
 *~
 .cargo-cache/
+/target/
+/.cargo/

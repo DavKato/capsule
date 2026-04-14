@@ -1,5 +1,10 @@
 FROM capsule
 
+# gcc provides the C linker required by rustc to link binaries
+USER root
+RUN pacman -S --noconfirm gcc
+USER claude
+
 # Install rustup and stable toolchain
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path
 

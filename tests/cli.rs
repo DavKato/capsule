@@ -1,0 +1,75 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+
+fn cmd() -> Command {
+    Command::cargo_bin("capsule").unwrap()
+}
+
+// Tracer bullet: --iterations loop prints the expected headers
+#[test]
+fn iterations_prints_headers() {
+    cmd()
+        .args(["--iterations", "3"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("── Iteration 1 / 3 ──"))
+        .stdout(predicate::str::contains("── Iteration 2 / 3 ──"))
+        .stdout(predicate::str::contains("── Iteration 3 / 3 ──"));
+}
+
+#[test]
+fn help_lists_all_flags() {
+    let output = cmd().arg("--help").assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    // All PRD flags must appear
+    assert!(
+        stdout.contains("--iterations") || stdout.contains("-i"),
+        "missing --iterations"
+    );
+    assert!(
+        stdout.contains("--prompt") || stdout.contains("-p"),
+        "missing --prompt"
+    );
+    assert!(stdout.contains("--capsule-dir"), "missing --capsule-dir");
+    assert!(stdout.contains("--rebuild"), "missing --rebuild");
+    assert!(
+        stdout.contains("--model") || stdout.contains("-m"),
+        "missing --model"
+    );
+    assert!(
+        stdout.contains("--verbose") || stdout.contains("-v"),
+        "missing --verbose"
+    );
+    assert!(stdout.contains("--git-identity"), "missing --git-identity");
+}
+
+#[test]
+fn completion_bash_is_nonempty_and_references_capsule() {
+    let output = cmd().args(["completion", "bash"]).assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.is_empty(), "bash completion is empty");
+    assert!(
+        stdout.contains("capsule"),
+        "bash completion doesn't reference capsule"
+    );
+}
+
+#[test]
+fn completion_zsh_is_nonempty() {
+    let output = cmd().args(["completion", "zsh"]).assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.is_empty(), "zsh completion is empty");
+}
+
+#[test]
+fn completion_fish_is_nonempty() {
+    let output = cmd().args(["completion", "fish"]).assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.is_empty(), "fish completion is empty");
+}
+
+#[test]
+fn missing_iterations_flag_errors() {
+    cmd().assert().failure();
+}

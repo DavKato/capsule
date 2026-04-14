@@ -85,6 +85,9 @@ pub struct RunConfig {
     /// Path to `before-each.sh` on the host. When Some, mounted read-only into
     /// the container at `/home/claude/before-each.sh`.
     pub before_each_path: Option<PathBuf>,
+    /// Docker network to attach the container to. Detected from a running Compose
+    /// project at `pwd`; None when no project is found.
+    pub compose_network: Option<String>,
 }
 
 /// Outcome of a single iteration.
@@ -172,8 +175,67 @@ pub fn build_docker_args(
         ));
     }
 
+    if let Some(network) = &cfg.compose_network {
+        args.push("--network".to_string());
+        args.push(network.clone());
+    }
+
     args.push(cfg.image.clone());
     args
+}
+
+/// Detect the Docker network of a Compose project running with `working_dir` equal to `pwd`.
+///
+/// Runs `docker ps` to find containers from a Compose project at `pwd`, then inspects
+/// those containers to find the associated network name. Returns `None` if no Compose
+/// project is running at `pwd` or if any Docker call fails (best-effort).
+pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
+    let pwd_str = pwd.to_string_lossy();
+
+    // Find container IDs from any Compose project running at pwd.
+    let ps_out = Command::new("docker")
+        .args([
+            "ps",
+            "--filter",
+            &format!("label=com.docker.compose.project.working_dir={pwd_str}"),
+            "--format",
+            "{{.ID}}",
+        ])
+        .output()
+        .ok()?;
+
+    if !ps_out.status.success() {
+        return None;
+    }
+
+    let ids: Vec<&str> = std::str::from_utf8(&ps_out.stdout)
+        .ok()?
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let container_id = ids.first()?;
+
+    // Inspect the container to get its network names.
+    let inspect_out = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}\n{{end}}",
+            container_id,
+        ])
+        .output()
+        .ok()?;
+
+    if !inspect_out.status.success() {
+        return None;
+    }
+
+    std::str::from_utf8(&inspect_out.stdout)
+        .ok()?
+        .lines()
+        .find(|l| !l.is_empty())
+        .map(|s| s.to_string())
 }
 
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.

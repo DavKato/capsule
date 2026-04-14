@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, GitIdentity};
-use capsule::docker::{build_base_image, run_iteration, IterationOutcome, RunConfig};
+use capsule::docker::{
+    build_base_image, detect_compose_network, run_iteration, IterationOutcome, RunConfig,
+};
 use capsule::env::{load_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
@@ -133,6 +135,9 @@ fn main() -> Result<()> {
         None
     };
 
+    // Detect Docker Compose network at pwd (best-effort; None if not found).
+    let compose_network = detect_compose_network(&pwd);
+
     // Shared slot for the currently-running container name.
     // The ctrlc handler reads this and calls `docker stop <name>`.
     let active_container: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -164,6 +169,7 @@ fn main() -> Result<()> {
             git_author_name: git_author_name.clone(),
             git_author_email: git_author_email.clone(),
             before_each_path: before_each_path.clone(),
+            compose_network: compose_network.clone(),
         };
         if run_iteration(&run_cfg, i, &active_container)? == IterationOutcome::Done {
             println!("Claude signalled completion after iteration {i}. No more tasks.");

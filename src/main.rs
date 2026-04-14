@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, GitIdentity};
-use capsule::docker::{run_iteration, IterationOutcome, RunConfig};
+use capsule::docker::{build_base_image, run_iteration, IterationOutcome, RunConfig};
 use capsule::env::{load_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
-use capsule::preflight::env_gitignore_warning;
+use capsule::preflight::{check_docker, env_gitignore_warning};
 use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
@@ -86,6 +86,9 @@ fn main() -> Result<()> {
     let env: std::collections::HashMap<String, String> = std::env::vars().collect();
     let cfg = resolve(&cli.capsule_dir, overrides, &env)?;
 
+    // Preflight: Docker daemon must be reachable before anything else.
+    check_docker()?;
+
     // Preflight: warn if .env is not gitignored.
     if let Some(warning) = env_gitignore_warning(&cfg.capsule_dir) {
         eprintln!("{warning}");
@@ -102,6 +105,9 @@ fn main() -> Result<()> {
     // Resolve the prompt file (errors here exit with a clear message).
     let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
     let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
+
+    // Build (or skip) the base image.
+    build_base_image(cfg.rebuild)?;
 
     let image = "capsule".to_string();
     let pwd = std::env::current_dir().context("failed to get current directory")?;

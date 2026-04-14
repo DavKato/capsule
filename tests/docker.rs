@@ -1,6 +1,6 @@
 use capsule::docker::{
-    build_base_image, contains_auth_failure, contains_no_more_tasks, run_iteration,
-    IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
+    build_base_image, build_docker_args, contains_auth_failure, contains_no_more_tasks,
+    run_iteration, IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
 };
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -66,6 +66,57 @@ fn no_more_tasks_not_triggered_on_normal_output() {
 #[test]
 fn no_more_tasks_not_triggered_on_empty() {
     assert!(!contains_no_more_tasks(""));
+}
+
+// ── Unit tests: build_docker_args (git config protection) ────────────────────
+
+#[test]
+fn git_config_mounted_readonly_when_present() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let git_dir = dir.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+    std::fs::write(
+        git_dir.join("config"),
+        "[core]\n\trepositoryformatversion = 0\n",
+    )
+    .unwrap();
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        joined.contains(".git/config:/workspace/.git/config:ro"),
+        "expected read-only git config mount in args: {joined}"
+    );
+}
+
+#[test]
+fn git_config_mount_absent_when_no_git_dir() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        !joined.contains(".git/config"),
+        "expected no git config mount when .git/config absent: {joined}"
+    );
 }
 
 // ── Integration tests (require Docker daemon) ─────────────────────────────────

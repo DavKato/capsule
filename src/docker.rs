@@ -94,6 +94,39 @@ pub fn contains_no_more_tasks(line: &str) -> bool {
     line.contains("<promise>NO MORE TASKS</promise>")
 }
 
+/// Build the `docker run` argument list for one iteration.
+///
+/// Extracted for testability. Adds a read-only bind-mount of `.git/config` when
+/// present in `cfg.pwd`, preventing container processes from mutating the host
+/// repository's remote URLs or other local git config.
+pub fn build_docker_args(cfg: &RunConfig, prompt_path: &std::path::Path) -> Vec<String> {
+    let mut args = vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        format!("-v={}:/home/claude/prompt.txt:ro", prompt_path.display()),
+        format!("-v={}:/workspace", cfg.pwd.display()),
+    ];
+
+    // Protect the host git config from container mutations (issue #20).
+    // If the workspace is a git repo, mount .git/config read-only so that
+    // container processes (including Claude) cannot rewrite remote URLs or
+    // other local settings back to the host.
+    let git_config = cfg.pwd.join(".git").join("config");
+    if git_config.exists() {
+        args.push(format!(
+            "-v={}:/workspace/.git/config:ro",
+            git_config.display()
+        ));
+    }
+
+    if let Some(model) = &cfg.model {
+        args.push(format!("-e=CAPSULE_MODEL={model}"));
+    }
+
+    args.push(cfg.image.clone());
+    args
+}
+
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
 ///
 /// Returns [`IterationOutcome::Done`] when the output contains the NO MORE TASKS marker.
@@ -114,18 +147,7 @@ pub fn run_iteration(cfg: &RunConfig) -> Result<IterationOutcome> {
     prompt_file.flush().context("failed to flush prompt file")?;
     let prompt_path = prompt_file.path().to_owned();
 
-    let mut docker_args = vec![
-        "run".to_string(),
-        "--rm".to_string(),
-        format!("-v={}:/home/claude/prompt.txt:ro", prompt_path.display()),
-        format!("-v={}:/workspace", cfg.pwd.display()),
-    ];
-
-    if let Some(model) = &cfg.model {
-        docker_args.push(format!("-e=CAPSULE_MODEL={model}"));
-    }
-
-    docker_args.push(cfg.image.clone());
+    let docker_args = build_docker_args(cfg, &prompt_path);
 
     // Spawn docker with stdout piped; stderr goes to the terminal.
     let mut docker_child = Command::new("docker")

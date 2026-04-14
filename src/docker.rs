@@ -77,6 +77,10 @@ pub struct RunConfig {
     pub env_file: Option<PathBuf>,
     /// Resolved GH_TOKEN to pass explicitly via `-e GH_TOKEN` (None → omitted).
     pub gh_token: Option<String>,
+    /// Git author/committer name passed as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME`.
+    pub git_author_name: String,
+    /// Git author/committer email passed as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`.
+    pub git_author_email: String,
 }
 
 /// Outcome of a single iteration.
@@ -134,6 +138,14 @@ pub fn build_docker_args(cfg: &RunConfig, prompt_path: &std::path::Path) -> Vec<
     if let Some(model) = &cfg.model {
         args.push(format!("-e=CAPSULE_MODEL={model}"));
     }
+
+    // Pass git identity to the container entrypoint so it can configure
+    // `git config --global user.name/email`. The entrypoint falls back to
+    // `Capsule <capsule@localhost>` when these are empty.
+    args.push(format!("-e=GIT_AUTHOR_NAME={}", cfg.git_author_name));
+    args.push(format!("-e=GIT_AUTHOR_EMAIL={}", cfg.git_author_email));
+    args.push(format!("-e=GIT_COMMITTER_NAME={}", cfg.git_author_name));
+    args.push(format!("-e=GIT_COMMITTER_EMAIL={}", cfg.git_author_email));
 
     args.push(cfg.image.clone());
     args

@@ -85,6 +85,8 @@ fn env_file_arg_present_when_file_exists() {
         verbose: false,
         env_file: Some(dir.path().join(".env")),
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -112,6 +114,8 @@ fn env_file_arg_absent_when_no_file() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -135,6 +139,8 @@ fn gh_token_passed_as_explicit_env_var() {
         verbose: false,
         env_file: None,
         gh_token: Some("ghs_testtoken".to_string()),
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -158,6 +164,8 @@ fn gh_token_absent_when_none() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -190,6 +198,8 @@ fn git_config_mounted_readonly_when_present() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -213,12 +223,81 @@ fn git_config_mount_absent_when_no_git_dir() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
     assert!(
         !joined.contains(".git/config"),
         "expected no git config mount when .git/config absent: {joined}"
+    );
+}
+
+// ── Unit tests: build_docker_args (git identity) ─────────────────────────────
+
+#[test]
+fn git_identity_env_vars_present_in_docker_args() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "Bob Builder".to_string(),
+        git_author_email: "bob@example.com".to_string(),
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("GIT_AUTHOR_NAME=Bob Builder"),
+        "expected GIT_AUTHOR_NAME in args: {joined}"
+    );
+    assert!(
+        joined.contains("GIT_AUTHOR_EMAIL=bob@example.com"),
+        "expected GIT_AUTHOR_EMAIL in args: {joined}"
+    );
+    assert!(
+        joined.contains("GIT_COMMITTER_NAME=Bob Builder"),
+        "expected GIT_COMMITTER_NAME in args: {joined}"
+    );
+    assert!(
+        joined.contains("GIT_COMMITTER_EMAIL=bob@example.com"),
+        "expected GIT_COMMITTER_EMAIL in args: {joined}"
+    );
+}
+
+#[test]
+fn git_identity_env_vars_present_when_empty() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    // Even empty values should be passed so the entrypoint can fall back.
+    assert!(
+        joined.contains("GIT_AUTHOR_NAME="),
+        "expected GIT_AUTHOR_NAME= in args: {joined}"
+    );
+    assert!(
+        joined.contains("GIT_AUTHOR_EMAIL="),
+        "expected GIT_AUTHOR_EMAIL= in args: {joined}"
     );
 }
 
@@ -347,6 +426,8 @@ fn run_iteration_succeeds_on_container_exit_zero() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     });
     assert!(result.is_ok(), "exit 0 should return Ok: {:?}", result);
 
@@ -386,6 +467,8 @@ fn run_iteration_errors_on_container_exit_nonzero() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     });
     assert!(result.is_err(), "non-zero exit should return Err");
     let msg = format!("{:?}", result.unwrap_err());
@@ -434,6 +517,8 @@ fn run_iteration_errors_on_auth_failure_in_output() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     });
     assert!(result.is_err(), "auth failure should return Err");
     let msg = format!("{:?}", result.unwrap_err());
@@ -483,6 +568,8 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     });
     assert!(result.is_ok(), "marker should not error: {:?}", result);
     assert!(
@@ -526,6 +613,8 @@ fn run_iteration_returns_continue_without_marker() {
         verbose: false,
         env_file: None,
         gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
     });
     assert!(result.is_ok(), "no marker should not error: {:?}", result);
     assert!(

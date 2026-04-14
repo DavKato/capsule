@@ -10,6 +10,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use std::io;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, ValueEnum)]
 enum CliGitIdentity {
@@ -132,6 +133,23 @@ fn main() -> Result<()> {
         None
     };
 
+    // Shared slot for the currently-running container name.
+    // The ctrlc handler reads this and calls `docker stop <name>`.
+    let active_container: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let handler_container = Arc::clone(&active_container);
+
+    ctrlc::set_handler(move || {
+        if let Ok(slot) = handler_container.lock() {
+            if let Some(name) = slot.as_ref() {
+                let _ = std::process::Command::new("docker")
+                    .args(["stop", name])
+                    .output();
+            }
+        }
+        std::process::exit(1);
+    })
+    .context("failed to register Ctrl-C handler")?;
+
     for i in 1..=cfg.iterations {
         println!("── Iteration {} / {} ──", i, cfg.iterations);
         let run_cfg = RunConfig {
@@ -147,7 +165,7 @@ fn main() -> Result<()> {
             git_author_email: git_author_email.clone(),
             before_each_path: before_each_path.clone(),
         };
-        if run_iteration(&run_cfg)? == IterationOutcome::Done {
+        if run_iteration(&run_cfg, i, &active_container)? == IterationOutcome::Done {
             println!("Claude signalled completion after iteration {i}. No more tasks.");
             break;
         }

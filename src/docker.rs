@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 /// The base Dockerfile embedded at compile time.
 pub const DOCKERFILE: &str = include_str!("../templates/Dockerfile");
@@ -105,15 +106,29 @@ pub fn contains_no_more_tasks(line: &str) -> bool {
     line.contains("<promise>NO MORE TASKS</promise>")
 }
 
+/// Returns a unique container name for the given iteration.
+///
+/// Format: `capsule-run-<pid>-<iteration>`.  Unique per process per iteration
+/// so the ctrlc handler can call `docker stop <name>` when the user interrupts.
+pub fn container_name_for(iteration: u32) -> String {
+    format!("capsule-run-{}-{}", std::process::id(), iteration)
+}
+
 /// Build the `docker run` argument list for one iteration.
 ///
 /// Extracted for testability. Adds a read-only bind-mount of `.git/config` when
 /// present in `cfg.pwd`, preventing container processes from mutating the host
 /// repository's remote URLs or other local git config.
-pub fn build_docker_args(cfg: &RunConfig, prompt_path: &std::path::Path) -> Vec<String> {
+pub fn build_docker_args(
+    cfg: &RunConfig,
+    prompt_path: &std::path::Path,
+    container_name: &str,
+) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
         "--rm".to_string(),
+        "--name".to_string(),
+        container_name.to_string(),
         format!("-v={}:/home/claude/prompt.txt:ro", prompt_path.display()),
         format!("-v={}:/workspace", cfg.pwd.display()),
     ];
@@ -163,12 +178,21 @@ pub fn build_docker_args(cfg: &RunConfig, prompt_path: &std::path::Path) -> Vec<
 
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
 ///
+/// `iteration` is used to derive a unique `--name` for the container so that a
+/// registered ctrlc handler can call `docker stop <name>` on SIGINT.
+/// `active_container` is a shared slot; this function writes the container name
+/// before spawning and clears it after the container exits.
+///
 /// Returns [`IterationOutcome::Done`] when the output contains the NO MORE TASKS marker.
 ///
 /// # Errors
 /// - Container exits non-zero → error naming the exit code.
 /// - Output contains `authentication_failed` → error with remediation hint.
-pub fn run_iteration(cfg: &RunConfig) -> Result<IterationOutcome> {
+pub fn run_iteration(
+    cfg: &RunConfig,
+    iteration: u32,
+    active_container: &Arc<Mutex<Option<String>>>,
+) -> Result<IterationOutcome> {
     // Write prompt to a named temp file so it can be bind-mounted.
     let mut prompt_file = tempfile::Builder::new()
         .prefix("capsule-prompt-")
@@ -181,7 +205,14 @@ pub fn run_iteration(cfg: &RunConfig) -> Result<IterationOutcome> {
     prompt_file.flush().context("failed to flush prompt file")?;
     let prompt_path = prompt_file.path().to_owned();
 
-    let docker_args = build_docker_args(cfg, &prompt_path);
+    let name = container_name_for(iteration);
+
+    // Register the container name so the ctrlc handler can stop it.
+    if let Ok(mut slot) = active_container.lock() {
+        *slot = Some(name.clone());
+    }
+
+    let docker_args = build_docker_args(cfg, &prompt_path, &name);
 
     // Spawn docker with stdout piped; stderr goes to the terminal.
     let mut docker_child = Command::new("docker")
@@ -232,6 +263,11 @@ pub fn run_iteration(cfg: &RunConfig) -> Result<IterationOutcome> {
     let _ = jq_child.wait();
 
     let status = docker_child.wait().context("docker run did not complete")?;
+
+    // Container has exited — clear the shared slot so the handler becomes a no-op.
+    if let Ok(mut slot) = active_container.lock() {
+        *slot = None;
+    }
 
     if auth_failed {
         bail!(

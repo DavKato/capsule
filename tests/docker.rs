@@ -1,7 +1,9 @@
 use capsule::docker::{
-    build_base_image, build_docker_args, contains_auth_failure, contains_no_more_tasks,
-    run_iteration, IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
+    build_base_image, build_docker_args, container_name_for, contains_auth_failure,
+    contains_no_more_tasks, run_iteration, IterationOutcome, RunConfig, DOCKERFILE,
+    STREAM_DISPLAY_JQ,
 };
+use std::sync::{Arc, Mutex};
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
@@ -89,7 +91,7 @@ fn env_file_arg_present_when_file_exists() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         joined.contains("--env-file"),
@@ -119,7 +121,7 @@ fn env_file_arg_absent_when_no_file() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         !joined.contains("--env-file"),
@@ -145,7 +147,7 @@ fn gh_token_passed_as_explicit_env_var() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         joined.contains("GH_TOKEN=ghs_testtoken"),
@@ -171,7 +173,7 @@ fn gh_token_absent_when_none() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         !joined.contains("GH_TOKEN"),
@@ -206,7 +208,7 @@ fn git_config_mounted_readonly_when_present() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         joined.contains(".git/config:/workspace/.git/config:ro"),
@@ -232,7 +234,7 @@ fn git_config_mount_absent_when_no_git_dir() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         !joined.contains(".git/config"),
@@ -259,7 +261,7 @@ fn git_identity_env_vars_present_in_docker_args() {
         git_author_email: "bob@example.com".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         joined.contains("GIT_AUTHOR_NAME=Bob Builder"),
@@ -296,7 +298,7 @@ fn git_identity_env_vars_present_when_empty() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     // Even empty values should be passed so the entrypoint can fall back.
     assert!(
@@ -331,7 +333,7 @@ fn before_each_mounted_when_path_provided() {
         git_author_email: "".to_string(),
         before_each_path: Some(before_each.clone()),
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         joined.contains("/home/claude/before-each.sh:ro"),
@@ -360,7 +362,7 @@ fn before_each_not_mounted_when_absent() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         !joined.contains("before-each.sh"),
@@ -387,7 +389,7 @@ fn model_arg_present_when_model_set() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         joined.contains("-e=CAPSULE_MODEL=claude-opus-4-6"),
@@ -412,7 +414,7 @@ fn model_arg_absent_when_no_model() {
         git_author_email: "".to_string(),
         before_each_path: None,
     };
-    let args = build_docker_args(&cfg, prompt_file.path());
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         !joined.contains("CAPSULE_MODEL"),
@@ -454,11 +456,52 @@ fn verbose_flag_not_added_to_docker_args() {
             before_each_path: None,
         }
     };
-    let args_verbose = build_docker_args(&cfg_verbose, prompt_file.path());
-    let args_quiet = build_docker_args(&cfg_quiet, prompt_file.path());
+    let args_verbose = build_docker_args(&cfg_verbose, prompt_file.path(), "capsule-test");
+    let args_quiet = build_docker_args(&cfg_quiet, prompt_file.path(), "capsule-test");
     assert_eq!(
         args_verbose, args_quiet,
         "verbose flag must not alter docker args"
+    );
+}
+
+// ── Unit tests: build_docker_args (container name / Ctrl+C) ──────────────────
+
+#[test]
+fn container_name_present_in_docker_args() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-run-12345-1");
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("--name capsule-run-12345-1"),
+        "expected --name in args: {joined}"
+    );
+}
+
+#[test]
+fn container_name_for_has_expected_format() {
+    use capsule::docker::container_name_for;
+    let name = container_name_for(3);
+    assert!(
+        name.starts_with("capsule-run-"),
+        "name should start with capsule-run-: {name}"
+    );
+    assert!(
+        name.ends_with("-3"),
+        "name should end with iteration number: {name}"
     );
 }
 
@@ -578,19 +621,23 @@ fn run_iteration_succeeds_on_container_exit_zero() {
     }
     child.wait().expect("docker build should complete");
 
-    let result = run_iteration(&RunConfig {
-        image: "capsule-test-exit0".to_string(),
-        prompt: "hello".to_string(),
-        pwd: std::env::temp_dir(),
-        capsule_dir: std::env::temp_dir(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-    });
+    let result = run_iteration(
+        &RunConfig {
+            image: "capsule-test-exit0".to_string(),
+            prompt: "hello".to_string(),
+            pwd: std::env::temp_dir(),
+            capsule_dir: std::env::temp_dir(),
+            model: None,
+            verbose: false,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
     assert!(result.is_ok(), "exit 0 should return Ok: {:?}", result);
 
     // Cleanup
@@ -620,19 +667,23 @@ fn run_iteration_errors_on_container_exit_nonzero() {
     }
     child.wait().expect("docker build should complete");
 
-    let result = run_iteration(&RunConfig {
-        image: "capsule-test-exit42".to_string(),
-        prompt: "hello".to_string(),
-        pwd: std::env::temp_dir(),
-        capsule_dir: std::env::temp_dir(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-    });
+    let result = run_iteration(
+        &RunConfig {
+            image: "capsule-test-exit42".to_string(),
+            prompt: "hello".to_string(),
+            pwd: std::env::temp_dir(),
+            capsule_dir: std::env::temp_dir(),
+            model: None,
+            verbose: false,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
     assert!(result.is_err(), "non-zero exit should return Err");
     let msg = format!("{:?}", result.unwrap_err());
     assert!(
@@ -671,19 +722,23 @@ fn run_iteration_errors_on_auth_failure_in_output() {
     }
     child.wait().expect("docker build should complete");
 
-    let result = run_iteration(&RunConfig {
-        image: "capsule-test-authfail".to_string(),
-        prompt: "hello".to_string(),
-        pwd: std::env::temp_dir(),
-        capsule_dir: std::env::temp_dir(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-    });
+    let result = run_iteration(
+        &RunConfig {
+            image: "capsule-test-authfail".to_string(),
+            prompt: "hello".to_string(),
+            pwd: std::env::temp_dir(),
+            capsule_dir: std::env::temp_dir(),
+            model: None,
+            verbose: false,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
     assert!(result.is_err(), "auth failure should return Err");
     let msg = format!("{:?}", result.unwrap_err());
     assert!(
@@ -723,19 +778,23 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
     }
     child.wait().expect("docker build should complete");
 
-    let result = run_iteration(&RunConfig {
-        image: "capsule-test-nomore".to_string(),
-        prompt: "hello".to_string(),
-        pwd: std::env::temp_dir(),
-        capsule_dir: std::env::temp_dir(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-    });
+    let result = run_iteration(
+        &RunConfig {
+            image: "capsule-test-nomore".to_string(),
+            prompt: "hello".to_string(),
+            pwd: std::env::temp_dir(),
+            capsule_dir: std::env::temp_dir(),
+            model: None,
+            verbose: false,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
     assert!(result.is_ok(), "marker should not error: {:?}", result);
     assert!(
         matches!(result.unwrap(), IterationOutcome::Done),
@@ -769,19 +828,23 @@ fn run_iteration_returns_continue_without_marker() {
     }
     child.wait().expect("docker build should complete");
 
-    let result = run_iteration(&RunConfig {
-        image: "capsule-test-continue".to_string(),
-        prompt: "hello".to_string(),
-        pwd: std::env::temp_dir(),
-        capsule_dir: std::env::temp_dir(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-    });
+    let result = run_iteration(
+        &RunConfig {
+            image: "capsule-test-continue".to_string(),
+            prompt: "hello".to_string(),
+            pwd: std::env::temp_dir(),
+            capsule_dir: std::env::temp_dir(),
+            model: None,
+            verbose: false,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
     assert!(result.is_ok(), "no marker should not error: {:?}", result);
     assert!(
         matches!(result.unwrap(), IterationOutcome::Continue),
@@ -821,19 +884,23 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
     }
     child.wait().expect("docker build should complete");
 
-    let result = run_iteration(&RunConfig {
-        image: "capsule-test-model".to_string(),
-        prompt: "hello".to_string(),
-        pwd: workdir.path().to_path_buf(),
-        capsule_dir: std::env::temp_dir(),
-        model: Some("claude-opus-4-6".to_string()),
-        verbose: false,
-        env_file: None,
-        gh_token: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-    });
+    let result = run_iteration(
+        &RunConfig {
+            image: "capsule-test-model".to_string(),
+            prompt: "hello".to_string(),
+            pwd: workdir.path().to_path_buf(),
+            capsule_dir: std::env::temp_dir(),
+            model: Some("claude-opus-4-6".to_string()),
+            verbose: false,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
     assert!(result.is_ok(), "model run should not error: {:?}", result);
 
     let written = std::fs::read_to_string(&output_file)
@@ -870,19 +937,23 @@ fn run_iteration_with_verbose_completes_normally() {
     }
     child.wait().expect("docker build should complete");
 
-    let result = run_iteration(&RunConfig {
-        image: "capsule-test-verbose".to_string(),
-        prompt: "hello".to_string(),
-        pwd: std::env::temp_dir(),
-        capsule_dir: std::env::temp_dir(),
-        model: None,
-        verbose: true,
-        env_file: None,
-        gh_token: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-    });
+    let result = run_iteration(
+        &RunConfig {
+            image: "capsule-test-verbose".to_string(),
+            prompt: "hello".to_string(),
+            pwd: std::env::temp_dir(),
+            capsule_dir: std::env::temp_dir(),
+            model: None,
+            verbose: true,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
     assert!(
         result.is_ok(),
         "verbose run should complete normally: {:?}",

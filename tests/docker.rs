@@ -1,7 +1,7 @@
 use capsule::docker::{
-    build_base_image, build_docker_args, container_name_for, contains_auth_failure,
-    contains_no_more_tasks, detect_compose_network, run_iteration, IterationOutcome, RunConfig,
-    DOCKERFILE, STREAM_DISPLAY_JQ,
+    build_base_image, build_derived_image, build_docker_args, container_name_for,
+    contains_auth_failure, contains_no_more_tasks, derived_image_name, detect_compose_network,
+    run_iteration, IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
 };
 use std::sync::{Arc, Mutex};
 
@@ -1090,5 +1090,90 @@ fn detect_compose_network_returns_network_for_running_project() {
     let _ = std::process::Command::new("docker")
         .args(["compose", "-f", &compose_file.to_string_lossy(), "down"])
         .current_dir(dir.path())
+        .output();
+}
+
+// ── Unit tests: derived image ─────────────────────────────────────────────────
+
+#[test]
+fn derived_image_name_uses_basename_of_pwd() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // Create a subdir whose basename we can assert on.
+    let project_dir = dir.path().join("my-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let name = derived_image_name(&project_dir);
+    assert_eq!(name, "capsule-my-project");
+}
+
+#[test]
+fn derived_image_name_handles_root_or_unnamed() {
+    // If basename is empty (unlikely in practice), should not panic.
+    let name = derived_image_name(std::path::Path::new("/"));
+    assert!(name.starts_with("capsule-"), "name={name}");
+}
+
+#[test]
+fn build_derived_image_returns_none_when_no_dockerfile() {
+    let capsule_dir = tempfile::tempdir().expect("temp dir");
+    let pwd = tempfile::tempdir().expect("temp dir");
+    // No Dockerfile in capsule_dir → returns None without touching Docker.
+    let result = build_derived_image(capsule_dir.path(), pwd.path(), false)
+        .expect("should not error when Dockerfile absent");
+    assert!(result.is_none(), "expected None when no Dockerfile");
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn build_derived_image_builds_and_returns_image_name() {
+    let capsule_dir = tempfile::tempdir().expect("temp dir");
+    let pwd = tempfile::tempdir().expect("temp dir");
+
+    // Write a minimal Dockerfile that extends the base capsule image.
+    std::fs::write(
+        capsule_dir.path().join("Dockerfile"),
+        "FROM capsule\nRUN echo derived\n",
+    )
+    .unwrap();
+
+    let name = build_derived_image(capsule_dir.path(), pwd.path(), false)
+        .expect("build_derived_image should succeed")
+        .expect("expected Some(name) when Dockerfile present");
+
+    assert!(
+        name.starts_with("capsule-"),
+        "derived image name should start with capsule-: {name}"
+    );
+
+    // Cleanup: remove the derived image.
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", &name])
+        .output();
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn build_derived_image_skips_build_when_image_exists_and_no_rebuild() {
+    let capsule_dir = tempfile::tempdir().expect("temp dir");
+    let pwd = tempfile::tempdir().expect("temp dir");
+
+    std::fs::write(
+        capsule_dir.path().join("Dockerfile"),
+        "FROM capsule\nRUN echo derived\n",
+    )
+    .unwrap();
+
+    // First build.
+    let name = build_derived_image(capsule_dir.path(), pwd.path(), false)
+        .unwrap()
+        .unwrap();
+
+    // Second call with rebuild=false — should succeed without rebuilding.
+    let name2 = build_derived_image(capsule_dir.path(), pwd.path(), false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(name, name2);
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", &name])
         .output();
 }

@@ -23,6 +23,70 @@ fn image_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns the derived image name for the given working directory.
+///
+/// Format: `capsule-<basename(pwd)>`. Falls back to `capsule-project` when the
+/// directory has no file-name component (e.g. `/`).
+pub fn derived_image_name(pwd: &std::path::Path) -> String {
+    let basename = pwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
+    format!("capsule-{basename}")
+}
+
+/// Build a derived Docker image from `${capsule_dir}/Dockerfile` if it exists.
+///
+/// Returns `Ok(None)` when no `Dockerfile` is found in `capsule_dir`.
+/// Returns `Ok(Some(name))` with the derived image name when the image exists or
+/// was successfully built.
+///
+/// The derived image is named `capsule-<basename(pwd)>` and uses `capsule_dir`
+/// as its build context so relative `COPY` instructions resolve correctly.
+///
+/// If `rebuild` is `false` and the derived image already exists, the build is
+/// skipped and the cached image name is returned.
+pub fn build_derived_image(
+    capsule_dir: &std::path::Path,
+    pwd: &std::path::Path,
+    rebuild: bool,
+) -> Result<Option<String>> {
+    let dockerfile = capsule_dir.join("Dockerfile");
+    if !dockerfile.exists() {
+        return Ok(None);
+    }
+
+    let name = derived_image_name(pwd);
+
+    if !rebuild && image_exists(&name) {
+        return Ok(Some(name));
+    }
+
+    eprintln!("Building derived image {name}…");
+
+    let status = Command::new("docker")
+        .args([
+            "build",
+            "-t",
+            &name,
+            "-f",
+            &dockerfile.to_string_lossy(),
+            &capsule_dir.to_string_lossy(),
+        ])
+        .status()
+        .context("failed to spawn `docker build` for derived image")?;
+
+    if !status.success() {
+        bail!(
+            "docker build for derived image {name} exited with code {}",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    eprintln!("Derived image ready.");
+    Ok(Some(name))
+}
+
 /// Build the base `capsule` Docker image from the embedded Dockerfile.
 ///
 /// If `rebuild` is `false` and the image already exists, the build is skipped.

@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, GitIdentity};
 use capsule::docker::{
-    build_base_image, detect_compose_network, run_iteration, IterationOutcome, RunConfig,
+    build_base_image, build_derived_image, detect_compose_network, run_iteration, IterationOutcome,
+    RunConfig,
 };
 use capsule::env::{load_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
@@ -110,14 +111,17 @@ fn main() -> Result<()> {
     let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
     let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
 
+    let pwd = std::env::current_dir().context("failed to get current directory")?;
+
     // Build (or skip) the base image.
     build_base_image(cfg.rebuild)?;
 
+    // Build derived image if ${capsule_dir}/Dockerfile exists; use it for iterations.
+    let image = build_derived_image(&cfg.capsule_dir, &pwd, cfg.rebuild)?
+        .unwrap_or_else(|| "capsule".to_string());
+
     // Run before-all.sh on the host if present. Non-zero exit aborts.
     run_before_all(&cfg.capsule_dir)?;
-
-    let image = "capsule".to_string();
-    let pwd = std::env::current_dir().context("failed to get current directory")?;
 
     // Pass .env file path to docker run if it exists.
     let env_file_path = cfg.capsule_dir.join(".env");

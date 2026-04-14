@@ -39,8 +39,9 @@ Invoke /tdd skill and complete the task.
 
 Before committing, run the feedback loops:
 
-- `pnpm test` to run the tests
-- `pnpm lint:fix` to run the linter
+- `cargo fmt` to format code
+- `cargo clippy -- -D warnings` to lint
+- `cargo test` to run the test suite
 
 # COMMIT
 

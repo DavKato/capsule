@@ -4,7 +4,7 @@ Runs Claude Code inside a Docker container against your repo, working through Gi
 
 > **Note:** This is for my own simple usage for now. It works for me and my setup (Arch Linux) but if you're going to use it you'll probably need some tweaking.
 
-Each iteration assembles a prompt from recent commits and open issues, runs Claude Code in an isolated container, and loops until Claude signals it has no more tasks or the iteration limit is reached.
+Each iteration runs Claude Code in an isolated container. You control what Claude sees via a prompt file and optional hook scripts. The loop runs until Claude signals completion or the iteration limit is reached.
 
 ## Requirements
 
@@ -12,37 +12,85 @@ Each iteration assembles a prompt from recent commits and open issues, runs Clau
 - `gh` CLI authenticated (`gh auth login`)
 - Claude Code installed and authenticated on the host
 
+## Install
+
+Download the latest binary for your platform from [GitHub Releases](../../releases) and place it on your `$PATH`:
+
+```sh
+# Linux x86_64
+curl -L https://github.com/YOUR_ORG/capsule/releases/latest/download/capsule-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv capsule /usr/local/bin/
+
+# macOS arm64
+curl -L https://github.com/YOUR_ORG/capsule/releases/latest/download/capsule-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv capsule /usr/local/bin/
+```
+
+No Rust toolchain required.
+
 ## Usage
 
-From your repo directory:
-
 ```sh
-capsule <iterations>
+capsule --iterations 5
 ```
 
 ```sh
-FORCE_REBUILD=1 capsule 1   # force-rebuild the base image
+capsule --iterations 1 --rebuild   # force-rebuild the Docker image
+capsule --iterations 3 --verbose   # show unfiltered container output
+capsule --model claude-opus-4-6 --iterations 2
+capsule completion bash | source   # enable tab-completion in the current shell
 ```
 
-## How it works
+## Config directory
 
-1. Builds a base `capsule` image (Arch Linux + git + gh + Claude Code) if not cached
-2. Builds a repo-specific `capsule-<repo>` image if `.capsule/Dockerfile` exists
-3. Each iteration assembles a prompt from recent commits + open GitHub issues and pipes it to Claude Code
-4. Claude's output streams to the terminal; the run ends when Claude outputs `<promise>NO MORE TASKS</promise>` or the iteration limit is reached
-
-## Repo configuration
-
-Place a `.capsule/` directory in your repo to customise the environment:
+Place a `.capsule/` directory in your repo to configure behaviour:
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Extends the base image with repo-specific tooling (e.g. pnpm, python) |
-| `setup.sh` | Runs inside the container before Claude starts (e.g. install deps) |
-| `.env` | Environment variables for the container (e.g. service hostnames) |
+| `prompt.md` | Base prompt passed to Claude each iteration |
+| `config.yml` | Default flag values (overridden by CLI flags and env vars) |
+| `.env` | Secrets and per-container env vars (should be gitignored) |
+| `Dockerfile` | Extends the base image with repo-specific tooling |
+| `before-all.sh` | Runs once on the host before any container starts |
+| `before-each.sh` | Runs inside the container before Claude starts each iteration |
 
 See `example/.capsule/` for annotated examples of each file.
 
 ## Prompt
 
-`prompt.md` in this directory is the base prompt injected every iteration, after the commit and issue context. Edit it to change how Claude prioritises and approaches tasks.
+`capsule` is prompt-agnostic — it injects no context on its own. Place your prompt at `.capsule/prompt.md` (or pass `--prompt path/to/other.md`).
+
+Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See `example/.capsule/before-each.sh` for a working example.
+
+## Config file
+
+`.capsule/config.yml` accepts the same keys as the CLI flags, as defaults:
+
+```yaml
+iterations: 3
+model: claude-sonnet-4-6
+git_identity: user  # or: capsule
+```
+
+Precedence: **CLI flag → env var (`CAPSULE_*`) → config.yml → default**.
+
+See `example/.capsule/config.yml` for all keys with descriptions.
+
+## Hooks
+
+**`before-all.sh`** — runs once on the host before the first container starts. Use it for pre-flight checks (e.g. verifying a database container is up). Non-zero exit aborts the entire run.
+
+**`before-each.sh`** — runs inside the container before Claude starts each iteration. Can modify `/home/claude/prompt.txt` to inject dynamic context. Non-zero exit aborts that iteration.
+
+Both hooks receive variables from `.capsule/.env`.
+
+## How it works
+
+1. Resolves config from `config.yml`, CLI flags, and env vars
+2. Runs pre-flight checks (Docker daemon reachable, prompt file present)
+3. Sources `.capsule/.env` into the host environment
+4. Builds the base `capsule` image if not cached (or if `--rebuild` is set)
+5. Builds a repo-specific `capsule-<basename>` image if `.capsule/Dockerfile` exists
+6. Runs `before-all.sh` if present
+7. For each iteration: mounts the prompt, runs `before-each.sh` inside the container, pipes the prompt to Claude Code, and streams output through `jq`
+8. Exits early when Claude outputs `<promise>NO MORE TASKS</promise>` or a non-zero container exit occurs

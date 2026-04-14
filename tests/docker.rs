@@ -368,6 +368,100 @@ fn before_each_not_mounted_when_absent() {
     );
 }
 
+// ── Unit tests: build_docker_args (model + verbose) ──────────────────────────
+
+#[test]
+fn model_arg_present_when_model_set() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: Some("claude-opus-4-6".to_string()),
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("-e=CAPSULE_MODEL=claude-opus-4-6"),
+        "expected -e=CAPSULE_MODEL=claude-opus-4-6 in args: {joined}"
+    );
+}
+
+#[test]
+fn model_arg_absent_when_no_model() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        !joined.contains("CAPSULE_MODEL"),
+        "CAPSULE_MODEL must not appear in args when model is None: {joined}"
+    );
+}
+
+#[test]
+fn verbose_flag_not_added_to_docker_args() {
+    // verbose is host-side behavior; it must not add extra docker flags.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg_verbose = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: true,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+    };
+    let cfg_quiet = RunConfig {
+        verbose: false,
+        ..RunConfig {
+            image: "capsule".to_string(),
+            prompt: "test".to_string(),
+            pwd: dir.path().to_path_buf(),
+            capsule_dir: dir.path().to_path_buf(),
+            model: None,
+            verbose: false,
+            env_file: None,
+            gh_token: None,
+            git_author_name: "".to_string(),
+            git_author_email: "".to_string(),
+            before_each_path: None,
+        }
+    };
+    let args_verbose = build_docker_args(&cfg_verbose, prompt_file.path());
+    let args_quiet = build_docker_args(&cfg_quiet, prompt_file.path());
+    assert_eq!(
+        args_verbose, args_quiet,
+        "verbose flag must not alter docker args"
+    );
+}
+
 // ── Integration tests (require Docker daemon) ─────────────────────────────────
 // Run with: cargo test -- --ignored
 
@@ -697,5 +791,106 @@ fn run_iteration_returns_continue_without_marker() {
     // Cleanup
     let _ = std::process::Command::new("docker")
         .args(["rmi", "-f", "capsule-test-continue"])
+        .output();
+}
+
+/// --model flag passes CAPSULE_MODEL env var into the container.
+/// Stub image writes the env var to /workspace so we can verify it from the host.
+#[test]
+#[ignore]
+fn run_iteration_with_model_passes_capsule_model_to_container() {
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let output_file = workdir.path().join("model_output.txt");
+
+    // Entrypoint: write $CAPSULE_MODEL to /workspace/model_output.txt then exit 0.
+    let dockerfile =
+        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"echo \\\"$CAPSULE_MODEL\\\" > /workspace/model_output.txt; exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-model", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(&RunConfig {
+        image: "capsule-test-model".to_string(),
+        prompt: "hello".to_string(),
+        pwd: workdir.path().to_path_buf(),
+        capsule_dir: std::env::temp_dir(),
+        model: Some("claude-opus-4-6".to_string()),
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+    });
+    assert!(result.is_ok(), "model run should not error: {:?}", result);
+
+    let written = std::fs::read_to_string(&output_file)
+        .expect("container should have written model_output.txt");
+    assert!(
+        written.trim() == "claude-opus-4-6",
+        "container should receive CAPSULE_MODEL=claude-opus-4-6, got: {written:?}"
+    );
+
+    // Cleanup
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-model"])
+        .output();
+}
+
+/// --verbose=true does not change iteration outcome; run completes normally.
+#[test]
+#[ignore]
+fn run_iteration_with_verbose_completes_normally() {
+    let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-verbose", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(&RunConfig {
+        image: "capsule-test-verbose".to_string(),
+        prompt: "hello".to_string(),
+        pwd: std::env::temp_dir(),
+        capsule_dir: std::env::temp_dir(),
+        model: None,
+        verbose: true,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+    });
+    assert!(
+        result.is_ok(),
+        "verbose run should complete normally: {:?}",
+        result
+    );
+
+    // Cleanup
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-verbose"])
         .output();
 }

@@ -14,8 +14,11 @@ fn make_capsule_dir(prompt: &str) -> TempDir {
     dir
 }
 
-// Tracer bullet: --iterations loop prints the expected headers
+// Tracer bullet: --iterations loop prints the expected headers.
+// Requires a Docker daemon + the `capsule` image to be present.
+// Run with: cargo test -- --ignored
 #[test]
+#[ignore]
 fn iterations_prints_headers() {
     let dir = make_capsule_dir("test prompt");
     cmd()

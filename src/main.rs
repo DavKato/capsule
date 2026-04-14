@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, GitIdentity};
+use capsule::docker::{run_iteration, RunConfig};
 use capsule::preflight::env_gitignore_warning;
 use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -89,10 +90,23 @@ fn main() -> Result<()> {
     }
 
     // Resolve the prompt file (errors here exit with a clear message).
-    let _prompt = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
+    let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
+    let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
+
+    let image = "capsule".to_string();
+    let pwd = std::env::current_dir().context("failed to get current directory")?;
 
     for i in 1..=cfg.iterations {
         println!("── Iteration {} / {} ──", i, cfg.iterations);
+        let run_cfg = RunConfig {
+            image: image.clone(),
+            prompt: prompt.clone(),
+            pwd: pwd.clone(),
+            capsule_dir: cfg.capsule_dir.clone(),
+            model: cfg.model.clone(),
+            verbose: cfg.verbose,
+        };
+        run_iteration(&run_cfg)?;
     }
 
     Ok(())

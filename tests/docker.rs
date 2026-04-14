@@ -1,4 +1,7 @@
-use capsule::docker::{build_base_image, DOCKERFILE, STREAM_DISPLAY_JQ};
+use capsule::docker::{
+    build_base_image, contains_auth_failure, run_iteration, RunConfig, DOCKERFILE,
+    STREAM_DISPLAY_JQ,
+};
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
@@ -24,6 +27,25 @@ fn embedded_stream_display_jq_is_non_empty() {
         STREAM_DISPLAY_JQ.contains("fromjson"),
         "jq filter must contain fromjson"
     );
+}
+
+// ── Unit tests: auth failure detection ────────────────────────────────────────
+
+#[test]
+fn auth_failure_detected_in_output() {
+    let line = r#"{"type":"result","subtype":"error","error":"authentication_failed"}"#;
+    assert!(contains_auth_failure(line));
+}
+
+#[test]
+fn auth_failure_not_triggered_on_normal_output() {
+    let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#;
+    assert!(!contains_auth_failure(line));
+}
+
+#[test]
+fn auth_failure_not_triggered_on_empty() {
+    assert!(!contains_auth_failure(""));
 }
 
 // ── Integration tests (require Docker daemon) ─────────────────────────────────
@@ -115,5 +137,133 @@ fn build_base_image_rebuilds_when_rebuild_flag_set() {
     // Cleanup
     let _ = std::process::Command::new("docker")
         .args(["rmi", "-f", "capsule"])
+        .output();
+}
+
+// ── Integration tests: run_iteration ─────────────────────────────────────────
+
+/// Container exits 0 → run_iteration returns Ok(()).
+#[test]
+#[ignore]
+fn run_iteration_succeeds_on_container_exit_zero() {
+    // Build a minimal stub image that just exits 0.
+    let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-exit0", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(&RunConfig {
+        image: "capsule-test-exit0".to_string(),
+        prompt: "hello".to_string(),
+        pwd: std::env::temp_dir(),
+        capsule_dir: std::env::temp_dir(),
+        model: None,
+        verbose: false,
+    });
+    assert!(result.is_ok(), "exit 0 should return Ok: {:?}", result);
+
+    // Cleanup
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-exit0"])
+        .output();
+}
+
+/// Container exits non-zero → run_iteration returns an error naming the exit code.
+#[test]
+#[ignore]
+fn run_iteration_errors_on_container_exit_nonzero() {
+    let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"exit 42\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-exit42", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(&RunConfig {
+        image: "capsule-test-exit42".to_string(),
+        prompt: "hello".to_string(),
+        pwd: std::env::temp_dir(),
+        capsule_dir: std::env::temp_dir(),
+        model: None,
+        verbose: false,
+    });
+    assert!(result.is_err(), "non-zero exit should return Err");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("42"),
+        "error should mention exit code 42, got: {msg}"
+    );
+
+    // Cleanup
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-exit42"])
+        .output();
+}
+
+/// authentication_failed in output → run_iteration returns specific error.
+#[test]
+#[ignore]
+fn run_iteration_errors_on_auth_failure_in_output() {
+    let auth_line = r#"{"type":"result","subtype":"error","error":"authentication_failed"}"#;
+    let dockerfile = format!(
+        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"printf '%s\\n' '{}'; exit 0\"]\n",
+        auth_line
+    );
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-authfail", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(&RunConfig {
+        image: "capsule-test-authfail".to_string(),
+        prompt: "hello".to_string(),
+        pwd: std::env::temp_dir(),
+        capsule_dir: std::env::temp_dir(),
+        model: None,
+        verbose: false,
+    });
+    assert!(result.is_err(), "auth failure should return Err");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.to_lowercase().contains("auth") || msg.contains("claude"),
+        "error should mention auth/claude, got: {msg}"
+    );
+
+    // Cleanup
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-authfail"])
         .output();
 }

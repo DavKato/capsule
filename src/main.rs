@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, GitIdentity};
-use capsule::docker::{run_iteration, RunConfig};
+use capsule::docker::{run_iteration, IterationOutcome, RunConfig};
 use capsule::preflight::env_gitignore_warning;
 use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -106,7 +106,10 @@ fn main() -> Result<()> {
             model: cfg.model.clone(),
             verbose: cfg.verbose,
         };
-        run_iteration(&run_cfg)?;
+        if run_iteration(&run_cfg)? == IterationOutcome::Done {
+            println!("Claude signalled completion after iteration {i}. No more tasks.");
+            break;
+        }
     }
 
     Ok(())

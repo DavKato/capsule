@@ -75,17 +75,33 @@ pub struct RunConfig {
     pub verbose: bool,
 }
 
+/// Outcome of a single iteration.
+#[derive(Debug, PartialEq)]
+pub enum IterationOutcome {
+    /// Loop should continue to the next iteration.
+    Continue,
+    /// Claude signalled completion; loop should stop.
+    Done,
+}
+
 /// Returns `true` if the given line of container output signals an authentication failure.
 pub fn contains_auth_failure(line: &str) -> bool {
     line.contains("authentication_failed")
 }
 
+/// Returns `true` if the given line contains the NO MORE TASKS completion marker.
+pub fn contains_no_more_tasks(line: &str) -> bool {
+    line.contains("<promise>NO MORE TASKS</promise>")
+}
+
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
+///
+/// Returns [`IterationOutcome::Done`] when the output contains the NO MORE TASKS marker.
 ///
 /// # Errors
 /// - Container exits non-zero → error naming the exit code.
 /// - Output contains `authentication_failed` → error with remediation hint.
-pub fn run_iteration(cfg: &RunConfig) -> Result<()> {
+pub fn run_iteration(cfg: &RunConfig) -> Result<IterationOutcome> {
     // Write prompt to a named temp file so it can be bind-mounted.
     let mut prompt_file = tempfile::Builder::new()
         .prefix("capsule-prompt-")
@@ -134,12 +150,17 @@ pub fn run_iteration(cfg: &RunConfig) -> Result<()> {
     let mut jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
 
     let mut auth_failed = false;
+    let mut no_more_tasks = false;
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
 
         if contains_auth_failure(&line) {
             auth_failed = true;
+        }
+
+        if contains_no_more_tasks(&line) {
+            no_more_tasks = true;
         }
 
         if cfg.verbose {
@@ -166,5 +187,9 @@ pub fn run_iteration(cfg: &RunConfig) -> Result<()> {
         bail!("container exited with code {}", status.code().unwrap_or(-1));
     }
 
-    Ok(())
+    if no_more_tasks {
+        Ok(IterationOutcome::Done)
+    } else {
+        Ok(IterationOutcome::Continue)
+    }
 }

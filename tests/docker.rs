@@ -1,6 +1,6 @@
 use capsule::docker::{
-    build_base_image, contains_auth_failure, run_iteration, RunConfig, DOCKERFILE,
-    STREAM_DISPLAY_JQ,
+    build_base_image, contains_auth_failure, contains_no_more_tasks, run_iteration,
+    IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
 };
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -46,6 +46,26 @@ fn auth_failure_not_triggered_on_normal_output() {
 #[test]
 fn auth_failure_not_triggered_on_empty() {
     assert!(!contains_auth_failure(""));
+}
+
+// ── Unit tests: NO MORE TASKS detection ──────────────────────────────────────
+
+#[test]
+fn no_more_tasks_detected_in_result_line() {
+    let line =
+        r#"{"type":"result","subtype":"success","result":"<promise>NO MORE TASKS</promise>"}"#;
+    assert!(contains_no_more_tasks(line));
+}
+
+#[test]
+fn no_more_tasks_not_triggered_on_normal_output() {
+    let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#;
+    assert!(!contains_no_more_tasks(line));
+}
+
+#[test]
+fn no_more_tasks_not_triggered_on_empty() {
+    assert!(!contains_no_more_tasks(""));
 }
 
 // ── Integration tests (require Docker daemon) ─────────────────────────────────
@@ -265,5 +285,92 @@ fn run_iteration_errors_on_auth_failure_in_output() {
     // Cleanup
     let _ = std::process::Command::new("docker")
         .args(["rmi", "-f", "capsule-test-authfail"])
+        .output();
+}
+
+/// Container output contains NO MORE TASKS marker → run_iteration returns Done.
+#[test]
+#[ignore]
+fn run_iteration_returns_done_on_no_more_tasks_marker() {
+    let marker_line =
+        r#"{"type":"result","subtype":"success","result":"<promise>NO MORE TASKS</promise>"}"#;
+    let dockerfile = format!(
+        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"printf '%s\\n' '{}'; exit 0\"]\n",
+        marker_line
+    );
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-nomore", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(&RunConfig {
+        image: "capsule-test-nomore".to_string(),
+        prompt: "hello".to_string(),
+        pwd: std::env::temp_dir(),
+        capsule_dir: std::env::temp_dir(),
+        model: None,
+        verbose: false,
+    });
+    assert!(result.is_ok(), "marker should not error: {:?}", result);
+    assert!(
+        matches!(result.unwrap(), IterationOutcome::Done),
+        "should return Done when marker present"
+    );
+
+    // Cleanup
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-nomore"])
+        .output();
+}
+
+/// Container output without marker → run_iteration returns Continue.
+#[test]
+#[ignore]
+fn run_iteration_returns_continue_without_marker() {
+    let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"echo normal output; exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-continue", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(&RunConfig {
+        image: "capsule-test-continue".to_string(),
+        prompt: "hello".to_string(),
+        pwd: std::env::temp_dir(),
+        capsule_dir: std::env::temp_dir(),
+        model: None,
+        verbose: false,
+    });
+    assert!(result.is_ok(), "no marker should not error: {:?}", result);
+    assert!(
+        matches!(result.unwrap(), IterationOutcome::Continue),
+        "should return Continue when marker absent"
+    );
+
+    // Cleanup
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-continue"])
         .output();
 }

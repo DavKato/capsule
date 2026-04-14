@@ -1,5 +1,6 @@
 use anyhow::Result;
 use capsule::config::{resolve, CliOverrides, GitIdentity};
+use capsule::preflight::env_gitignore_warning;
 use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
@@ -81,6 +82,14 @@ fn main() -> Result<()> {
 
     let env: std::collections::HashMap<String, String> = std::env::vars().collect();
     let cfg = resolve(&cli.capsule_dir, overrides, &env)?;
+
+    // Preflight: warn if .env is not gitignored.
+    if let Some(warning) = env_gitignore_warning(&cfg.capsule_dir) {
+        eprintln!("{warning}");
+    }
+
+    // Resolve the prompt file (errors here exit with a clear message).
+    let _prompt = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
 
     for i in 1..=cfg.iterations {
         println!("── Iteration {} / {} ──", i, cfg.iterations);

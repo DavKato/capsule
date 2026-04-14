@@ -1,11 +1,12 @@
 use anyhow::Result;
+use capsule::config::{resolve, CliOverrides, GitIdentity};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use std::io;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, ValueEnum)]
-enum GitIdentity {
+enum CliGitIdentity {
     User,
     Capsule,
 }
@@ -39,7 +40,7 @@ struct Cli {
 
     /// Git commit identity: host user config or a generic Capsule identity
     #[arg(long, value_enum, default_value = "user")]
-    git_identity: GitIdentity,
+    git_identity: CliGitIdentity,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -63,14 +64,25 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let iterations = cli.iterations.ok_or_else(|| {
-        // clap already errors before reaching here if iterations is required,
-        // but this handles the case when iterations is not provided with subcommand
-        anyhow::anyhow!("--iterations is required")
-    })?;
+    let git_identity = match cli.git_identity {
+        CliGitIdentity::User => Some(GitIdentity::User),
+        CliGitIdentity::Capsule => Some(GitIdentity::Capsule),
+    };
 
-    for i in 1..=iterations {
-        println!("── Iteration {} / {} ──", i, iterations);
+    let overrides = CliOverrides {
+        iterations: cli.iterations,
+        prompt: cli.prompt,
+        rebuild: cli.rebuild,
+        model: cli.model,
+        verbose: cli.verbose,
+        git_identity,
+    };
+
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let cfg = resolve(&cli.capsule_dir, overrides, &env)?;
+
+    for i in 1..=cfg.iterations {
+        println!("── Iteration {} / {} ──", i, cfg.iterations);
     }
 
     Ok(())

@@ -68,6 +68,105 @@ fn no_more_tasks_not_triggered_on_empty() {
     assert!(!contains_no_more_tasks(""));
 }
 
+// ── Unit tests: build_docker_args (env_file + gh_token) ──────────────────────
+
+#[test]
+fn env_file_arg_present_when_file_exists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join(".env"), "FOO=bar\n").unwrap();
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: Some(dir.path().join(".env")),
+        gh_token: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("--env-file"),
+        "expected --env-file in args: {joined}"
+    );
+    assert!(
+        joined.contains(".env"),
+        "expected .env path in args: {joined}"
+    );
+}
+
+#[test]
+fn env_file_arg_absent_when_no_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        !joined.contains("--env-file"),
+        "expected no --env-file when env_file is None: {joined}"
+    );
+}
+
+#[test]
+fn gh_token_passed_as_explicit_env_var() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: Some("ghs_testtoken".to_string()),
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("GH_TOKEN=ghs_testtoken"),
+        "expected GH_TOKEN in args: {joined}"
+    );
+}
+
+#[test]
+fn gh_token_absent_when_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        !joined.contains("GH_TOKEN"),
+        "expected no GH_TOKEN when gh_token is None: {joined}"
+    );
+}
+
 // ── Unit tests: build_docker_args (git config protection) ────────────────────
 
 #[test]
@@ -89,6 +188,8 @@ fn git_config_mounted_readonly_when_present() {
         capsule_dir: dir.path().to_path_buf(),
         model: None,
         verbose: false,
+        env_file: None,
+        gh_token: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -110,6 +211,8 @@ fn git_config_mount_absent_when_no_git_dir() {
         capsule_dir: dir.path().to_path_buf(),
         model: None,
         verbose: false,
+        env_file: None,
+        gh_token: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -242,6 +345,8 @@ fn run_iteration_succeeds_on_container_exit_zero() {
         capsule_dir: std::env::temp_dir(),
         model: None,
         verbose: false,
+        env_file: None,
+        gh_token: None,
     });
     assert!(result.is_ok(), "exit 0 should return Ok: {:?}", result);
 
@@ -279,6 +384,8 @@ fn run_iteration_errors_on_container_exit_nonzero() {
         capsule_dir: std::env::temp_dir(),
         model: None,
         verbose: false,
+        env_file: None,
+        gh_token: None,
     });
     assert!(result.is_err(), "non-zero exit should return Err");
     let msg = format!("{:?}", result.unwrap_err());
@@ -325,6 +432,8 @@ fn run_iteration_errors_on_auth_failure_in_output() {
         capsule_dir: std::env::temp_dir(),
         model: None,
         verbose: false,
+        env_file: None,
+        gh_token: None,
     });
     assert!(result.is_err(), "auth failure should return Err");
     let msg = format!("{:?}", result.unwrap_err());
@@ -372,6 +481,8 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
         capsule_dir: std::env::temp_dir(),
         model: None,
         verbose: false,
+        env_file: None,
+        gh_token: None,
     });
     assert!(result.is_ok(), "marker should not error: {:?}", result);
     assert!(
@@ -413,6 +524,8 @@ fn run_iteration_returns_continue_without_marker() {
         capsule_dir: std::env::temp_dir(),
         model: None,
         verbose: false,
+        env_file: None,
+        gh_token: None,
     });
     assert!(result.is_ok(), "no marker should not error: {:?}", result);
     assert!(

@@ -73,6 +73,10 @@ pub struct RunConfig {
     pub model: Option<String>,
     /// When true, print unfiltered container output in addition to jq-filtered view.
     pub verbose: bool,
+    /// Path to the `.env` file to pass via `--env-file` (None → omitted).
+    pub env_file: Option<PathBuf>,
+    /// Resolved GH_TOKEN to pass explicitly via `-e GH_TOKEN` (None → omitted).
+    pub gh_token: Option<String>,
 }
 
 /// Outcome of a single iteration.
@@ -117,6 +121,14 @@ pub fn build_docker_args(cfg: &RunConfig, prompt_path: &std::path::Path) -> Vec<
             "-v={}:/workspace/.git/config:ro",
             git_config.display()
         ));
+    }
+
+    if let Some(env_file) = &cfg.env_file {
+        args.push(format!("--env-file={}", env_file.display()));
+    }
+
+    if let Some(token) = &cfg.gh_token {
+        args.push(format!("-e=GH_TOKEN={token}"));
     }
 
     if let Some(model) = &cfg.model {

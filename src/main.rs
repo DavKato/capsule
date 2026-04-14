@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, GitIdentity};
 use capsule::docker::{run_iteration, IterationOutcome, RunConfig};
+use capsule::env::{load_dotenv, resolve_gh_token};
 use capsule::preflight::env_gitignore_warning;
 use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -89,12 +90,27 @@ fn main() -> Result<()> {
         eprintln!("{warning}");
     }
 
+    // Source .env into the process environment before anything else runs.
+    load_dotenv(&cfg.capsule_dir)?;
+
+    // Resolve GH_TOKEN (post-source) for explicit container injection.
+    let process_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let gh_token = resolve_gh_token(&process_env);
+
     // Resolve the prompt file (errors here exit with a clear message).
     let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
     let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
 
     let image = "capsule".to_string();
     let pwd = std::env::current_dir().context("failed to get current directory")?;
+
+    // Pass .env file path to docker run if it exists.
+    let env_file_path = cfg.capsule_dir.join(".env");
+    let env_file = if env_file_path.exists() {
+        Some(env_file_path)
+    } else {
+        None
+    };
 
     for i in 1..=cfg.iterations {
         println!("── Iteration {} / {} ──", i, cfg.iterations);
@@ -105,6 +121,8 @@ fn main() -> Result<()> {
             capsule_dir: cfg.capsule_dir.clone(),
             model: cfg.model.clone(),
             verbose: cfg.verbose,
+            env_file: env_file.clone(),
+            gh_token: gh_token.clone(),
         };
         if run_iteration(&run_cfg)? == IterationOutcome::Done {
             println!("Claude signalled completion after iteration {i}. No more tasks.");

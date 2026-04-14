@@ -16,14 +16,28 @@ if ! gh repo view --json name &>/dev/null; then
 	exit 1
 fi
 
-# Export both names — some tools only read GITHUB_TOKEN, others only GH_TOKEN.
 GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || echo "")}"
 if [ -z "$GH_TOKEN" ]; then
 	echo "❌  No GitHub token found. Run 'gh auth login' on the host first."
 	exit 1
 fi
 export GH_TOKEN
-export GITHUB_TOKEN="${GH_TOKEN}"
+
+# ── .capsule/.env early source ────────────────────────────────────────────────
+# Source before docker run so vars here (e.g. GH_TOKEN) override host-derived
+# values. The file is also passed as --env-file below for container-only vars
+# (e.g. service hostnames) — both paths are preserved.
+if [ -f "$(pwd)/.capsule/.env" ]; then
+	if ! git check-ignore -q "$(pwd)/.capsule/.env" 2>/dev/null; then
+		echo "⚠️  .capsule/.env is not gitignored and may contain secrets."
+		echo "   Add it to .gitignore to avoid committing credentials. Press Enter to continue anyway."
+		read -r
+	fi
+	set -a
+	# shellcheck source=/dev/null
+	source "$(pwd)/.capsule/.env"
+	set +a
+fi
 
 if [ "$(id -u)" -ne 1000 ]; then
 	echo "⚠️  Your UID is $(id -u), but the container user is UID 1000."
@@ -79,7 +93,7 @@ ENV PATH="/home/claude/.local/bin:/home/claude/.npm-global/bin:${PATH}"
 ENV CI=true
 
 # Entrypoint: run optional .capsule/setup.sh, then launch Claude Code.
-RUN printf '#!/bin/bash\nset -e\nif [ -x /home/claude/setup.sh ]; then\n  echo "── Running setup.sh ──────────────────────────────────────────"\n  /home/claude/setup.sh\n  echo "── Setup complete ────────────────────────────────────────────"\nfi\ncat /home/claude/prompt.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --verbose --output-format stream-json\n' > /home/claude/entrypoint.sh && chmod +x /home/claude/entrypoint.sh
+RUN printf '#!/bin/bash\nset -e\nif [ -n "${GH_TOKEN}" ]; then\n  git config --global credential.helper store\n  echo "https://oauth2:${GH_TOKEN}@github.com" > "${HOME}/.git-credentials"\n  chmod 600 "${HOME}/.git-credentials"\nfi\nif [ -x /home/claude/setup.sh ]; then\n  echo "── Running setup.sh ──────────────────────────────────────────"\n  /home/claude/setup.sh\n  echo "── Setup complete ────────────────────────────────────────────"\nfi\ncat /home/claude/prompt.txt | claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --verbose --output-format stream-json\n' > /home/claude/entrypoint.sh && chmod +x /home/claude/entrypoint.sh
 ENTRYPOINT ["/home/claude/entrypoint.sh"]
 DOCKERFILE
 	echo "✅ Image ready."
@@ -186,7 +200,6 @@ for ((i = 1; i <= $1; i++)); do
 		-v "${HOME}/.claude/hooks:/home/claude/.claude/hooks:ro" \
 		-v "${HOME}/.claude/plugins:/home/claude/.claude/plugins:ro" \
 		-v "${HOME}/.claude/skills:/home/claude/.claude/skills:ro" \
-		-e GITHUB_TOKEN="${GITHUB_TOKEN}" \
 		-e GH_TOKEN="${GH_TOKEN}" \
 		-e GIT_AUTHOR_NAME="$(git config user.name)" \
 		-e GIT_AUTHOR_EMAIL="$(git config user.email)" \

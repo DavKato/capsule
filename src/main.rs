@@ -1,5 +1,6 @@
 use anyhow::Result;
 use capsule::config::{resolve, CliOverrides, GitIdentity};
+use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use std::io;

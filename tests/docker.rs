@@ -87,6 +87,7 @@ fn env_file_arg_present_when_file_exists() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -116,6 +117,7 @@ fn env_file_arg_absent_when_no_file() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -141,6 +143,7 @@ fn gh_token_passed_as_explicit_env_var() {
         gh_token: Some("ghs_testtoken".to_string()),
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -166,6 +169,7 @@ fn gh_token_absent_when_none() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -200,6 +204,7 @@ fn git_config_mounted_readonly_when_present() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -225,6 +230,7 @@ fn git_config_mount_absent_when_no_git_dir() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -251,6 +257,7 @@ fn git_identity_env_vars_present_in_docker_args() {
         gh_token: None,
         git_author_name: "Bob Builder".to_string(),
         git_author_email: "bob@example.com".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -287,6 +294,7 @@ fn git_identity_env_vars_present_when_empty() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     };
     let args = build_docker_args(&cfg, prompt_file.path());
     let joined = args.join(" ");
@@ -298,6 +306,65 @@ fn git_identity_env_vars_present_when_empty() {
     assert!(
         joined.contains("GIT_AUTHOR_EMAIL="),
         "expected GIT_AUTHOR_EMAIL= in args: {joined}"
+    );
+}
+
+// ── Unit tests: build_docker_args (before-each.sh) ───────────────────────────
+
+#[test]
+fn before_each_mounted_when_path_provided() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let before_each = dir.path().join("before-each.sh");
+    std::fs::write(&before_each, "#!/bin/sh\n").unwrap();
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: Some(before_each.clone()),
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("/home/claude/before-each.sh:ro"),
+        "expected before-each.sh mount in args: {joined}"
+    );
+    assert!(
+        joined.contains(&before_each.to_string_lossy().as_ref()),
+        "expected host path in mount: {joined}"
+    );
+}
+
+#[test]
+fn before_each_not_mounted_when_absent() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path());
+    let joined = args.join(" ");
+    assert!(
+        !joined.contains("before-each.sh"),
+        "before-each.sh must not appear in args when path is None: {joined}"
     );
 }
 
@@ -428,6 +495,7 @@ fn run_iteration_succeeds_on_container_exit_zero() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     });
     assert!(result.is_ok(), "exit 0 should return Ok: {:?}", result);
 
@@ -469,6 +537,7 @@ fn run_iteration_errors_on_container_exit_nonzero() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     });
     assert!(result.is_err(), "non-zero exit should return Err");
     let msg = format!("{:?}", result.unwrap_err());
@@ -519,6 +588,7 @@ fn run_iteration_errors_on_auth_failure_in_output() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     });
     assert!(result.is_err(), "auth failure should return Err");
     let msg = format!("{:?}", result.unwrap_err());
@@ -570,6 +640,7 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     });
     assert!(result.is_ok(), "marker should not error: {:?}", result);
     assert!(
@@ -615,6 +686,7 @@ fn run_iteration_returns_continue_without_marker() {
         gh_token: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
+        before_each_path: None,
     });
     assert!(result.is_ok(), "no marker should not error: {:?}", result);
     assert!(

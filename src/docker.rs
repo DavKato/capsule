@@ -81,6 +81,9 @@ pub struct RunConfig {
     pub git_author_name: String,
     /// Git author/committer email passed as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`.
     pub git_author_email: String,
+    /// Path to `before-each.sh` on the host. When Some, mounted read-only into
+    /// the container at `/home/claude/before-each.sh`.
+    pub before_each_path: Option<PathBuf>,
 }
 
 /// Outcome of a single iteration.
@@ -146,6 +149,13 @@ pub fn build_docker_args(cfg: &RunConfig, prompt_path: &std::path::Path) -> Vec<
     args.push(format!("-e=GIT_AUTHOR_EMAIL={}", cfg.git_author_email));
     args.push(format!("-e=GIT_COMMITTER_NAME={}", cfg.git_author_name));
     args.push(format!("-e=GIT_COMMITTER_EMAIL={}", cfg.git_author_email));
+
+    if let Some(before_each) = &cfg.before_each_path {
+        args.push(format!(
+            "-v={}:/home/claude/before-each.sh:ro",
+            before_each.display()
+        ));
+    }
 
     args.push(cfg.image.clone());
     args

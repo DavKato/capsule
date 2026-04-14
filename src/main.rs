@@ -3,6 +3,7 @@ use capsule::config::{resolve, CliOverrides, GitIdentity};
 use capsule::docker::{build_base_image, run_iteration, IterationOutcome, RunConfig};
 use capsule::env::{load_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
+use capsule::hooks::run_before_all;
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -109,6 +110,9 @@ fn main() -> Result<()> {
     // Build (or skip) the base image.
     build_base_image(cfg.rebuild)?;
 
+    // Run before-all.sh on the host if present. Non-zero exit aborts.
+    run_before_all(&cfg.capsule_dir)?;
+
     let image = "capsule".to_string();
     let pwd = std::env::current_dir().context("failed to get current directory")?;
 
@@ -116,6 +120,14 @@ fn main() -> Result<()> {
     let env_file_path = cfg.capsule_dir.join(".env");
     let env_file = if env_file_path.exists() {
         Some(env_file_path)
+    } else {
+        None
+    };
+
+    // Mount before-each.sh into container if present.
+    let before_each_script = cfg.capsule_dir.join("before-each.sh");
+    let before_each_path = if before_each_script.exists() {
+        Some(before_each_script)
     } else {
         None
     };
@@ -133,6 +145,7 @@ fn main() -> Result<()> {
             gh_token: gh_token.clone(),
             git_author_name: git_author_name.clone(),
             git_author_email: git_author_email.clone(),
+            before_each_path: before_each_path.clone(),
         };
         if run_iteration(&run_cfg)? == IterationOutcome::Done {
             println!("Claude signalled completion after iteration {i}. No more tasks.");

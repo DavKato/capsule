@@ -10,6 +10,15 @@ pub enum GitIdentity {
     Capsule,
 }
 
+/// GitHub token injection scope.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GithubScope {
+    /// Read GH_TOKEN from `.capsule/.env` only.
+    Local,
+    /// Read GH_TOKEN from process environment; fall back to `gh auth token`.
+    Global,
+}
+
 /// Resolved configuration used by all downstream modules.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -20,6 +29,9 @@ pub struct Config {
     pub model: Option<String>,
     pub verbose: bool,
     pub git_identity: GitIdentity,
+    /// When Some, inject GH_TOKEN into the container from the specified source.
+    /// When None, no token is injected.
+    pub github: Option<GithubScope>,
 }
 
 /// CLI-supplied overrides. `None` means "not provided on the command line".
@@ -33,6 +45,7 @@ pub struct CliOverrides {
     pub model: Option<String>,
     pub verbose: bool,
     pub git_identity: Option<GitIdentity>,
+    pub github: Option<GithubScope>,
 }
 
 /// Deserialised shape of `${capsule_dir}/config.yml`.
@@ -44,6 +57,7 @@ struct ConfigFile {
     model: Option<String>,
     verbose: Option<bool>,
     git_identity: Option<String>,
+    github: Option<String>,
 }
 
 fn parse_file(yaml: &str) -> Result<ConfigFile> {
@@ -54,6 +68,14 @@ fn git_identity_from_str(s: &str) -> Option<GitIdentity> {
     match s.to_ascii_lowercase().as_str() {
         "user" => Some(GitIdentity::User),
         "capsule" => Some(GitIdentity::Capsule),
+        _ => None,
+    }
+}
+
+fn github_scope_from_str(s: &str) -> Option<GithubScope> {
+    match s.to_ascii_lowercase().as_str() {
+        "local" => Some(GithubScope::Local),
+        "global" => Some(GithubScope::Global),
         _ => None,
     }
 }
@@ -122,6 +144,14 @@ pub fn resolve(
         .or_else(|| file.git_identity.as_deref().and_then(git_identity_from_str))
         .unwrap_or(GitIdentity::User);
 
+    let github = cli
+        .github
+        .or_else(|| {
+            env.get("CAPSULE_GITHUB")
+                .and_then(|s| github_scope_from_str(s))
+        })
+        .or_else(|| file.github.as_deref().and_then(github_scope_from_str));
+
     Ok(Config {
         iterations,
         prompt,
@@ -130,5 +160,6 @@ pub fn resolve(
         model,
         verbose,
         git_identity,
+        github,
     })
 }

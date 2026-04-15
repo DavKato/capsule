@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use capsule::config::{resolve, CliOverrides, GitIdentity};
+use capsule::config::{resolve, CliOverrides, GitIdentity, GithubScope};
 use capsule::docker::{
     build_base_image, build_derived_image, detect_compose_network, run_iteration, IterationOutcome,
     RunConfig,
 };
-use capsule::env::{load_dotenv, resolve_gh_token};
+use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
 use capsule::preflight::{check_docker, env_gitignore_warning};
@@ -12,6 +12,7 @@ use capsule::prompt::resolve_prompt;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use std::io;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +20,12 @@ use std::sync::{Arc, Mutex};
 enum CliGitIdentity {
     User,
     Capsule,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum CliGithubScope {
+    Local,
+    Global,
 }
 
 #[derive(Debug, Parser)]
@@ -52,6 +59,12 @@ struct Cli {
     #[arg(long, value_enum, default_value = "user")]
     git_identity: CliGitIdentity,
 
+    /// Inject GH_TOKEN into the container: 'local' reads from .capsule/.env,
+    /// 'global' reads from process env (falls back to gh auth token).
+    /// When absent, no token is injected.
+    #[arg(long, value_enum)]
+    github: Option<CliGithubScope>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -79,6 +92,11 @@ fn main() -> Result<()> {
         CliGitIdentity::Capsule => Some(GitIdentity::Capsule),
     };
 
+    let github = cli.github.map(|s| match s {
+        CliGithubScope::Local => GithubScope::Local,
+        CliGithubScope::Global => GithubScope::Global,
+    });
+
     let overrides = CliOverrides {
         iterations: cli.iterations,
         prompt: cli.prompt,
@@ -86,6 +104,7 @@ fn main() -> Result<()> {
         model: cli.model,
         verbose: cli.verbose,
         git_identity,
+        github,
     };
 
     let env: std::collections::HashMap<String, String> = std::env::vars().collect();
@@ -99,12 +118,70 @@ fn main() -> Result<()> {
         eprintln!("{warning}");
     }
 
+    // Capture environment snapshot before .env is sourced (needed for 'global' scope).
+    let pre_dotenv_env: std::collections::HashMap<String, String> = std::env::vars().collect();
+
+    // Parse .env file into a map for 'local' scope token resolution.
+    let dotenv_path = cfg.capsule_dir.join(".env");
+    let dotenv_map = if dotenv_path.exists() {
+        let content = std::fs::read_to_string(&dotenv_path)
+            .with_context(|| format!("reading {}", dotenv_path.display()))?;
+        parse_dotenv(&content)
+    } else {
+        std::collections::HashMap::new()
+    };
+
     // Source .env into the process environment before anything else runs.
     load_dotenv(&cfg.capsule_dir)?;
 
-    // Resolve GH_TOKEN and git identity (post-source) for container injection.
+    // Resolve GH_TOKEN when --github flag is set; write to a temp env-file so
+    // the token never appears in `docker run` args.
+    let gh_token_tempfile: Option<tempfile::NamedTempFile> = match &cfg.github {
+        None => None,
+        Some(scope) => {
+            let token = resolve_gh_token(scope, &pre_dotenv_env, &dotenv_map)?;
+
+            // Print startup confirmation line (and optionally prompt for global fallback).
+            match scope {
+                GithubScope::Local => {
+                    eprintln!("GH_TOKEN: local (.capsule/.env)");
+                }
+                GithubScope::Global => {
+                    if pre_dotenv_env.contains_key("GH_TOKEN") {
+                        eprintln!("GH_TOKEN: global (process environment)");
+                    } else {
+                        // Fell back to gh auth token — show scopes and ask for confirmation.
+                        eprintln!("GH_TOKEN not found in process environment — falling back to gh auth token");
+                        let _ = std::process::Command::new("gh")
+                            .args(["auth", "status"])
+                            .status();
+                        eprint!("Inject into container? [y/N] ");
+                        let _ = std::io::stderr().flush();
+                        let mut answer = String::new();
+                        std::io::stdin()
+                            .read_line(&mut answer)
+                            .context("failed to read confirmation")?;
+                        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                            anyhow::bail!(
+                                "Aborted. To avoid this prompt use 'local' mode: \
+                                 add GH_TOKEN to .capsule/.env and pass --github local"
+                            );
+                        }
+                    }
+                }
+            }
+
+            let mut tmp = tempfile::Builder::new()
+                .prefix("capsule-gh-token-")
+                .suffix(".env")
+                .tempfile()
+                .context("failed to create GH_TOKEN temp file")?;
+            writeln!(tmp, "GH_TOKEN={token}").context("failed to write GH_TOKEN temp file")?;
+            Some(tmp)
+        }
+    };
+
     let process_env: std::collections::HashMap<String, String> = std::env::vars().collect();
-    let gh_token = resolve_gh_token(&process_env);
     let (git_author_name, git_author_email) = resolve_git_identity(&cfg.git_identity, &process_env);
 
     // Resolve the prompt file (errors here exit with a clear message).
@@ -169,7 +246,7 @@ fn main() -> Result<()> {
             model: cfg.model.clone(),
             verbose: cfg.verbose,
             env_file: env_file.clone(),
-            gh_token: gh_token.clone(),
+            gh_token_env_file: gh_token_tempfile.as_ref().map(|f| f.path().to_path_buf()),
             git_author_name: git_author_name.clone(),
             git_author_email: git_author_email.clone(),
             before_each_path: before_each_path.clone(),

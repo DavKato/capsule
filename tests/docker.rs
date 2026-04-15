@@ -1,7 +1,7 @@
 use capsule::docker::{
-    build_base_image, build_derived_image, build_docker_args, container_name_for,
-    contains_auth_failure, contains_no_more_tasks, derived_image_name, detect_compose_network,
-    run_iteration, IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
+    build_base_image, build_derived_image, build_docker_args, contains_auth_failure,
+    contains_no_more_tasks, derived_image_name, detect_compose_network, run_iteration,
+    IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
 };
 use std::sync::{Arc, Mutex};
 
@@ -70,7 +70,7 @@ fn no_more_tasks_not_triggered_on_empty() {
     assert!(!contains_no_more_tasks(""));
 }
 
-// ── Unit tests: build_docker_args (env_file + gh_token) ──────────────────────
+// ── Unit tests: build_docker_args (env_file + gh_token_env_file) ─────────────
 
 #[test]
 fn env_file_arg_present_when_file_exists() {
@@ -86,7 +86,7 @@ fn env_file_arg_present_when_file_exists() {
         model: None,
         verbose: false,
         env_file: Some(dir.path().join(".env")),
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -117,7 +117,7 @@ fn env_file_arg_absent_when_no_file() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -132,8 +132,10 @@ fn env_file_arg_absent_when_no_file() {
 }
 
 #[test]
-fn gh_token_passed_as_explicit_env_var() {
+fn gh_token_env_file_passed_when_present() {
     let dir = tempfile::tempdir().expect("temp dir");
+    let token_file = dir.path().join("gh-token.env");
+    std::fs::write(&token_file, "GH_TOKEN=ghs_testtoken\n").unwrap();
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
@@ -144,7 +146,7 @@ fn gh_token_passed_as_explicit_env_var() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: Some("ghs_testtoken".to_string()),
+        gh_token_env_file: Some(token_file.clone()),
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -153,13 +155,17 @@ fn gh_token_passed_as_explicit_env_var() {
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
-        joined.contains("GH_TOKEN=ghs_testtoken"),
-        "expected GH_TOKEN in args: {joined}"
+        joined.contains("--env-file"),
+        "expected --env-file for gh token: {joined}"
+    );
+    assert!(
+        joined.contains("gh-token.env"),
+        "expected token file path in args: {joined}"
     );
 }
 
 #[test]
-fn gh_token_absent_when_none() {
+fn gh_token_not_in_docker_args_when_env_file_none() {
     let dir = tempfile::tempdir().expect("temp dir");
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
@@ -171,7 +177,7 @@ fn gh_token_absent_when_none() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -181,8 +187,41 @@ fn gh_token_absent_when_none() {
     let joined = args.join(" ");
     assert!(
         !joined.contains("GH_TOKEN"),
-        "expected no GH_TOKEN when gh_token is None: {joined}"
+        "token must not appear in docker args: {joined}"
     );
+}
+
+#[test]
+fn gh_token_never_appears_inline_in_docker_args() {
+    // Even if a token string is known, it must not show up in the arg list directly.
+    // The only valid path is via --env-file.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let token_file = dir.path().join("gh-token.env");
+    std::fs::write(&token_file, "GH_TOKEN=ghs_secret\n").unwrap();
+
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token_env_file: Some(token_file),
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+        compose_network: None,
+    };
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+    // Token value must not appear as a -e= arg
+    for arg in &args {
+        assert!(
+            !arg.contains("ghs_secret"),
+            "token value must not appear inline in docker arg: {arg}"
+        );
+    }
 }
 
 // ── Unit tests: build_docker_args (git config protection) ────────────────────
@@ -207,7 +246,7 @@ fn git_config_mounted_readonly_when_present() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -234,7 +273,7 @@ fn git_config_mount_absent_when_no_git_dir() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -262,7 +301,7 @@ fn git_identity_env_vars_present_in_docker_args() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "Bob Builder".to_string(),
         git_author_email: "bob@example.com".to_string(),
         before_each_path: None,
@@ -300,7 +339,7 @@ fn git_identity_env_vars_present_when_empty() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -336,7 +375,7 @@ fn before_each_mounted_when_path_provided() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: Some(before_each.clone()),
@@ -366,7 +405,7 @@ fn before_each_not_mounted_when_absent() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -394,7 +433,7 @@ fn model_arg_present_when_model_set() {
         model: Some("claude-opus-4-6".to_string()),
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -420,7 +459,7 @@ fn model_arg_absent_when_no_model() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -447,7 +486,7 @@ fn verbose_flag_not_added_to_docker_args() {
         model: None,
         verbose: true,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -463,7 +502,7 @@ fn verbose_flag_not_added_to_docker_args() {
             model: None,
             verbose: false,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -492,7 +531,7 @@ fn container_name_present_in_docker_args() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -645,7 +684,7 @@ fn run_iteration_succeeds_on_container_exit_zero() {
             model: None,
             verbose: false,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -692,7 +731,7 @@ fn run_iteration_errors_on_container_exit_nonzero() {
             model: None,
             verbose: false,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -748,7 +787,7 @@ fn run_iteration_errors_on_auth_failure_in_output() {
             model: None,
             verbose: false,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -805,7 +844,7 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
             model: None,
             verbose: false,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -856,7 +895,7 @@ fn run_iteration_returns_continue_without_marker() {
             model: None,
             verbose: false,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -913,7 +952,7 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
             model: Some("claude-opus-4-6".to_string()),
             verbose: false,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -967,7 +1006,7 @@ fn run_iteration_with_verbose_completes_normally() {
             model: None,
             verbose: true,
             env_file: None,
-            gh_token: None,
+            gh_token_env_file: None,
             git_author_name: "".to_string(),
             git_author_email: "".to_string(),
             before_each_path: None,
@@ -1002,7 +1041,7 @@ fn compose_network_arg_present_when_set() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,
@@ -1028,7 +1067,7 @@ fn compose_network_arg_absent_when_none() {
         model: None,
         verbose: false,
         env_file: None,
-        gh_token: None,
+        gh_token_env_file: None,
         git_author_name: "".to_string(),
         git_author_email: "".to_string(),
         before_each_path: None,

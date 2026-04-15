@@ -1,3 +1,4 @@
+use capsule::config::GithubScope;
 use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -75,23 +76,68 @@ fn load_dotenv_absent_file_is_ok() {
 
 // ── resolve_gh_token ──────────────────────────────────────────────────────────
 
-// Test 8: GH_TOKEN present in env map → returned directly
+// Test 8: local scope + GH_TOKEN in dotenv_map → returned directly
 #[test]
-fn resolve_gh_token_from_env_map() {
-    let mut env: HashMap<String, String> = HashMap::new();
-    env.insert("GH_TOKEN".to_string(), "ghs_testtoken".to_string());
-    let token = resolve_gh_token(&env);
-    assert_eq!(token.as_deref(), Some("ghs_testtoken"));
+fn resolve_gh_token_local_reads_from_dotenv_map() {
+    let pre_env: HashMap<String, String> = HashMap::new();
+    let mut dotenv: HashMap<String, String> = HashMap::new();
+    dotenv.insert("GH_TOKEN".to_string(), "ghs_localtoken".to_string());
+    let token = resolve_gh_token(&GithubScope::Local, &pre_env, &dotenv).unwrap();
+    assert_eq!(token, "ghs_localtoken");
 }
 
-// Test 9: GH_TOKEN absent → None (no real gh binary available in unit test)
+// Test 9: local scope ignores process env when dotenv has token
 #[test]
-fn resolve_gh_token_absent_returns_none_when_gh_unavailable() {
-    // In a controlled unit-test environment without a real `gh` token,
-    // absent GH_TOKEN + failing gh subprocess → None.
-    let env: HashMap<String, String> = HashMap::new();
-    // We can only assert the return type is Option — whether it's Some or None
-    // depends on the host environment. The important thing is it doesn't panic.
-    let _token = resolve_gh_token(&env);
-    // No assertion on value — integration test covers the gh fallback path.
+fn resolve_gh_token_local_ignores_process_env() {
+    let mut pre_env: HashMap<String, String> = HashMap::new();
+    pre_env.insert("GH_TOKEN".to_string(), "ghs_processtoken".to_string());
+    let mut dotenv: HashMap<String, String> = HashMap::new();
+    dotenv.insert("GH_TOKEN".to_string(), "ghs_dotenvtoken".to_string());
+    let token = resolve_gh_token(&GithubScope::Local, &pre_env, &dotenv).unwrap();
+    // dotenv wins — process env is ignored for local scope
+    assert_eq!(token, "ghs_dotenvtoken");
+}
+
+// Test 10: local scope missing GH_TOKEN → error with actionable message
+#[test]
+fn resolve_gh_token_local_missing_returns_error() {
+    let pre_env: HashMap<String, String> = HashMap::new();
+    let dotenv: HashMap<String, String> = HashMap::new();
+    let result = resolve_gh_token(&GithubScope::Local, &pre_env, &dotenv);
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("local"), "error should mention 'local': {msg}");
+    assert!(
+        msg.contains(".capsule/.env"),
+        "error should name the file: {msg}"
+    );
+}
+
+// Test 11: global scope reads GH_TOKEN from pre_dotenv_env
+#[test]
+fn resolve_gh_token_global_reads_from_pre_dotenv_env() {
+    let mut pre_env: HashMap<String, String> = HashMap::new();
+    pre_env.insert("GH_TOKEN".to_string(), "ghs_globaltoken".to_string());
+    let dotenv: HashMap<String, String> = HashMap::new();
+    let token = resolve_gh_token(&GithubScope::Global, &pre_env, &dotenv).unwrap();
+    assert_eq!(token, "ghs_globaltoken");
+}
+
+// Test 12: global scope missing everywhere → error (gh binary may not exist in CI)
+#[test]
+fn resolve_gh_token_global_missing_returns_error_or_token() {
+    let pre_env: HashMap<String, String> = HashMap::new();
+    let dotenv: HashMap<String, String> = HashMap::new();
+    // Either returns a token from gh auth token, or returns an error.
+    // We just assert it doesn't panic and that if it's an error the message is helpful.
+    match resolve_gh_token(&GithubScope::Global, &pre_env, &dotenv) {
+        Ok(_token) => { /* gh auth token succeeded in this environment — that's fine */ }
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("global"),
+                "error should mention 'global': {msg}"
+            );
+        }
+    }
 }

@@ -140,8 +140,9 @@ pub struct RunConfig {
     pub verbose: bool,
     /// Path to the `.env` file to pass via `--env-file` (None → omitted).
     pub env_file: Option<PathBuf>,
-    /// Resolved GH_TOKEN to pass explicitly via `-e GH_TOKEN` (None → omitted).
-    pub gh_token: Option<String>,
+    /// Path to a temp env-file containing `GH_TOKEN=<token>` (None → no token injected).
+    /// Passed as a second `--env-file` so the token never appears in the process arg list.
+    pub gh_token_env_file: Option<PathBuf>,
     /// Git author/committer name passed as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME`.
     pub git_author_name: String,
     /// Git author/committer email passed as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`.
@@ -216,8 +217,8 @@ pub fn build_docker_args(
         args.push(format!("--env-file={}", env_file.display()));
     }
 
-    if let Some(token) = &cfg.gh_token {
-        args.push(format!("-e=GH_TOKEN={token}"));
+    if let Some(token_file) = &cfg.gh_token_env_file {
+        args.push(format!("--env-file={}", token_file.display()));
     }
 
     if let Some(model) = &cfg.model {

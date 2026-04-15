@@ -1,4 +1,4 @@
-use capsule::config::{resolve, CliOverrides, Config, GitIdentity};
+use capsule::config::{resolve, CliOverrides, Config, GitIdentity, GithubScope};
 use std::collections::HashMap;
 use tempfile::TempDir;
 
@@ -136,4 +136,54 @@ fn rebuild_env_var_overrides_config_file() {
     env.insert("CAPSULE_REBUILD".into(), "true".into());
     let cfg: Config = resolve(dir.path(), no_cli(), &env).unwrap();
     assert!(cfg.rebuild);
+}
+
+// ── Tests for github field ────────────────────────────────────────────────
+
+#[test]
+fn github_absent_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = CliOverrides {
+        iterations: Some(1),
+        ..Default::default()
+    };
+    let cfg: Config = resolve(dir.path(), cli, &empty_env()).unwrap();
+    assert!(cfg.github.is_none());
+}
+
+#[test]
+fn github_local_from_config_file() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub: local\n");
+    let cfg: Config = resolve(dir.path(), no_cli(), &empty_env()).unwrap();
+    assert_eq!(cfg.github, Some(GithubScope::Local));
+}
+
+#[test]
+fn github_global_from_config_file() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub: global\n");
+    let cfg: Config = resolve(dir.path(), no_cli(), &empty_env()).unwrap();
+    assert_eq!(cfg.github, Some(GithubScope::Global));
+}
+
+#[test]
+fn github_env_var_overrides_config_file() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub: local\n");
+    let mut env = empty_env();
+    env.insert("CAPSULE_GITHUB".into(), "global".into());
+    let cfg: Config = resolve(dir.path(), no_cli(), &env).unwrap();
+    assert_eq!(cfg.github, Some(GithubScope::Global));
+}
+
+#[test]
+fn github_cli_overrides_env_and_config() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub: global\n");
+    let mut env = empty_env();
+    env.insert("CAPSULE_GITHUB".into(), "global".into());
+    let cli = CliOverrides {
+        iterations: Some(1),
+        github: Some(GithubScope::Local),
+        ..Default::default()
+    };
+    let cfg: Config = resolve(dir.path(), cli, &env).unwrap();
+    assert_eq!(cfg.github, Some(GithubScope::Local));
 }

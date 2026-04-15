@@ -110,10 +110,8 @@ fn main() -> Result<()> {
     let env: std::collections::HashMap<String, String> = std::env::vars().collect();
     let cfg = resolve(&cli.capsule_dir, overrides, &env)?;
 
-    // Preflight: Docker daemon must be reachable before anything else.
     check_docker()?;
 
-    // Preflight: warn if .env is not gitignored.
     if let Some(warning) = env_gitignore_warning(&cfg.capsule_dir) {
         eprintln!("{warning}");
     }
@@ -131,7 +129,6 @@ fn main() -> Result<()> {
         std::collections::HashMap::new()
     };
 
-    // Source .env into the process environment before anything else runs.
     load_dotenv(&cfg.capsule_dir)?;
 
     // Resolve GH_TOKEN when --github flag is set; write to a temp env-file so
@@ -184,23 +181,18 @@ fn main() -> Result<()> {
     let process_env: std::collections::HashMap<String, String> = std::env::vars().collect();
     let (git_author_name, git_author_email) = resolve_git_identity(&cfg.git_identity, &process_env);
 
-    // Resolve the prompt file (errors here exit with a clear message).
     let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
     let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
 
     let pwd = std::env::current_dir().context("failed to get current directory")?;
 
-    // Build (or skip) the base image.
     build_base_image(cfg.rebuild)?;
 
-    // Build derived image if ${capsule_dir}/Dockerfile exists; use it for iterations.
     let image = build_derived_image(&cfg.capsule_dir, &pwd, cfg.rebuild)?
         .unwrap_or_else(|| "capsule".to_string());
 
-    // Run before-all.sh on the host if present. Non-zero exit aborts.
     run_before_all(&cfg.capsule_dir)?;
 
-    // Pass .env file path to docker run if it exists.
     let env_file_path = cfg.capsule_dir.join(".env");
     let env_file = if env_file_path.exists() {
         Some(env_file_path)
@@ -208,7 +200,6 @@ fn main() -> Result<()> {
         None
     };
 
-    // Mount before-each.sh into container if present.
     let before_each_script = cfg.capsule_dir.join("before-each.sh");
     let before_each_path = if before_each_script.exists() {
         Some(before_each_script)
@@ -216,7 +207,6 @@ fn main() -> Result<()> {
         None
     };
 
-    // Detect Docker Compose network at pwd (best-effort; None if not found).
     let compose_network = detect_compose_network(&pwd);
 
     // Shared slot for the currently-running container name.

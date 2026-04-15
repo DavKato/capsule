@@ -303,6 +303,36 @@ pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Scan lines from `reader`, forward each to `jq_stdin`, and detect sentinel values.
+///
+/// Returns `(auth_failed, no_more_tasks)`. Dropping `jq_stdin` at the end of this
+/// function signals EOF to the jq subprocess — same timing as the previous inline loop.
+fn stream_output(
+    reader: BufReader<impl std::io::Read>,
+    mut jq_stdin: impl Write,
+    verbose: bool,
+) -> Result<(bool, bool)> {
+    let mut auth_failed = false;
+    let mut no_more_tasks = false;
+
+    for line in reader.lines() {
+        let line = line.context("error reading docker stdout")?;
+
+        if contains_auth_failure(&line) {
+            auth_failed = true;
+        }
+        if contains_no_more_tasks(&line) {
+            no_more_tasks = true;
+        }
+        if verbose {
+            eprintln!("{line}");
+        }
+        let _ = writeln!(jq_stdin, "{line}");
+    }
+
+    Ok((auth_failed, no_more_tasks))
+}
+
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
 ///
 /// `iteration` is used to derive a unique `--name` for the container so that a
@@ -320,7 +350,6 @@ pub fn run_iteration(
     iteration: u32,
     active_container: &Arc<Mutex<Option<String>>>,
 ) -> Result<IterationOutcome> {
-    // Write prompt to a named temp file so it can be bind-mounted.
     let mut prompt_file = tempfile::Builder::new()
         .prefix("capsule-prompt-")
         .suffix(".txt")
@@ -341,54 +370,28 @@ pub fn run_iteration(
 
     let docker_args = build_docker_args(cfg, &prompt_path, &name);
 
-    // Spawn docker with stdout piped; stderr goes to the terminal.
     let mut docker_child = Command::new("docker")
         .args(&docker_args)
         .stdout(Stdio::piped())
         .spawn()
         .context("failed to spawn `docker run`")?;
 
-    let docker_stdout = docker_child.stdout.take().expect("stdout piped");
-    let reader = BufReader::new(docker_stdout);
+    let reader = BufReader::new(docker_child.stdout.take().expect("stdout piped"));
 
-    // Spawn jq for human-readable display.
-    let jq_filter = STREAM_DISPLAY_JQ;
     let mut jq_child = Command::new("jq")
-        .args(["-R", "-r", jq_filter])
+        .args(["-R", "-r", STREAM_DISPLAY_JQ])
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::null())
         .spawn()
         .context("failed to spawn `jq`")?;
 
-    let mut jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
+    let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
 
-    let mut auth_failed = false;
-    let mut no_more_tasks = false;
+    // stream_output drops jq_stdin on return, signalling EOF to jq.
+    let (auth_failed, no_more_tasks) = stream_output(reader, jq_stdin, cfg.verbose)?;
 
-    for line in reader.lines() {
-        let line = line.context("error reading docker stdout")?;
-
-        if contains_auth_failure(&line) {
-            auth_failed = true;
-        }
-
-        if contains_no_more_tasks(&line) {
-            no_more_tasks = true;
-        }
-
-        if cfg.verbose {
-            eprintln!("{line}");
-        }
-
-        // Feed to jq (ignore write errors — jq may exit early).
-        let _ = writeln!(jq_stdin, "{line}");
-    }
-
-    // Close jq stdin so it can flush and exit.
-    drop(jq_stdin);
     let _ = jq_child.wait();
-
     let status = docker_child.wait().context("docker run did not complete")?;
 
     // Container has exited — clear the shared slot so the handler becomes a no-op.

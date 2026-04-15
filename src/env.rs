@@ -50,7 +50,8 @@ pub fn load_dotenv(capsule_dir: &Path) -> Result<()> {
     for (key, value) in parse_dotenv(&content) {
         // Only set if not already set — process env takes precedence.
         if std::env::var(&key).is_err() {
-            std::env::set_var(&key, &value);
+            // SAFETY: called before any threads are spawned (ctrlc handler registered later in main).
+            unsafe { std::env::set_var(&key, &value) };
         }
     }
     Ok(())

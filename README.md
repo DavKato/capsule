@@ -84,6 +84,22 @@ See `example/.capsule/config.yml` for all keys with descriptions.
 
 Both hooks receive variables from `.capsule/.env`.
 
+## Releasing
+
+Requires [`cargo-release`](https://github.com/rust-cyclone/cargo-release):
+
+```sh
+cargo install cargo-release
+```
+
+Then bump the version, tag, and push in one command:
+
+```sh
+cargo release patch   # or: minor, major
+```
+
+This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub Actions then builds binaries for all four targets and attaches them to the GitHub Release automatically.
+
 ## How it works
 
 1. Resolves config from `config.yml`, CLI flags, and env vars

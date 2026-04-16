@@ -95,7 +95,7 @@ cargo install cargo-release
 Then bump the version, tag, and push in one command:
 
 ```sh
-cargo release patch   # or: minor, major
+cargo release patch --execute   # or: minor, major
 ```
 
 This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub Actions then builds binaries for all four targets and attaches them to the GitHub Release automatically.

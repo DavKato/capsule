@@ -185,6 +185,8 @@ fn main() -> Result<()> {
     let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
 
     let pwd = std::env::current_dir().context("failed to get current directory")?;
+    let home = std::env::var("HOME").context("HOME environment variable not set")?;
+    let claude_dir = PathBuf::from(home).join(".claude");
 
     build_base_image(cfg.rebuild)?;
 
@@ -241,6 +243,7 @@ fn main() -> Result<()> {
             git_author_email: git_author_email.clone(),
             before_each_path: before_each_path.clone(),
             compose_network: compose_network.clone(),
+            claude_dir: claude_dir.clone(),
         };
         if run_iteration(&run_cfg, i, &active_container)? == IterationOutcome::Done {
             println!("Claude signalled completion after iteration {i}. No more tasks.");

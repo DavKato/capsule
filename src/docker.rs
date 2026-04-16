@@ -153,6 +153,9 @@ pub struct RunConfig {
     /// Docker network to attach the container to. Detected from a running Compose
     /// project at `pwd`; None when no project is found.
     pub compose_network: Option<String>,
+    /// Host `~/.claude` directory, mounted writable at `/home/claude/.claude` so
+    /// the container can authenticate and share memory/sessions with the host.
+    pub claude_dir: PathBuf,
 }
 
 /// Outcome of a single iteration.
@@ -199,6 +202,7 @@ pub fn build_docker_args(
         container_name.to_string(),
         format!("-v={}:/home/claude/prompt.txt:ro", prompt_path.display()),
         format!("-v={}:/workspace", cfg.pwd.display()),
+        format!("-v={}:/home/claude/.claude", cfg.claude_dir.display()),
     ];
 
     // Protect the host git config from container mutations (issue #20).

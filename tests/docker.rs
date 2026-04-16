@@ -91,6 +91,7 @@ fn env_file_arg_present_when_file_exists() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -122,6 +123,7 @@ fn env_file_arg_absent_when_no_file() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -151,6 +153,7 @@ fn gh_token_env_file_passed_when_present() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -182,6 +185,7 @@ fn gh_token_not_in_docker_args_when_env_file_none() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -213,6 +217,7 @@ fn gh_token_never_appears_inline_in_docker_args() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     // Token value must not appear as a -e= arg
@@ -251,6 +256,7 @@ fn git_config_mounted_readonly_when_present() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -278,6 +284,7 @@ fn git_config_mount_absent_when_no_git_dir() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -306,6 +313,7 @@ fn git_identity_env_vars_present_in_docker_args() {
         git_author_email: "bob@example.com".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -344,6 +352,7 @@ fn git_identity_env_vars_present_when_empty() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -380,6 +389,7 @@ fn before_each_mounted_when_path_provided() {
         git_author_email: "".to_string(),
         before_each_path: Some(before_each.clone()),
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -410,6 +420,7 @@ fn before_each_not_mounted_when_absent() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -438,6 +449,7 @@ fn model_arg_present_when_model_set() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -464,6 +476,7 @@ fn model_arg_absent_when_no_model() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -491,6 +504,7 @@ fn verbose_flag_not_added_to_docker_args() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let cfg_quiet = RunConfig {
         verbose: false,
@@ -507,6 +521,7 @@ fn verbose_flag_not_added_to_docker_args() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::path::PathBuf::new(),
         }
     };
     let args_verbose = build_docker_args(&cfg_verbose, prompt_file.path(), "capsule-test");
@@ -536,6 +551,7 @@ fn container_name_present_in_docker_args() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-run-12345-1");
     let joined = args.join(" ");
@@ -689,6 +705,7 @@ fn run_iteration_succeeds_on_container_exit_zero() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::env::temp_dir(),
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -736,6 +753,7 @@ fn run_iteration_errors_on_container_exit_nonzero() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::env::temp_dir(),
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -792,6 +810,7 @@ fn run_iteration_errors_on_auth_failure_in_output() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::env::temp_dir(),
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -849,6 +868,7 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::env::temp_dir(),
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -900,6 +920,7 @@ fn run_iteration_returns_continue_without_marker() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::env::temp_dir(),
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -957,6 +978,7 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::env::temp_dir(),
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -1011,6 +1033,7 @@ fn run_iteration_with_verbose_completes_normally() {
             git_author_email: "".to_string(),
             before_each_path: None,
             compose_network: None,
+            claude_dir: std::env::temp_dir(),
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -1046,6 +1069,7 @@ fn compose_network_arg_present_when_set() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: Some("myproject_default".to_string()),
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -1072,12 +1096,47 @@ fn compose_network_arg_absent_when_none() {
         git_author_email: "".to_string(),
         before_each_path: None,
         compose_network: None,
+        claude_dir: std::path::PathBuf::new(),
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
     assert!(
         !joined.contains("--network"),
         "expected no --network when compose_network is None: {joined}"
+    );
+}
+
+// ── Unit tests: build_docker_args (claude_dir mount) ─────────────────────────
+
+#[test]
+fn claude_dir_mounted_at_home_claude_dot_claude() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let claude_dir = tempfile::tempdir().expect("claude temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        image: "capsule".to_string(),
+        prompt: "test".to_string(),
+        pwd: dir.path().to_path_buf(),
+        capsule_dir: dir.path().to_path_buf(),
+        model: None,
+        verbose: false,
+        env_file: None,
+        gh_token_env_file: None,
+        git_author_name: "".to_string(),
+        git_author_email: "".to_string(),
+        before_each_path: None,
+        compose_network: None,
+        claude_dir: claude_dir.path().to_path_buf(),
+    };
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+    let joined = args.join(" ");
+    assert!(
+        joined.contains(":/home/claude/.claude"),
+        "expected ~/.claude mount in args: {joined}"
+    );
+    assert!(
+        joined.contains(&claude_dir.path().to_string_lossy().as_ref()),
+        "expected host claude_dir path in mount: {joined}"
     );
 }
 

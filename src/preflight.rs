@@ -41,9 +41,15 @@ pub fn env_gitignore_warning(capsule_dir: &Path) -> Option<String> {
     //
     // Run from capsule_dir so git uses the repository that owns the .env file,
     // not whatever repo the capsule process itself was launched from.
+    //
+    // Canonicalize env_path to an absolute path so that git resolves it
+    // correctly regardless of current_dir. Without this, if capsule_dir is
+    // relative (e.g. ".capsule"), git would interpret ".capsule/.env" relative
+    // to its new CWD and look for ".capsule/.capsule/.env" instead.
+    let abs_env_path = env_path.canonicalize().unwrap_or_else(|_| env_path.clone());
     let result = Command::new("git")
         .args(["check-ignore", "-q"])
-        .arg(&env_path)
+        .arg(&abs_env_path)
         .current_dir(capsule_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

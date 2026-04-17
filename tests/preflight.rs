@@ -1,5 +1,6 @@
 mod common;
 
+use common::requires_docker;
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use serial_test::serial;
 use std::fs;
@@ -88,7 +89,7 @@ fn env_relative_capsule_dir_not_gitignored_returns_warning() {
 
 // ── Test 6 (integration): Docker available → check_docker succeeds ────────────
 #[test]
+#[requires_docker]
 fn docker_available_check_succeeds() {
-    if !common::docker_available() { return; }
     check_docker().expect("docker check should succeed when Docker is running");
 }

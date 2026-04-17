@@ -1,5 +1,6 @@
 mod common;
 
+use common::requires_docker;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -19,8 +20,8 @@ fn make_capsule_dir(prompt: &str) -> TempDir {
 // Tracer bullet: --iterations loop prints the expected headers.
 // Requires a Docker daemon + the `capsule` image to be present.
 #[test]
+#[requires_docker]
 fn iterations_prints_headers() {
-    if !common::docker_available() { return; }
     let dir = make_capsule_dir("test prompt");
     cmd()
         .args([

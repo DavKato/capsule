@@ -1,5 +1,6 @@
 mod common;
 
+use common::requires_docker;
 use capsule::docker::{
     build_base_image, build_derived_image, build_docker_args, contains_auth_failure,
     contains_no_more_tasks, derived_image_name, detect_compose_network, run_iteration,
@@ -426,15 +427,15 @@ fn container_name_for_has_expected_format() {
 }
 
 // ── Integration tests (require Docker daemon) ─────────────────────────────────
-// These tests use a runtime guard (common::docker_available()) instead of
-// #[ignore]. They pass silently when Docker is unavailable (e.g. inside a
-// capsule container) and run fully when Docker is present.
+// These tests use #[requires_docker] instead of #[ignore]. They pass silently
+// when Docker is unavailable (e.g. inside a capsule container) and run fully
+// when Docker is present.
 
 /// When no `capsule` image exists, `build_base_image(false)` should build it.
 /// NOTE: This test pulls/builds a real Docker image — slow on first run.
 #[test]
+#[requires_docker]
 fn build_base_image_creates_image_when_absent() {
-    if !common::docker_available() { return; }
     // Remove image first so we start from a known state.
     let _ = std::process::Command::new("docker")
         .args(["rmi", "-f", "capsule"])
@@ -460,8 +461,8 @@ fn build_base_image_creates_image_when_absent() {
 /// When image already exists, `build_base_image(false)` should skip the build
 /// (observable: function returns Ok without invoking a long build).
 #[test]
+#[requires_docker]
 fn build_base_image_skips_when_image_present() {
-    if !common::docker_available() { return; }
     // Ensure image exists using a trivial image (busybox tagged as capsule).
     let _ = std::process::Command::new("docker")
         .args(["pull", "busybox:latest"])
@@ -490,8 +491,8 @@ fn build_base_image_skips_when_image_present() {
 
 /// `build_base_image(true)` should rebuild even when the image already exists.
 #[test]
+#[requires_docker]
 fn build_base_image_rebuilds_when_rebuild_flag_set() {
-    if !common::docker_available() { return; }
     // Tag busybox as capsule so an image exists before we call rebuild.
     let _ = std::process::Command::new("docker")
         .args(["pull", "busybox:latest"])
@@ -523,9 +524,9 @@ fn build_base_image_rebuilds_when_rebuild_flag_set() {
 
 /// Container exits 0 → run_iteration returns Ok(()).
 #[test]
+#[requires_docker]
 #[serial]
 fn run_iteration_succeeds_on_container_exit_zero() {
-    if !common::docker_available() { return; }
     // Build a minimal stub image that just exits 0.
     let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"exit 0\"]\n";
     let mut child = std::process::Command::new("docker")
@@ -565,9 +566,9 @@ fn run_iteration_succeeds_on_container_exit_zero() {
 
 /// Container exits non-zero → run_iteration returns an error naming the exit code.
 #[test]
+#[requires_docker]
 #[serial]
 fn run_iteration_errors_on_container_exit_nonzero() {
-    if !common::docker_available() { return; }
     let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"exit 42\"]\n";
     let mut child = std::process::Command::new("docker")
         .args(["build", "-t", "capsule-test-exit42", "-"])
@@ -611,9 +612,9 @@ fn run_iteration_errors_on_container_exit_nonzero() {
 
 /// authentication_failed in output → run_iteration returns specific error.
 #[test]
+#[requires_docker]
 #[serial]
 fn run_iteration_errors_on_auth_failure_in_output() {
-    if !common::docker_available() { return; }
     // Bake the JSON line into the image with RUN to avoid ENTRYPOINT JSON escaping issues.
     let dockerfile =
         "FROM busybox\nRUN echo '{\"type\":\"result\",\"subtype\":\"error\",\"error\":\"authentication_failed\"}' > /out.txt\nENTRYPOINT [\"cat\", \"/out.txt\"]\n";
@@ -660,9 +661,9 @@ fn run_iteration_errors_on_auth_failure_in_output() {
 
 /// Container output contains NO MORE TASKS marker → run_iteration returns Done.
 #[test]
+#[requires_docker]
 #[serial]
 fn run_iteration_returns_done_on_no_more_tasks_marker() {
-    if !common::docker_available() { return; }
     // Bake the JSON line into the image with RUN to avoid ENTRYPOINT JSON escaping issues.
     let dockerfile =
         "FROM busybox\nRUN echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"<promise>NO MORE TASKS</promise>\"}' > /out.txt\nENTRYPOINT [\"cat\", \"/out.txt\"]\n";
@@ -707,9 +708,9 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
 
 /// Container output without marker → run_iteration returns Continue.
 #[test]
+#[requires_docker]
 #[serial]
 fn run_iteration_returns_continue_without_marker() {
-    if !common::docker_available() { return; }
     let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"echo normal output; exit 0\"]\n";
     let mut child = std::process::Command::new("docker")
         .args(["build", "-t", "capsule-test-continue", "-"])
@@ -753,9 +754,9 @@ fn run_iteration_returns_continue_without_marker() {
 /// --model flag passes CAPSULE_MODEL env var into the container.
 /// Stub image writes the env var to /workspace so we can verify it from the host.
 #[test]
+#[requires_docker]
 #[serial]
 fn run_iteration_with_model_passes_capsule_model_to_container() {
-    if !common::docker_available() { return; }
     let workdir = tempfile::tempdir().expect("temp workdir");
     let output_file = workdir.path().join("model_output.txt");
 
@@ -807,9 +808,9 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
 
 /// --verbose=true does not change iteration outcome; run completes normally.
 #[test]
+#[requires_docker]
 #[serial]
 fn run_iteration_with_verbose_completes_normally() {
-    if !common::docker_available() { return; }
     let dockerfile = "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"exit 0\"]\n";
     let mut child = std::process::Command::new("docker")
         .args(["build", "-t", "capsule-test-verbose", "-"])
@@ -927,8 +928,8 @@ fn detect_compose_network_returns_none_when_no_project() {
 
 /// With a running compose project at pwd, detect_compose_network returns the network name.
 #[test]
+#[requires_docker]
 fn detect_compose_network_returns_network_for_running_project() {
-    if !common::docker_available() { return; }
     let dir = tempfile::tempdir().expect("temp dir");
     let compose_file = dir.path().join("docker-compose.yml");
     std::fs::write(
@@ -990,8 +991,8 @@ fn build_derived_image_returns_none_when_no_dockerfile() {
 }
 
 #[test]
+#[requires_docker]
 fn build_derived_image_builds_and_returns_image_name() {
-    if !common::docker_available() { return; }
     let capsule_dir = tempfile::tempdir().expect("temp dir");
     let base = tempfile::tempdir().expect("temp dir");
     let pwd = base.path().join("myproject");
@@ -1021,8 +1022,8 @@ fn build_derived_image_builds_and_returns_image_name() {
 }
 
 #[test]
+#[requires_docker]
 fn build_derived_image_skips_build_when_image_exists_and_no_rebuild() {
-    if !common::docker_available() { return; }
     let capsule_dir = tempfile::tempdir().expect("temp dir");
     let base = tempfile::tempdir().expect("temp dir");
     let pwd = base.path().join("myproject");

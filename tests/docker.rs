@@ -1,11 +1,11 @@
 mod common;
 
-use common::requires_docker;
 use capsule::docker::{
     build_base_image, build_derived_image, build_docker_args, contains_auth_failure,
     contains_no_more_tasks, derived_image_name, detect_compose_network, run_iteration,
     IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
 };
+use common::requires_docker;
 use serial_test::serial;
 use std::sync::{Arc, Mutex};
 

@@ -1,7 +1,7 @@
 mod common;
 
-use common::requires_docker;
 use capsule::preflight::{check_docker, env_gitignore_warning};
+use common::requires_docker;
 use serial_test::serial;
 use std::fs;
 use std::path::Path;

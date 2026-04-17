@@ -1,7 +1,7 @@
 mod common;
 
-use common::requires_docker;
 use assert_cmd::Command;
+use common::requires_docker;
 use predicates::prelude::*;
 use tempfile::TempDir;
 

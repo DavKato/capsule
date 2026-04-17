@@ -39,9 +39,9 @@ Invoke /tdd skill and complete the task.
 
 Before committing, run the feedback loops:
 
-- `cargo fmt` to format code
-- `cargo clippy -- -D warnings` to lint
-- `cargo test` to run the test suite
+- Format code (e.g. `cargo fmt`, `prettier`, `ruff format`)
+- Lint (e.g. `cargo clippy -- -D warnings`, `eslint`, `ruff check`)
+- Run the test suite (e.g. `cargo test`, `npm test`, `pytest`)
 
 # COMMIT
 

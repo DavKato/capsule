@@ -12,7 +12,6 @@
 set -euo pipefail
 
 # Example: prepend recent commits and open GitHub issues to the prompt.
-# This reproduces the context injection that run.sh used to do inline.
 
 tmpfile=$(mktemp)
 

@@ -2,3 +2,7 @@
 *.swp
 *.swo
 *~
+.cargo-cache/
+/target/
+/.cargo/
+.capsule/.env

@@ -1,0 +1,27 @@
+[workspace]
+members = [".", "capsule-macros"]
+resolver = "2"
+
+[package]
+name = "capsule"
+version = "0.1.2"
+edition = "2021"
+
+[[bin]]
+name = "capsule"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+ctrlc = { version = "3", features = ["termination"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+tempfile = "3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+serial_test = "3"
+capsule-macros = { path = "capsule-macros" }

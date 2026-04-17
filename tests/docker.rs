@@ -79,19 +79,9 @@ fn env_file_arg_present_when_file_exists() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
         env_file: Some(dir.path().join(".env")),
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -111,19 +101,8 @@ fn env_file_arg_absent_when_no_file() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -141,19 +120,9 @@ fn gh_token_env_file_passed_when_present() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
         gh_token_env_file: Some(token_file.clone()),
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -173,19 +142,8 @@ fn gh_token_not_in_docker_args_when_env_file_none() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -205,19 +163,9 @@ fn gh_token_never_appears_inline_in_docker_args() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
         gh_token_env_file: Some(token_file),
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     // Token value must not appear as a -e= arg
@@ -244,19 +192,8 @@ fn git_config_mounted_readonly_when_present() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -272,19 +209,8 @@ fn git_config_mount_absent_when_no_git_dir() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -301,19 +227,10 @@ fn git_identity_env_vars_present_in_docker_args() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
         git_author_name: "Bob Builder".to_string(),
         git_author_email: "bob@example.com".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -340,19 +257,8 @@ fn git_identity_env_vars_present_when_empty() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -377,19 +283,9 @@ fn before_each_mounted_when_path_provided() {
 
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
         before_each_path: Some(before_each.clone()),
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -408,19 +304,8 @@ fn before_each_not_mounted_when_absent() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -437,19 +322,9 @@ fn model_arg_present_when_model_set() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
         model: Some("claude-opus-4-6".to_string()),
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -464,19 +339,8 @@ fn model_arg_absent_when_no_model() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -492,37 +356,13 @@ fn verbose_flag_not_added_to_docker_args() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg_verbose = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
         verbose: true,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let cfg_quiet = RunConfig {
-        verbose: false,
-        ..RunConfig {
-            image: "capsule".to_string(),
-            prompt: "test".to_string(),
-            pwd: dir.path().to_path_buf(),
-            capsule_dir: dir.path().to_path_buf(),
-            model: None,
-            verbose: false,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
-            claude_dir: std::path::PathBuf::new(),
-        }
+        pwd: dir.path().to_path_buf(),
+        ..RunConfig::default()
     };
     let args_verbose = build_docker_args(&cfg_verbose, prompt_file.path(), "capsule-test");
     let args_quiet = build_docker_args(&cfg_quiet, prompt_file.path(), "capsule-test");
@@ -539,19 +379,8 @@ fn container_name_present_in_docker_args() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-run-12345-1");
     let joined = args.join(" ");
@@ -696,16 +525,8 @@ fn run_iteration_succeeds_on_container_exit_zero() {
             image: "capsule-test-exit0".to_string(),
             prompt: "hello".to_string(),
             pwd: std::env::temp_dir(),
-            capsule_dir: std::env::temp_dir(),
-            model: None,
-            verbose: false,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
             claude_dir: std::env::temp_dir(),
+            ..RunConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -744,16 +565,8 @@ fn run_iteration_errors_on_container_exit_nonzero() {
             image: "capsule-test-exit42".to_string(),
             prompt: "hello".to_string(),
             pwd: std::env::temp_dir(),
-            capsule_dir: std::env::temp_dir(),
-            model: None,
-            verbose: false,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
             claude_dir: std::env::temp_dir(),
+            ..RunConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -801,16 +614,8 @@ fn run_iteration_errors_on_auth_failure_in_output() {
             image: "capsule-test-authfail".to_string(),
             prompt: "hello".to_string(),
             pwd: std::env::temp_dir(),
-            capsule_dir: std::env::temp_dir(),
-            model: None,
-            verbose: false,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
             claude_dir: std::env::temp_dir(),
+            ..RunConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -859,16 +664,8 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
             image: "capsule-test-nomore".to_string(),
             prompt: "hello".to_string(),
             pwd: std::env::temp_dir(),
-            capsule_dir: std::env::temp_dir(),
-            model: None,
-            verbose: false,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
             claude_dir: std::env::temp_dir(),
+            ..RunConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -911,16 +708,8 @@ fn run_iteration_returns_continue_without_marker() {
             image: "capsule-test-continue".to_string(),
             prompt: "hello".to_string(),
             pwd: std::env::temp_dir(),
-            capsule_dir: std::env::temp_dir(),
-            model: None,
-            verbose: false,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
             claude_dir: std::env::temp_dir(),
+            ..RunConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -969,16 +758,9 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
             image: "capsule-test-model".to_string(),
             prompt: "hello".to_string(),
             pwd: workdir.path().to_path_buf(),
-            capsule_dir: std::env::temp_dir(),
             model: Some("claude-opus-4-6".to_string()),
-            verbose: false,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
             claude_dir: std::env::temp_dir(),
+            ..RunConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -1024,16 +806,9 @@ fn run_iteration_with_verbose_completes_normally() {
             image: "capsule-test-verbose".to_string(),
             prompt: "hello".to_string(),
             pwd: std::env::temp_dir(),
-            capsule_dir: std::env::temp_dir(),
-            model: None,
             verbose: true,
-            env_file: None,
-            gh_token_env_file: None,
-            git_author_name: "".to_string(),
-            git_author_email: "".to_string(),
-            before_each_path: None,
-            compose_network: None,
             claude_dir: std::env::temp_dir(),
+            ..RunConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -1057,19 +832,9 @@ fn compose_network_arg_present_when_set() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
         compose_network: Some("myproject_default".to_string()),
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -1084,19 +849,8 @@ fn compose_network_arg_absent_when_none() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
-        claude_dir: std::path::PathBuf::new(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
@@ -1114,19 +868,9 @@ fn claude_dir_mounted_at_home_claude_dot_claude() {
     let claude_dir = tempfile::tempdir().expect("claude temp dir");
     let prompt_file = tempfile::NamedTempFile::new().unwrap();
     let cfg = RunConfig {
-        image: "capsule".to_string(),
-        prompt: "test".to_string(),
         pwd: dir.path().to_path_buf(),
-        capsule_dir: dir.path().to_path_buf(),
-        model: None,
-        verbose: false,
-        env_file: None,
-        gh_token_env_file: None,
-        git_author_name: "".to_string(),
-        git_author_email: "".to_string(),
-        before_each_path: None,
-        compose_network: None,
         claude_dir: claude_dir.path().to_path_buf(),
+        ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");

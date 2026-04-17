@@ -299,7 +299,7 @@ fn before_each_mounted_when_path_provided() {
         "expected before-each.sh mount in args: {joined}"
     );
     assert!(
-        joined.contains(&before_each.to_string_lossy().as_ref()),
+        joined.contains(before_each.to_string_lossy().as_ref()),
         "expected host path in mount: {joined}"
     );
 }
@@ -861,7 +861,7 @@ fn claude_dir_mounted_at_home_claude_dot_claude() {
         "expected ~/.claude mount in args: {joined}"
     );
     assert!(
-        joined.contains(&claude_dir.path().to_string_lossy().as_ref()),
+        joined.contains(claude_dir.path().to_string_lossy().as_ref()),
         "expected host claude_dir path in mount: {joined}"
     );
 }

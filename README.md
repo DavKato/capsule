@@ -110,4 +110,4 @@ This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub 
 5. Builds a repo-specific `capsule-<basename>` image if `.capsule/Dockerfile` exists
 6. Runs `before-all.sh` if present
 7. For each iteration: mounts the prompt, runs `before-each.sh` inside the container, pipes the prompt to Claude Code, and streams output through `jq`
-8. Exits early when Claude outputs `<promise>NO MORE TASKS</promise>` or a non-zero container exit occurs
+8. Exits early when Claude outputs `<promise>AFK_COMPLETE</promise>` or a non-zero container exit occurs

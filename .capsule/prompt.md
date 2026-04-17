@@ -1,6 +1,6 @@
 # PROJECT
 
-Describe your project here in 2-3 sentences. What it does, what language/framework it uses, and any key architectural constraints.
+Capsule is a Rust CLI tool that runs AI agents (Claude Code) inside isolated Docker containers, looping autonomously through GitHub issues. You are working on capsule's own codebase.
 
 Follow all conventions in CLAUDE.md.
 
@@ -18,11 +18,11 @@ If all AFK tasks are complete, output <promise>AFK_COMPLETE</promise>.
 - Never commit directly to the main branch.
 - Never close or comment on issues you are not working on.
 - Never delete branches.
-- Never run release workflows.
-- Never commit code that doesn't pass tests.
+- Never run release workflows (e.g., `cargo publish`, creating GitHub releases).
+- Never commit code that doesn't pass `cargo test`.
 - When adding new dependencies, justify the choice in the commit message.
 - Prefer small, focused changes. If the issue requires extensive work, implement the smallest shippable piece and note the remaining work in an issue comment.
-- **When stuck**: If you cannot resolve a problem after two attempts, stop. Do not commit broken code. Leave a comment on the GitHub issue with: why you couldn't complete the task, what you tried, and what remains. Push any salvageable work and end the iteration.
+- **When stuck**: If you cannot get tests passing or resolve a problem after two attempts, stop. Do not commit broken code. Leave a comment on the GitHub issue with: why you couldn't complete the task, what you tried, and what remains. Push any salvageable work and end the iteration.
 - **Issue comments** when incomplete: Lead with *why* the task couldn't be completed, then what was implemented, and what remains.
 
 # TASK SELECTION
@@ -34,7 +34,8 @@ Pick the next task. Prioritize tasks in this order:
    Getting development infrastructure like tests and types and dev scripts ready is an important precursor to building features.
 
 3. Tracer bullets for new features
-   Build a tiny, end-to-end slice of the feature first, then expand it out.
+   Tracer bullets are small slices of functionality that go through all layers of the system, allowing you to test and validate your approach early. This helps in identifying potential issues and ensures that the overall architecture is sound before investing significant time in development.
+   TL;DR - build a tiny, end-to-end slice of the feature first, then expand it out.
 
 4. Polish and quick wins
 5. Refactors
@@ -55,9 +56,9 @@ Use /tdd for implementation and bug fixes. For documentation, config changes, or
 
 Before committing, run the feedback loops:
 
-- Format code (e.g. `cargo fmt`, `prettier`, `ruff format`)
-- Lint (e.g. `cargo clippy -- -D warnings`, `eslint`, `ruff check`)
-- Run the test suite (e.g. `cargo test`, `npm test`, `pytest`)
+- `cargo fmt` to format code
+- `cargo clippy -- -D warnings` to lint
+- `cargo test` to run the test suite
 
 # COMMIT
 

@@ -172,9 +172,9 @@ pub fn contains_auth_failure(line: &str) -> bool {
     line.contains("authentication_failed")
 }
 
-/// Returns `true` if the given line contains the NO MORE TASKS completion marker.
+/// Returns `true` if the given line contains the AFK_COMPLETE completion marker.
 pub fn contains_no_more_tasks(line: &str) -> bool {
-    line.contains("<promise>NO MORE TASKS</promise>")
+    line.contains("<promise>AFK_COMPLETE</promise>")
 }
 
 /// Returns a unique container name for the given iteration.

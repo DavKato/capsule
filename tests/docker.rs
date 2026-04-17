@@ -53,7 +53,7 @@ fn auth_failure_not_triggered_on_empty() {
 #[test]
 fn no_more_tasks_detected_in_result_line() {
     let line =
-        r#"{"type":"result","subtype":"success","result":"<promise>NO MORE TASKS</promise>"}"#;
+        r#"{"type":"result","subtype":"success","result":"<promise>AFK_COMPLETE</promise>"}"#;
     assert!(contains_no_more_tasks(line));
 }
 
@@ -629,7 +629,7 @@ fn run_iteration_errors_on_auth_failure_in_output() {
 fn run_iteration_returns_done_on_no_more_tasks_marker() {
     // Bake the JSON line into the image with RUN to avoid ENTRYPOINT JSON escaping issues.
     let dockerfile =
-        "FROM busybox\nRUN echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"<promise>NO MORE TASKS</promise>\"}' > /out.txt\nENTRYPOINT [\"cat\", \"/out.txt\"]\n";
+        "FROM busybox\nRUN echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"<promise>AFK_COMPLETE</promise>\"}' > /out.txt\nENTRYPOINT [\"cat\", \"/out.txt\"]\n";
     let mut child = std::process::Command::new("docker")
         .args(["build", "-t", "capsule-test-nomore", "-"])
         .stdin(std::process::Stdio::piped())

@@ -201,7 +201,7 @@ pub fn build_docker_args(
         "--rm".to_string(),
         "--name".to_string(),
         container_name.to_string(),
-        format!("-v={}:/home/claude/prompt.txt:ro", prompt_path.display()),
+        format!("-v={}:/home/claude/prompt.txt", prompt_path.display()),
         format!("-v={}:/workspace", cfg.pwd.display()),
         format!("-v={}:/home/claude/.claude", cfg.claude_dir.display()),
     ];

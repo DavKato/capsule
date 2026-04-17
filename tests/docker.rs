@@ -70,6 +70,24 @@ fn no_more_tasks_not_triggered_on_empty() {
     assert!(!contains_no_more_tasks(""));
 }
 
+// ── Unit tests: build_docker_args (prompt mount) ─────────────────────────────
+
+#[test]
+fn prompt_mount_is_not_read_only() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        pwd: dir.path().to_path_buf(),
+        ..RunConfig::default()
+    };
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+    let prompt_arg = args.iter().find(|a| a.contains("prompt.txt")).unwrap();
+    assert!(
+        !prompt_arg.ends_with(":ro"),
+        "prompt.txt must not be mounted read-only so before-each.sh can mutate it: {prompt_arg}"
+    );
+}
+
 // ── Unit tests: build_docker_args (env_file + gh_token_env_file) ─────────────
 
 #[test]

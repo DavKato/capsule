@@ -25,8 +25,6 @@ pub fn resolve_git_identity(
     }
 }
 
-/// Run `git config <key>` with the given environment and return the trimmed
-/// output, or an empty string on any failure.
 fn git_config_get(key: &str, env: &HashMap<String, String>) -> String {
     Command::new("git")
         .args(["config", key])

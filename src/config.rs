@@ -48,7 +48,6 @@ pub struct CliOverrides {
     pub github: Option<GithubScope>,
 }
 
-/// Deserialised shape of `${capsule_dir}/config.yml`.
 #[derive(Debug, Deserialize, Default)]
 struct ConfigFile {
     iterations: Option<u32>,
@@ -90,7 +89,6 @@ pub fn resolve(
     cli: CliOverrides,
     env: &HashMap<String, String>,
 ) -> Result<Config> {
-    // 1. Load config file (optional).
     let config_path = capsule_dir.join("config.yml");
     let file = if config_path.exists() {
         let raw = std::fs::read_to_string(&config_path)
@@ -99,8 +97,6 @@ pub fn resolve(
     } else {
         ConfigFile::default()
     };
-
-    // 2. Merge: CLI > env > file > defaults.
 
     let iterations = cli
         .iterations

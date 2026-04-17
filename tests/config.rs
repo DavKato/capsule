@@ -17,7 +17,6 @@ fn capsule_dir_with_config(yaml: &str) -> TempDir {
     dir
 }
 
-// ── Test 1 (tracer bullet): no config.yml, no env, CLI only ────────────────
 #[test]
 fn no_config_file_uses_defaults_and_cli() {
     let dir = tempfile::tempdir().unwrap();
@@ -32,7 +31,6 @@ fn no_config_file_uses_defaults_and_cli() {
     assert_eq!(cfg.git_identity, GitIdentity::User);
 }
 
-// ── Test 2: config.yml value used when no CLI flag given ───────────────────
 #[test]
 fn config_file_iterations_used_when_no_cli_flag() {
     let dir = capsule_dir_with_config("iterations: 5\n");
@@ -40,7 +38,6 @@ fn config_file_iterations_used_when_no_cli_flag() {
     assert_eq!(cfg.iterations, 5);
 }
 
-// ── Test 3: env var overrides config.yml ───────────────────────────────────
 #[test]
 fn env_var_overrides_config_file() {
     let dir = capsule_dir_with_config("iterations: 5\n");
@@ -50,7 +47,6 @@ fn env_var_overrides_config_file() {
     assert_eq!(cfg.iterations, 10);
 }
 
-// ── Test 4: CLI flag overrides env var and config.yml ─────────────────────
 #[test]
 fn cli_flag_overrides_env_and_config_file() {
     let dir = capsule_dir_with_config("iterations: 5\n");
@@ -64,11 +60,9 @@ fn cli_flag_overrides_env_and_config_file() {
     assert_eq!(cfg.iterations, 20);
 }
 
-// ── Test 5: missing config.yml is not an error ────────────────────────────
 #[test]
 fn missing_config_file_is_not_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    // No config.yml written — just provide iterations via CLI
     let cli = CliOverrides {
         iterations: Some(1),
         ..Default::default()
@@ -76,7 +70,6 @@ fn missing_config_file_is_not_an_error() {
     assert!(resolve(dir.path(), cli, &empty_env()).is_ok());
 }
 
-// ── Test 6: malformed YAML is a clear error naming the file ───────────────
 #[test]
 fn malformed_yaml_produces_clear_error() {
     let dir = capsule_dir_with_config(": this is not valid yaml: {\n");
@@ -92,7 +85,6 @@ fn malformed_yaml_produces_clear_error() {
     );
 }
 
-// ── Test 7: model and verbose from config.yml ─────────────────────────────
 #[test]
 fn config_file_model_and_verbose() {
     let dir = capsule_dir_with_config("iterations: 1\nmodel: claude-opus-4-6\nverbose: true\n");
@@ -101,7 +93,6 @@ fn config_file_model_and_verbose() {
     assert!(cfg.verbose);
 }
 
-// ── Test 8: git_identity from config.yml and env var ─────────────────────
 #[test]
 fn git_identity_capsule_from_config_file() {
     let dir = capsule_dir_with_config("iterations: 1\ngit_identity: capsule\n");
@@ -118,7 +109,6 @@ fn git_identity_env_var_overrides_config_file() {
     assert_eq!(cfg.git_identity, GitIdentity::User);
 }
 
-// ── Test 9: model env var ─────────────────────────────────────────────────
 #[test]
 fn model_env_var_overrides_config_file() {
     let dir = capsule_dir_with_config("iterations: 1\nmodel: old-model\n");
@@ -128,7 +118,6 @@ fn model_env_var_overrides_config_file() {
     assert_eq!(cfg.model.as_deref(), Some("new-model"));
 }
 
-// ── Test 10: rebuild env var ──────────────────────────────────────────────
 #[test]
 fn rebuild_env_var_overrides_config_file() {
     let dir = capsule_dir_with_config("iterations: 1\nrebuild: false\n");
@@ -137,8 +126,6 @@ fn rebuild_env_var_overrides_config_file() {
     let cfg: Config = resolve(dir.path(), no_cli(), &env).unwrap();
     assert!(cfg.rebuild);
 }
-
-// ── Tests for github field ────────────────────────────────────────────────
 
 #[test]
 fn github_absent_by_default() {

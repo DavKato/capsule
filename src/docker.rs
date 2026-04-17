@@ -12,7 +12,6 @@ pub const STREAM_DISPLAY_JQ: &str = include_str!("../templates/stream_display.jq
 
 const BASE_IMAGE: &str = "capsule";
 
-/// Returns `true` if a Docker image with the given name exists locally.
 fn image_exists(name: &str) -> bool {
     Command::new("docker")
         .args(["image", "inspect", name])
@@ -262,7 +261,6 @@ pub fn build_docker_args(
 pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
     let pwd_str = pwd.to_string_lossy();
 
-    // Find container IDs from any Compose project running at pwd.
     let ps_out = Command::new("docker")
         .args([
             "ps",
@@ -286,7 +284,6 @@ pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
 
     let container_id = ids.first()?;
 
-    // Inspect the container to get its network names.
     let inspect_out = Command::new("docker")
         .args([
             "inspect",
@@ -308,10 +305,6 @@ pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Scan lines from `reader`, forward each to `jq_stdin`, and detect sentinel values.
-///
-/// Returns `(auth_failed, no_more_tasks)`. Dropping `jq_stdin` at the end of this
-/// function signals EOF to the jq subprocess — same timing as the previous inline loop.
 fn stream_output(
     reader: BufReader<impl std::io::Read>,
     mut jq_stdin: impl Write,

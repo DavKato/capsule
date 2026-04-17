@@ -10,7 +10,6 @@ fn make_capsule_dir(prompt_content: Option<&str>) -> TempDir {
     dir
 }
 
-// ── Test 1 (tracer bullet): default prompt.md is read byte-for-byte ───────────
 #[test]
 fn default_prompt_md_is_read() {
     let dir = make_capsule_dir(Some("Hello, world!\n"));
@@ -18,7 +17,6 @@ fn default_prompt_md_is_read() {
     assert_eq!(contents, b"Hello, world!\n");
 }
 
-// ── Test 2: explicit --prompt path overrides capsule_dir/prompt.md ────────────
 #[test]
 fn explicit_prompt_path_overrides_default() {
     let dir = make_capsule_dir(Some("default content"));
@@ -29,7 +27,6 @@ fn explicit_prompt_path_overrides_default() {
     assert_eq!(contents, b"explicit content");
 }
 
-// ── Test 3: missing default prompt.md → error naming the expected path ─────────
 #[test]
 fn missing_default_prompt_is_an_error_with_path() {
     let dir = make_capsule_dir(None);
@@ -41,7 +38,6 @@ fn missing_default_prompt_is_an_error_with_path() {
     );
 }
 
-// ── Test 4: missing explicit --prompt path → error naming that path ────────────
 #[test]
 fn missing_explicit_prompt_is_an_error_with_path() {
     let dir = make_capsule_dir(None);
@@ -54,7 +50,6 @@ fn missing_explicit_prompt_is_an_error_with_path() {
     );
 }
 
-// ── Test 5: contents are returned byte-for-byte (binary safe) ─────────────────
 #[test]
 fn prompt_contents_are_byte_for_byte() {
     let bytes: Vec<u8> = (0u8..=255u8).collect();

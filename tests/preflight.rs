@@ -15,14 +15,12 @@ fn git_init(dir: &TempDir) {
         .expect("git init failed");
 }
 
-// ── Test 1 (tracer bullet): .env absent → no warning ──────────────────────────
 #[test]
 fn env_absent_returns_none() {
     let dir = TempDir::new().unwrap();
     assert!(env_gitignore_warning(dir.path()).is_none());
 }
 
-// ── Test 2: .env present, not gitignored → warning containing the path ────────
 #[test]
 fn env_present_not_gitignored_returns_warning_with_path() {
     let dir = TempDir::new().unwrap();
@@ -38,7 +36,6 @@ fn env_present_not_gitignored_returns_warning_with_path() {
     );
 }
 
-// ── Test 3: .env present and gitignored → no warning ─────────────────────────
 #[test]
 fn env_present_and_gitignored_returns_none() {
     let dir = TempDir::new().unwrap();
@@ -48,7 +45,6 @@ fn env_present_and_gitignored_returns_none() {
     assert!(env_gitignore_warning(dir.path()).is_none());
 }
 
-// ── Test 4: relative capsule_dir, .env gitignored → no warning (regression #27) ─
 // Uses set_current_dir; must be serial to avoid races with other tests.
 #[test]
 #[serial]
@@ -68,7 +64,6 @@ fn env_relative_capsule_dir_gitignored_returns_none() {
     assert!(result.is_none(), "expected no warning but got: {result:?}");
 }
 
-// ── Test 5: relative capsule_dir, .env not gitignored → warning ───────────────
 #[test]
 #[serial]
 fn env_relative_capsule_dir_not_gitignored_returns_warning() {
@@ -77,7 +72,6 @@ fn env_relative_capsule_dir_not_gitignored_returns_warning() {
     let capsule_dir = root.path().join(".capsule");
     fs::create_dir(&capsule_dir).unwrap();
     fs::write(capsule_dir.join(".env"), "SECRET=value").unwrap();
-    // No .gitignore → .env is not ignored.
 
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(root.path()).unwrap();
@@ -87,7 +81,6 @@ fn env_relative_capsule_dir_not_gitignored_returns_warning() {
     assert!(result.is_some(), "expected a warning but got None");
 }
 
-// ── Test 6 (integration): Docker available → check_docker succeeds ────────────
 #[test]
 #[requires_docker]
 fn docker_available_check_succeeds() {

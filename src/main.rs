@@ -138,7 +138,6 @@ fn main() -> Result<()> {
         Some(scope) => {
             let token = resolve_gh_token(scope, &pre_dotenv_env, &dotenv_map)?;
 
-            // Print startup confirmation line (and optionally prompt for global fallback).
             match scope {
                 GithubScope::Local => {
                     eprintln!("GH_TOKEN: local (.capsule/.env)");

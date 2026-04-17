@@ -10,8 +10,6 @@ fn env_with_git_config(config_path: &str) -> HashMap<String, String> {
     env
 }
 
-// ── Unit tests: Capsule identity ──────────────────────────────────────────────
-
 #[test]
 fn capsule_identity_returns_fixed_name_and_email() {
     let env = HashMap::new();
@@ -19,8 +17,6 @@ fn capsule_identity_returns_fixed_name_and_email() {
     assert_eq!(name, "Capsule");
     assert_eq!(email, "capsule@localhost");
 }
-
-// ── Unit tests: User identity via GIT_CONFIG_GLOBAL ──────────────────────────
 
 #[test]
 fn user_identity_reads_from_git_config() {

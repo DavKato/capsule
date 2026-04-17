@@ -9,8 +9,6 @@ use capsule::docker::{
 use serial_test::serial;
 use std::sync::{Arc, Mutex};
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
-
 #[test]
 fn embedded_dockerfile_is_non_empty() {
     assert!(
@@ -35,8 +33,6 @@ fn embedded_stream_display_jq_is_non_empty() {
     );
 }
 
-// ── Unit tests: auth failure detection ────────────────────────────────────────
-
 #[test]
 fn auth_failure_detected_in_output() {
     let line = r#"{"type":"result","subtype":"error","error":"authentication_failed"}"#;
@@ -53,8 +49,6 @@ fn auth_failure_not_triggered_on_normal_output() {
 fn auth_failure_not_triggered_on_empty() {
     assert!(!contains_auth_failure(""));
 }
-
-// ── Unit tests: NO MORE TASKS detection ──────────────────────────────────────
 
 #[test]
 fn no_more_tasks_detected_in_result_line() {
@@ -74,8 +68,6 @@ fn no_more_tasks_not_triggered_on_empty() {
     assert!(!contains_no_more_tasks(""));
 }
 
-// ── Unit tests: build_docker_args (prompt mount) ─────────────────────────────
-
 #[test]
 fn prompt_mount_is_not_read_only() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -91,8 +83,6 @@ fn prompt_mount_is_not_read_only() {
         "prompt.txt must not be mounted read-only so before-each.sh can mutate it: {prompt_arg}"
     );
 }
-
-// ── Unit tests: build_docker_args (env_file + gh_token_env_file) ─────────────
 
 #[test]
 fn env_file_arg_present_when_file_exists() {
@@ -190,7 +180,6 @@ fn gh_token_never_appears_inline_in_docker_args() {
         ..RunConfig::default()
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
-    // Token value must not appear as a -e= arg
     for arg in &args {
         assert!(
             !arg.contains("ghs_secret"),
@@ -198,8 +187,6 @@ fn gh_token_never_appears_inline_in_docker_args() {
         );
     }
 }
-
-// ── Unit tests: build_docker_args (git config protection) ────────────────────
 
 #[test]
 fn git_config_mounted_readonly_when_present() {
@@ -241,8 +228,6 @@ fn git_config_mount_absent_when_no_git_dir() {
         "expected no git config mount when .git/config absent: {joined}"
     );
 }
-
-// ── Unit tests: build_docker_args (git identity) ─────────────────────────────
 
 #[test]
 fn git_identity_env_vars_present_in_docker_args() {
@@ -295,8 +280,6 @@ fn git_identity_env_vars_present_when_empty() {
     );
 }
 
-// ── Unit tests: build_docker_args (before-each.sh) ───────────────────────────
-
 #[test]
 fn before_each_mounted_when_path_provided() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -336,8 +319,6 @@ fn before_each_not_mounted_when_absent() {
         "before-each.sh must not appear in args when path is None: {joined}"
     );
 }
-
-// ── Unit tests: build_docker_args (model + verbose) ──────────────────────────
 
 #[test]
 fn model_arg_present_when_model_set() {
@@ -394,8 +375,6 @@ fn verbose_flag_not_added_to_docker_args() {
     );
 }
 
-// ── Unit tests: build_docker_args (container name / Ctrl+C) ──────────────────
-
 #[test]
 fn container_name_present_in_docker_args() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -426,13 +405,6 @@ fn container_name_for_has_expected_format() {
     );
 }
 
-// ── Integration tests (require Docker daemon) ─────────────────────────────────
-// These tests use #[requires_docker] instead of #[ignore]. They pass silently
-// when Docker is unavailable (e.g. inside a capsule container) and run fully
-// when Docker is present.
-
-/// When no `capsule` image exists, `build_base_image(false)` should build it.
-/// NOTE: This test pulls/builds a real Docker image — slow on first run.
 #[test]
 #[requires_docker]
 fn build_base_image_creates_image_when_absent() {
@@ -458,8 +430,6 @@ fn build_base_image_creates_image_when_absent() {
         .output();
 }
 
-/// When image already exists, `build_base_image(false)` should skip the build
-/// (observable: function returns Ok without invoking a long build).
 #[test]
 #[requires_docker]
 fn build_base_image_skips_when_image_present() {
@@ -489,7 +459,6 @@ fn build_base_image_skips_when_image_present() {
         .output();
 }
 
-/// `build_base_image(true)` should rebuild even when the image already exists.
 #[test]
 #[requires_docker]
 fn build_base_image_rebuilds_when_rebuild_flag_set() {
@@ -520,9 +489,6 @@ fn build_base_image_rebuilds_when_rebuild_flag_set() {
         .output();
 }
 
-// ── Integration tests: run_iteration ─────────────────────────────────────────
-
-/// Container exits 0 → run_iteration returns Ok(()).
 #[test]
 #[requires_docker]
 #[serial]
@@ -564,7 +530,6 @@ fn run_iteration_succeeds_on_container_exit_zero() {
         .output();
 }
 
-/// Container exits non-zero → run_iteration returns an error naming the exit code.
 #[test]
 #[requires_docker]
 #[serial]
@@ -610,7 +575,6 @@ fn run_iteration_errors_on_container_exit_nonzero() {
         .output();
 }
 
-/// authentication_failed in output → run_iteration returns specific error.
 #[test]
 #[requires_docker]
 #[serial]
@@ -659,7 +623,6 @@ fn run_iteration_errors_on_auth_failure_in_output() {
         .output();
 }
 
-/// Container output contains NO MORE TASKS marker → run_iteration returns Done.
 #[test]
 #[requires_docker]
 #[serial]
@@ -706,7 +669,6 @@ fn run_iteration_returns_done_on_no_more_tasks_marker() {
         .output();
 }
 
-/// Container output without marker → run_iteration returns Continue.
 #[test]
 #[requires_docker]
 #[serial]
@@ -751,8 +713,6 @@ fn run_iteration_returns_continue_without_marker() {
         .output();
 }
 
-/// --model flag passes CAPSULE_MODEL env var into the container.
-/// Stub image writes the env var to /workspace so we can verify it from the host.
 #[test]
 #[requires_docker]
 #[serial]
@@ -806,7 +766,6 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
         .output();
 }
 
-/// --verbose=true does not change iteration outcome; run completes normally.
 #[test]
 #[requires_docker]
 #[serial]
@@ -852,8 +811,6 @@ fn run_iteration_with_verbose_completes_normally() {
         .output();
 }
 
-// ── Unit tests: build_docker_args (compose network) ──────────────────────────
-
 #[test]
 fn compose_network_arg_present_when_set() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -887,8 +844,6 @@ fn compose_network_arg_absent_when_none() {
     );
 }
 
-// ── Unit tests: build_docker_args (claude_dir mount) ─────────────────────────
-
 #[test]
 fn claude_dir_mounted_at_home_claude_dot_claude() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -911,14 +866,9 @@ fn claude_dir_mounted_at_home_claude_dot_claude() {
     );
 }
 
-// ── Integration test: detect_compose_network ─────────────────────────────────
-
-/// With no compose project running at pwd, detect_compose_network returns None.
-/// This test runs without Docker and relies on absence of a project at a temp dir.
 #[test]
 fn detect_compose_network_returns_none_when_no_project() {
     let dir = tempfile::tempdir().expect("temp dir");
-    // No compose project is running for a fresh temp directory.
     let result = detect_compose_network(dir.path());
     assert!(
         result.is_none(),
@@ -926,7 +876,6 @@ fn detect_compose_network_returns_none_when_no_project() {
     );
 }
 
-/// With a running compose project at pwd, detect_compose_network returns the network name.
 #[test]
 #[requires_docker]
 fn detect_compose_network_returns_network_for_running_project() {
@@ -961,12 +910,9 @@ fn detect_compose_network_returns_network_for_running_project() {
         .output();
 }
 
-// ── Unit tests: derived image ─────────────────────────────────────────────────
-
 #[test]
 fn derived_image_name_uses_basename_of_pwd() {
     let dir = tempfile::tempdir().expect("temp dir");
-    // Create a subdir whose basename we can assert on.
     let project_dir = dir.path().join("my-project");
     std::fs::create_dir(&project_dir).unwrap();
     let name = derived_image_name(&project_dir);

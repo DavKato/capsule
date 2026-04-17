@@ -11,9 +11,6 @@ fn make_capsule_dir(env_content: Option<&str>) -> TempDir {
     dir
 }
 
-// ── parse_dotenv (pure, unit tests) ──────────────────────────────────────────
-
-// Test 1 (tracer bullet): basic KEY=VALUE
 #[test]
 fn parse_dotenv_basic_key_value() {
     let env = parse_dotenv("FOO=bar\nBAZ=qux\n");
@@ -21,14 +18,12 @@ fn parse_dotenv_basic_key_value() {
     assert_eq!(env.get("BAZ").map(|s| s.as_str()), Some("qux"));
 }
 
-// Test 2: empty content → empty map
 #[test]
 fn parse_dotenv_empty_content_is_empty_map() {
     let env = parse_dotenv("");
     assert!(env.is_empty());
 }
 
-// Test 3: comments and blank lines are ignored
 #[test]
 fn parse_dotenv_ignores_comments_and_blank_lines() {
     let content = "# this is a comment\n\nFOO=hello\n\n# another comment\nBAR=world\n";
@@ -38,7 +33,6 @@ fn parse_dotenv_ignores_comments_and_blank_lines() {
     assert_eq!(env.get("BAR").map(|s| s.as_str()), Some("world"));
 }
 
-// Test 4: double-quoted values have quotes stripped
 #[test]
 fn parse_dotenv_strips_double_quotes() {
     let env = parse_dotenv("SECRET=\"my secret value\"\n");
@@ -48,14 +42,12 @@ fn parse_dotenv_strips_double_quotes() {
     );
 }
 
-// Test 5: single-quoted values have quotes stripped
 #[test]
 fn parse_dotenv_strips_single_quotes() {
     let env = parse_dotenv("TOKEN='abc123'\n");
     assert_eq!(env.get("TOKEN").map(|s| s.as_str()), Some("abc123"));
 }
 
-// Test 6: value with = sign in it
 #[test]
 fn parse_dotenv_value_with_equals() {
     let env = parse_dotenv("URL=https://example.com/path?a=1&b=2\n");
@@ -65,18 +57,12 @@ fn parse_dotenv_value_with_equals() {
     );
 }
 
-// ── load_dotenv ───────────────────────────────────────────────────────────────
-
-// Test 7: absent .env → no error
 #[test]
 fn load_dotenv_absent_file_is_ok() {
     let dir = make_capsule_dir(None);
     assert!(load_dotenv(dir.path()).is_ok());
 }
 
-// ── resolve_gh_token ──────────────────────────────────────────────────────────
-
-// Test 8: local scope + GH_TOKEN in dotenv_map → returned directly
 #[test]
 fn resolve_gh_token_local_reads_from_dotenv_map() {
     let pre_env: HashMap<String, String> = HashMap::new();
@@ -86,7 +72,6 @@ fn resolve_gh_token_local_reads_from_dotenv_map() {
     assert_eq!(token, "ghs_localtoken");
 }
 
-// Test 9: local scope ignores process env when dotenv has token
 #[test]
 fn resolve_gh_token_local_ignores_process_env() {
     let mut pre_env: HashMap<String, String> = HashMap::new();
@@ -98,7 +83,6 @@ fn resolve_gh_token_local_ignores_process_env() {
     assert_eq!(token, "ghs_dotenvtoken");
 }
 
-// Test 10: local scope missing GH_TOKEN → error with actionable message
 #[test]
 fn resolve_gh_token_local_missing_returns_error() {
     let pre_env: HashMap<String, String> = HashMap::new();
@@ -113,7 +97,6 @@ fn resolve_gh_token_local_missing_returns_error() {
     );
 }
 
-// Test 11: global scope reads GH_TOKEN from pre_dotenv_env
 #[test]
 fn resolve_gh_token_global_reads_from_pre_dotenv_env() {
     let mut pre_env: HashMap<String, String> = HashMap::new();
@@ -123,7 +106,6 @@ fn resolve_gh_token_global_reads_from_pre_dotenv_env() {
     assert_eq!(token, "ghs_globaltoken");
 }
 
-// Test 12: global scope missing everywhere → error (gh binary may not exist in CI)
 #[test]
 fn resolve_gh_token_global_missing_returns_error_or_token() {
     let pre_env: HashMap<String, String> = HashMap::new();

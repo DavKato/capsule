@@ -17,8 +17,6 @@ fn make_capsule_dir(prompt: &str) -> TempDir {
     dir
 }
 
-// Tracer bullet: --iterations loop prints the expected headers.
-// Requires a Docker daemon + the `capsule` image to be present.
 #[test]
 #[requires_docker]
 fn iterations_prints_headers() {
@@ -42,7 +40,6 @@ fn help_lists_all_flags() {
     let output = cmd().arg("--help").assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
-    // All PRD flags must appear
     assert!(
         stdout.contains("--iterations") || stdout.contains("-i"),
         "missing --iterations"

@@ -85,11 +85,9 @@ pub fn resolve_gh_token(
                 )
             }),
         GithubScope::Global => {
-            // 1. Process env (pre-dotenv so .env cannot interfere with global scope).
             if let Some(token) = pre_dotenv_env.get("GH_TOKEN").filter(|t| !t.is_empty()) {
                 return Ok(token.clone());
             }
-            // 2. gh auth token fallback.
             let output = std::process::Command::new("gh")
                 .args(["auth", "token"])
                 .output();

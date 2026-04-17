@@ -2,9 +2,6 @@ use capsule::hooks::run_before_all;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-// ── Unit tests: run_before_all ────────────────────────────────────────────────
-
-/// No before-all.sh → Ok(()) with no side effects.
 #[test]
 fn before_all_absent_is_ok() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -15,7 +12,6 @@ fn before_all_absent_is_ok() {
     );
 }
 
-/// before-all.sh present and exits 0 → Ok(()).
 #[test]
 fn before_all_success_is_ok() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -30,7 +26,6 @@ fn before_all_success_is_ok() {
     );
 }
 
-/// before-all.sh present and exits non-zero → Err with message.
 #[test]
 fn before_all_failure_is_err() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -47,7 +42,6 @@ fn before_all_failure_is_err() {
     );
 }
 
-/// before-all.sh side effects are observable (script writes a file).
 #[test]
 fn before_all_runs_on_host() {
     let dir = tempfile::tempdir().expect("temp dir");

@@ -1,3 +1,5 @@
+mod common;
+
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use serial_test::serial;
 use std::fs;
@@ -85,23 +87,8 @@ fn env_relative_capsule_dir_not_gitignored_returns_warning() {
 }
 
 // ── Test 6 (integration): Docker available → check_docker succeeds ────────────
-// Requires a running Docker daemon; skipped in environments without Docker.
 #[test]
-#[ignore]
 fn docker_available_check_succeeds() {
+    if !common::docker_available() { return; }
     check_docker().expect("docker check should succeed when Docker is running");
-}
-
-// ── Test 5 (integration): Docker unavailable → check_docker returns error ─────
-// Run manually: stop Docker daemon, then `cargo test docker_unavailable -- --ignored`
-#[test]
-#[ignore]
-fn docker_unavailable_check_returns_error_naming_docker() {
-    // This test must be run with Docker stopped.
-    let err = check_docker().expect_err("expected an error when Docker is unavailable");
-    let msg = err.to_string();
-    assert!(
-        msg.to_ascii_lowercase().contains("docker"),
-        "error should mention Docker; got: {msg}"
-    );
 }

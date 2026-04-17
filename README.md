@@ -14,15 +14,15 @@ Each iteration runs Claude Code in an isolated container. You control what Claud
 
 ## Install
 
-Download the latest binary for your platform from [GitHub Releases](../../releases) and place it on your `$PATH`:
+Download the latest binary for your platform from [GitHub Releases](https://github.com/DavKato/capsule/releases) and place it on your `$PATH`:
 
 ```sh
 # Linux x86_64
-curl -L https://github.com/YOUR_ORG/capsule/releases/latest/download/capsule-x86_64-unknown-linux-gnu.tar.gz | tar xz
+curl -L https://github.com/DavKato/capsule/releases/latest/download/capsule-x86_64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv capsule /usr/local/bin/
 
 # macOS arm64
-curl -L https://github.com/YOUR_ORG/capsule/releases/latest/download/capsule-aarch64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/DavKato/capsule/releases/latest/download/capsule-aarch64-apple-darwin.tar.gz | tar xz
 sudo mv capsule /usr/local/bin/
 ```
 
@@ -35,10 +35,11 @@ capsule --iterations 5
 ```
 
 ```sh
-capsule --iterations 1 --rebuild   # force-rebuild the Docker image
-capsule --iterations 3 --verbose   # show unfiltered container output
+capsule --iterations 1 --rebuild          # force-rebuild the Docker image
+capsule --iterations 3 --verbose          # show unfiltered container output
 capsule --model claude-opus-4-6 --iterations 2
-capsule completion bash | source   # enable tab-completion in the current shell
+capsule --capsule-dir path/to/.capsule    # use a non-default config directory
+capsule completion bash | source          # enable tab-completion in the current shell
 ```
 
 ## Config directory
@@ -86,7 +87,7 @@ Both hooks receive variables from `.capsule/.env`.
 
 ## Releasing
 
-Requires [`cargo-release`](https://github.com/rust-cyclone/cargo-release):
+Requires [`cargo-release`](https://github.com/crate-ci/cargo-release):
 
 ```sh
 cargo install cargo-release

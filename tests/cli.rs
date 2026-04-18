@@ -99,4 +99,8 @@ fn bare_capsule_prints_help() {
         stderr.contains("completion"),
         "help should mention 'completion' subcommand"
     );
+    assert!(
+        stderr.contains("update"),
+        "help should mention 'update' subcommand"
+    );
 }

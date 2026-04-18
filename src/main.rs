@@ -76,6 +76,9 @@ enum Commands {
         /// Shell to generate completion for
         shell: Shell,
     },
+
+    /// Download and install the latest capsule release
+    Update,
 }
 
 fn main() -> Result<()> {
@@ -85,6 +88,22 @@ fn main() -> Result<()> {
         Commands::Completion { shell } => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, "capsule", &mut io::stdout());
+            Ok(())
+        }
+        Commands::Update => {
+            let curl = std::process::Command::new("curl")
+                .args([
+                    "-fsSL",
+                    "https://raw.githubusercontent.com/DavKato/capsule/main/install.sh",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .spawn()?;
+            let status = std::process::Command::new("bash")
+                .stdin(curl.stdout.unwrap())
+                .status()?;
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
             Ok(())
         }
         Commands::Run {

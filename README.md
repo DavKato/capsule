@@ -54,6 +54,7 @@ capsule run --iterations 3 --verbose          # show unfiltered container output
 capsule run --model claude-opus-4-6 --iterations 2
 capsule run --capsule-dir path/to/.capsule    # use a non-default config directory
 capsule completion bash | source              # enable tab-completion in the current shell
+capsule update                                # download and install the latest release
 ```
 
 ## Config directory

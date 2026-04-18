@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, Config, GithubScope};
 use capsule::docker::{
     build_base_image, build_derived_image, detect_compose_network, run_iteration, IterationOutcome,
@@ -8,7 +9,6 @@ use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use capsule::prompt::resolve_prompt;
-use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;

@@ -14,19 +14,33 @@ Each iteration runs Claude Code in an isolated container. You control what Claud
 
 ## Install
 
-Download the latest binary for your platform from [GitHub Releases](https://github.com/DavKato/capsule/releases) and place it on your `$PATH`:
-
 ```sh
-# Linux x86_64
-curl -L https://github.com/DavKato/capsule/releases/latest/download/capsule-x86_64-unknown-linux-gnu.tar.gz | tar xz
-sudo mv capsule /usr/local/bin/
-
-# macOS arm64
-curl -L https://github.com/DavKato/capsule/releases/latest/download/capsule-aarch64-apple-darwin.tar.gz | tar xz
-sudo mv capsule /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/DavKato/capsule/main/install.sh | bash
 ```
 
-No Rust toolchain required.
+Installs the binary to `~/.local/bin` and sets up shell completions (bash, zsh, fish). No Rust toolchain required.
+
+<details>
+<summary>Manual install</summary>
+
+Download the archive for your platform from [GitHub Releases](https://github.com/DavKato/capsule/releases), extract, and place the binary on your `$PATH`:
+
+```sh
+curl -L https://github.com/DavKato/capsule/releases/latest/download/capsule-<triple>.tar.gz | tar xz
+mv capsule ~/.local/bin/
+```
+
+Where `<triple>` is one of: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`.
+
+Then set up completions manually:
+
+```sh
+capsule completion bash > ~/.local/share/bash-completion/completions/capsule  # bash
+capsule completion zsh  > ~/.zsh/completions/_capsule                          # zsh
+capsule completion fish > ~/.config/fish/completions/capsule.fish              # fish
+```
+
+</details>
 
 ## Usage
 

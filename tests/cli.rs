@@ -26,6 +26,7 @@ fn iterations_prints_headers() {
             "run",
             "--iterations",
             "3",
+            "--rebuild",
             "--capsule-dir",
             dir.path().to_str().unwrap(),
         ])

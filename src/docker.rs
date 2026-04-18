@@ -106,8 +106,15 @@ pub fn build_base_image(rebuild: bool) -> Result<()> {
     std::fs::write(ctx.path().join("entrypoint.sh"), ENTRYPOINT_SH)
         .context("failed to write entrypoint.sh to build context")?;
 
+    let ctx_path = ctx.path().to_string_lossy().into_owned();
+    let mut build_args = vec!["build", "-t", BASE_IMAGE];
+    if rebuild {
+        build_args.push("--no-cache");
+    }
+    build_args.push(&ctx_path);
+
     let status = Command::new("docker")
-        .args(["build", "-t", BASE_IMAGE, &ctx.path().to_string_lossy()])
+        .args(&build_args)
         .status()
         .context("failed to spawn `docker build`")?;
     if !status.success() {

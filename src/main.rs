@@ -25,9 +25,14 @@ enum CliGithubScope {
     name = "capsule",
     about = "Prompt-agnostic Claude container launcher",
     subcommand_required = true,
-    arg_required_else_help = true
+    arg_required_else_help = true,
+    version,
+    disable_version_flag = true
 )]
 struct Cli {
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version: (),
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -57,7 +62,7 @@ enum Commands {
         model: Option<String>,
 
         /// Print verbose diagnostic output
-        #[arg(short = 'v', long)]
+        #[arg(long)]
         verbose: bool,
 
         /// Git commit identity: host user config or a generic Capsule identity

@@ -407,6 +407,7 @@ fn container_name_for_has_expected_format() {
 
 #[test]
 #[requires_docker]
+#[serial]
 fn build_base_image_creates_image_when_absent() {
     // Remove image first so we start from a known state.
     let _ = std::process::Command::new("docker")
@@ -432,6 +433,7 @@ fn build_base_image_creates_image_when_absent() {
 
 #[test]
 #[requires_docker]
+#[serial]
 fn build_base_image_skips_when_image_present() {
     // Ensure image exists using a trivial image (busybox tagged as capsule).
     let _ = std::process::Command::new("docker")
@@ -461,6 +463,7 @@ fn build_base_image_skips_when_image_present() {
 
 #[test]
 #[requires_docker]
+#[serial]
 fn build_base_image_rebuilds_when_rebuild_flag_set() {
     // Tag busybox as capsule so an image exists before we call rebuild.
     let _ = std::process::Command::new("docker")

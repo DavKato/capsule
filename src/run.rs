@@ -1,0 +1,212 @@
+use capsule::config::{resolve, CliOverrides, Config, GithubScope};
+use capsule::docker::{
+    build_base_image, build_derived_image, detect_compose_network, run_iteration, IterationOutcome,
+    RunConfig,
+};
+use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
+use capsule::git::resolve_git_identity;
+use capsule::hooks::run_before_all;
+use capsule::preflight::{check_docker, env_gitignore_warning};
+use capsule::prompt::resolve_prompt;
+use anyhow::{Context, Result};
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+pub(crate) struct RunSession {
+    cfg: Config,
+    image: String,
+    prompt: String,
+    pwd: PathBuf,
+    claude_dir: PathBuf,
+    git_author_name: String,
+    git_author_email: String,
+    env_file: Option<PathBuf>,
+    before_each_path: Option<PathBuf>,
+    compose_network: Option<String>,
+    // Held here so the temp file stays alive through execute().
+    gh_token_tempfile: Option<tempfile::NamedTempFile>,
+    active_container: Arc<Mutex<Option<String>>>,
+}
+
+impl RunSession {
+    /// Phases 1-10: resolve config, load env/tokens, build images,
+    /// detect infrastructure, register Ctrl-C handler.
+    pub(crate) fn prepare(capsule_dir: PathBuf, overrides: CliOverrides) -> Result<Self> {
+        let env: HashMap<String, String> = std::env::vars().collect();
+        let cfg = resolve(&capsule_dir, overrides, &env)?;
+
+        check_docker()?;
+
+        if let Some(warning) = env_gitignore_warning(&cfg.capsule_dir) {
+            eprintln!("{warning}");
+        }
+
+        // Capture environment snapshot before .env is sourced (needed for 'global' scope).
+        let pre_dotenv_env: HashMap<String, String> = std::env::vars().collect();
+
+        // Parse .env file into a map for 'local' scope token resolution.
+        let dotenv_path = cfg.capsule_dir.join(".env");
+        let dotenv_map = if dotenv_path.exists() {
+            let content = std::fs::read_to_string(&dotenv_path)
+                .with_context(|| format!("reading {}", dotenv_path.display()))?;
+            parse_dotenv(&content)
+        } else {
+            HashMap::new()
+        };
+
+        load_dotenv(&cfg.capsule_dir)?;
+
+        let gh_token_tempfile = Self::setup_gh_token(&cfg, &pre_dotenv_env, &dotenv_map)?;
+
+        let process_env: HashMap<String, String> = std::env::vars().collect();
+        let (git_author_name, git_author_email) =
+            resolve_git_identity(&cfg.git_identity, &process_env);
+
+        let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
+        let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
+
+        let pwd = std::env::current_dir().context("failed to get current directory")?;
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
+        let claude_dir = PathBuf::from(home).join(".claude");
+
+        build_base_image(cfg.rebuild)?;
+
+        let image = build_derived_image(&cfg.capsule_dir, &pwd, cfg.rebuild)?
+            .unwrap_or_else(|| "capsule".to_string());
+
+        run_before_all(&cfg.capsule_dir)?;
+
+        let env_file_path = cfg.capsule_dir.join(".env");
+        let env_file = if env_file_path.exists() {
+            Some(env_file_path)
+        } else {
+            None
+        };
+
+        let before_each_script = cfg.capsule_dir.join("before-each.sh");
+        let before_each_path = if before_each_script.exists() {
+            Some(before_each_script)
+        } else {
+            None
+        };
+
+        let compose_network = detect_compose_network(&pwd);
+
+        let active_container: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let handler_container = Arc::clone(&active_container);
+
+        ctrlc::set_handler(move || {
+            if let Ok(slot) = handler_container.lock() {
+                if let Some(name) = slot.as_ref() {
+                    let _ = std::process::Command::new("docker")
+                        .args(["stop", name])
+                        .output();
+                }
+            }
+            std::process::exit(1);
+        })
+        .context("failed to register Ctrl-C handler")?;
+
+        Ok(Self {
+            cfg,
+            image,
+            prompt,
+            pwd,
+            claude_dir,
+            git_author_name,
+            git_author_email,
+            env_file,
+            before_each_path,
+            compose_network,
+            gh_token_tempfile,
+            active_container,
+        })
+    }
+
+    /// Resolve GH_TOKEN when --github is set and write it to a temp env-file so
+    /// the token never appears in `docker run` args.
+    fn setup_gh_token(
+        cfg: &Config,
+        pre_dotenv_env: &HashMap<String, String>,
+        dotenv_map: &HashMap<String, String>,
+    ) -> Result<Option<tempfile::NamedTempFile>> {
+        let scope = match &cfg.github {
+            None => return Ok(None),
+            Some(s) => s,
+        };
+
+        let token = resolve_gh_token(scope, pre_dotenv_env, dotenv_map)?;
+
+        match scope {
+            GithubScope::Local => {
+                eprintln!("GH_TOKEN: local (.capsule/.env)");
+            }
+            GithubScope::Global => {
+                if pre_dotenv_env.contains_key("GH_TOKEN") {
+                    eprintln!("GH_TOKEN: global (process environment)");
+                } else {
+                    // Fell back to gh auth token — show scopes and ask for confirmation.
+                    eprintln!(
+                        "GH_TOKEN not found in process environment — falling back to gh auth token"
+                    );
+                    let _ = std::process::Command::new("gh")
+                        .args(["auth", "status"])
+                        .status();
+                    eprint!("Inject into container? [y/N] ");
+                    let _ = std::io::stderr().flush();
+                    let mut answer = String::new();
+                    std::io::stdin()
+                        .read_line(&mut answer)
+                        .context("failed to read confirmation")?;
+                    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                        anyhow::bail!(
+                            "Aborted. To avoid this prompt use 'local' mode: \
+                             add GH_TOKEN to .capsule/.env and pass --github local"
+                        );
+                    }
+                }
+            }
+        }
+
+        let mut tmp = tempfile::Builder::new()
+            .prefix("capsule-gh-token-")
+            .suffix(".env")
+            .tempfile()
+            .context("failed to create GH_TOKEN temp file")?;
+        writeln!(tmp, "GH_TOKEN={token}").context("failed to write GH_TOKEN temp file")?;
+        Ok(Some(tmp))
+    }
+
+    /// Phase 11: run the iteration loop until Done or iterations exhausted.
+    /// Consumes self so gh_token_tempfile drops deterministically on return.
+    pub(crate) fn execute(self) -> Result<()> {
+        for i in 1..=self.cfg.iterations {
+            println!("── Iteration {} / {} ──", i, self.cfg.iterations);
+            let run_cfg = RunConfig {
+                image: self.image.clone(),
+                prompt: self.prompt.clone(),
+                pwd: self.pwd.clone(),
+                capsule_dir: self.cfg.capsule_dir.clone(),
+                model: self.cfg.model.clone(),
+                verbose: self.cfg.verbose,
+                env_file: self.env_file.clone(),
+                gh_token_env_file: self
+                    .gh_token_tempfile
+                    .as_ref()
+                    .map(|f| f.path().to_path_buf()),
+                git_author_name: self.git_author_name.clone(),
+                git_author_email: self.git_author_email.clone(),
+                before_each_path: self.before_each_path.clone(),
+                compose_network: self.compose_network.clone(),
+                claude_dir: self.claude_dir.clone(),
+            };
+            if run_iteration(&run_cfg, i, &self.active_container)? == IterationOutcome::Done {
+                println!("Claude signalled completion after iteration {i}. No more tasks.");
+                break;
+            }
+        }
+        Ok(())
+    }
+}

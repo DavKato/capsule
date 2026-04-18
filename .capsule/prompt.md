@@ -50,7 +50,11 @@ Read the "Working branch" field from the issue you are working on. Check out tha
 
 Read the files relevant to the issue before starting implementation.
 
-Use /tdd for implementation and bug fixes. For documentation, config changes, or refactors already covered by existing tests, implement directly without /tdd.
+Use /tdd whenever you write non-trivial logic that isn't already exercised by existing tests — including features, bug fixes, and any new code paths introduced during a refactor. For documentation, config changes, or pure refactors where no new logic is introduced, implement directly without /tdd.
+
+If you add non-trivial logic without a test, explain why in the commit message.
+
+Before adding a test outside of /tdd, state explicitly what behavior it protects and how it would fail if that behavior broke. If you can't answer that, don't add the test.
 
 # COMMIT
 

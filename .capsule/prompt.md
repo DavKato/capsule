@@ -18,12 +18,12 @@ If all AFK tasks are complete, output <promise>AFK_COMPLETE</promise>.
 - Never commit directly to the main branch.
 - Never close or comment on issues you are not working on.
 - Never delete branches.
-- Never run release workflows (e.g., `cargo publish`, creating GitHub releases).
+- Never run release workflows (e.g., `cargo release`, creating GitHub releases).
 - Never commit code that doesn't pass `cargo test`.
 - When adding new dependencies, justify the choice in the commit message.
 - Prefer small, focused changes. If the issue requires extensive work, implement the smallest shippable piece and note the remaining work in an issue comment.
 - **When stuck**: If you cannot get tests passing or resolve a problem after two attempts, stop. Do not commit broken code. Leave a comment on the GitHub issue with: why you couldn't complete the task, what you tried, and what remains. Push any salvageable work and end the iteration.
-- **Issue comments** when incomplete: Lead with *why* the task couldn't be completed, then what was implemented, and what remains.
+- **Issue comments** when incomplete: Lead with _why_ the task couldn't be completed, then what was implemented, and what remains.
 
 # TASK SELECTION
 

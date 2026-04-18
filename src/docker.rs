@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex};
 /// The base Dockerfile embedded at compile time.
 pub const DOCKERFILE: &str = include_str!("../templates/Dockerfile");
 
+/// The container entrypoint script embedded at compile time.
+pub const ENTRYPOINT_SH: &str = include_str!("../templates/entrypoint.sh");
+
 /// The jq stream-display filter embedded at compile time.
 pub const STREAM_DISPLAY_JQ: &str = include_str!("../templates/stream_display.jq");
 
@@ -97,21 +100,16 @@ pub fn build_base_image(rebuild: bool) -> Result<()> {
 
     eprintln!("Building {BASE_IMAGE} image…");
 
-    let mut child = Command::new("docker")
-        .args(["build", "-t", BASE_IMAGE, "-"])
-        .stdin(Stdio::piped())
-        .spawn()
+    let ctx = tempfile::tempdir().context("failed to create build context tempdir")?;
+    std::fs::write(ctx.path().join("Dockerfile"), DOCKERFILE)
+        .context("failed to write Dockerfile to build context")?;
+    std::fs::write(ctx.path().join("entrypoint.sh"), ENTRYPOINT_SH)
+        .context("failed to write entrypoint.sh to build context")?;
+
+    let status = Command::new("docker")
+        .args(["build", "-t", BASE_IMAGE, &ctx.path().to_string_lossy()])
+        .status()
         .context("failed to spawn `docker build`")?;
-
-    {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().expect("stdin piped");
-        stdin
-            .write_all(DOCKERFILE.as_bytes())
-            .context("failed to write Dockerfile to docker stdin")?;
-    }
-
-    let status = child.wait().context("docker build did not complete")?;
     if !status.success() {
         bail!(
             "docker build exited with code {}",

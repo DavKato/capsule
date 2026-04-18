@@ -34,5 +34,6 @@ ENV CI=true
 
 # Entrypoint: configure git credentials from GH_TOKEN and git identity from
 # GIT_AUTHOR_* env vars, run optional before-each.sh, then launch Claude Code.
-RUN printf '#!/bin/bash\nset -e\nif [ -n "${GH_TOKEN}" ]; then\n  git config --global credential.helper store\n  echo "https://oauth2:${GH_TOKEN}@github.com" > "${HOME}/.git-credentials"\n  chmod 600 "${HOME}/.git-credentials"\nfi\n_name="${GIT_AUTHOR_NAME:-Capsule}"\n_email="${GIT_AUTHOR_EMAIL:-capsule@localhost}"\ngit config --global user.name "${_name}"\ngit config --global user.email "${_email}"\nif [ -x /home/claude/before-each.sh ]; then\n  echo "── Running before-each.sh ────────────────────────────────────"\n  /home/claude/before-each.sh\n  echo "── before-each.sh complete ───────────────────────────────────"\nfi\ncat /home/claude/prompt.txt | claude --dangerously-skip-permissions --model "${CAPSULE_MODEL:-claude-sonnet-4-6}" -p --verbose --output-format stream-json\n' > /home/claude/entrypoint.sh && chmod +x /home/claude/entrypoint.sh
+COPY entrypoint.sh /home/claude/entrypoint.sh
+RUN chmod +x /home/claude/entrypoint.sh
 ENTRYPOINT ["/home/claude/entrypoint.sh"]

@@ -3,7 +3,7 @@ mod common;
 use capsule::docker::{
     build_base_image, build_derived_image, build_docker_args, contains_auth_failure,
     contains_no_more_tasks, derived_image_name, detect_compose_network, run_iteration,
-    IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
+    IterationOutcome, RunConfig, DOCKERFILE, ENTRYPOINT_SH, STREAM_DISPLAY_JQ,
 };
 use common::requires_docker;
 use serial_test::serial;
@@ -18,6 +18,22 @@ fn embedded_dockerfile_is_non_empty() {
     assert!(
         DOCKERFILE.contains("FROM archlinux"),
         "Dockerfile must start from archlinux base"
+    );
+}
+
+#[test]
+fn embedded_entrypoint_sh_is_non_empty() {
+    assert!(
+        !ENTRYPOINT_SH.is_empty(),
+        "embedded entrypoint.sh must not be empty"
+    );
+    assert!(
+        ENTRYPOINT_SH.contains("#!/bin/bash"),
+        "entrypoint.sh must be a bash script"
+    );
+    assert!(
+        ENTRYPOINT_SH.contains("CAPSULE_MODEL"),
+        "entrypoint.sh must reference CAPSULE_MODEL"
     );
 }
 

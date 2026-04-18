@@ -34,6 +34,5 @@ ENV CI=true
 
 # Entrypoint: configure git credentials from GH_TOKEN and git identity from
 # GIT_AUTHOR_* env vars, run optional before-each.sh, then launch Claude Code.
-COPY entrypoint.sh /home/claude/entrypoint.sh
-RUN chmod +x /home/claude/entrypoint.sh
+COPY --chmod=755 entrypoint.sh /home/claude/entrypoint.sh
 ENTRYPOINT ["/home/claude/entrypoint.sh"]

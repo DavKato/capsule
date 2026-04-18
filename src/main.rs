@@ -26,9 +26,13 @@ enum CliGithubScope {
     about = "Prompt-agnostic Claude container launcher",
     subcommand_required = true,
     arg_required_else_help = true,
-    version
+    version,
+    disable_version_flag = true
 )]
 struct Cli {
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version: (),
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -83,13 +87,6 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    // Handle -v as a short alias for --version before clap parses args,
-    // since clap's built-in version flag uses -V (uppercase).
-    if std::env::args().any(|a| a == "-v") {
-        println!("capsule {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-
     let cli = Cli::parse();
 
     match cli.command {

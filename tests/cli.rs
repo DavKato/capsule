@@ -88,6 +88,30 @@ fn completion_fish_is_nonempty() {
 }
 
 #[test]
+fn version_flag_short_prints_version() {
+    let output = cmd().arg("-v").assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("capsule"),
+        "version output missing binary name"
+    );
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "version output missing version"
+    );
+}
+
+#[test]
+fn version_flag_long_prints_version() {
+    let output = cmd().arg("--version").assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "version output missing version"
+    );
+}
+
+#[test]
 fn bare_capsule_prints_help() {
     let output = cmd().assert().failure();
     let stderr = String::from_utf8(output.get_output().stderr.clone()).unwrap();

@@ -23,6 +23,7 @@ fn iterations_prints_headers() {
     let dir = make_capsule_dir("test prompt");
     cmd()
         .args([
+            "run",
             "--iterations",
             "3",
             "--capsule-dir",
@@ -37,7 +38,7 @@ fn iterations_prints_headers() {
 
 #[test]
 fn help_lists_all_flags() {
-    let output = cmd().arg("--help").assert().success();
+    let output = cmd().args(["run", "--help"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
     assert!(
@@ -87,6 +88,15 @@ fn completion_fish_is_nonempty() {
 }
 
 #[test]
-fn missing_iterations_flag_errors() {
-    cmd().assert().failure();
+fn bare_capsule_prints_help() {
+    let output = cmd().assert().failure();
+    let stderr = String::from_utf8(output.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("run"),
+        "help should mention 'run' subcommand"
+    );
+    assert!(
+        stderr.contains("completion"),
+        "help should mention 'completion' subcommand"
+    );
 }

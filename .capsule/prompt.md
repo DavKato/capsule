@@ -52,14 +52,6 @@ Read the files relevant to the issue before starting implementation.
 
 Use /tdd for implementation and bug fixes. For documentation, config changes, or refactors already covered by existing tests, implement directly without /tdd.
 
-# FEEDBACK LOOPS
-
-Before committing, run the feedback loops:
-
-- `cargo fmt` to format code
-- `cargo clippy -- -D warnings` to lint
-- `cargo test` to run the test suite
-
 # COMMIT
 
 Make a git commit. The commit message must:

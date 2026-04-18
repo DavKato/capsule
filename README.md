@@ -45,15 +45,15 @@ capsule completion fish > ~/.config/fish/completions/capsule.fish              #
 ## Usage
 
 ```sh
-capsule --iterations 5
+capsule run --iterations 5
 ```
 
 ```sh
-capsule --iterations 1 --rebuild          # force-rebuild the Docker image
-capsule --iterations 3 --verbose          # show unfiltered container output
-capsule --model claude-opus-4-6 --iterations 2
-capsule --capsule-dir path/to/.capsule    # use a non-default config directory
-capsule completion bash | source          # enable tab-completion in the current shell
+capsule run --iterations 1 --rebuild          # force-rebuild the Docker image
+capsule run --iterations 3 --verbose          # show unfiltered container output
+capsule run --model claude-opus-4-6 --iterations 2
+capsule run --capsule-dir path/to/.capsule    # use a non-default config directory
+capsule completion bash | source              # enable tab-completion in the current shell
 ```
 
 ## Config directory
@@ -120,7 +120,7 @@ This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub 
 1. Resolves config from `config.yml`, CLI flags, and env vars
 2. Runs pre-flight checks (Docker daemon reachable, prompt file present)
 3. Sources `.capsule/.env` into the host environment
-4. Builds the base `capsule` image if not cached (or if `--rebuild` is set)
+4. Builds the base `capsule` image if not cached (or if `--rebuild` is passed)
 5. Builds a repo-specific `capsule-<basename>` image if `.capsule/Dockerfile` exists
 6. Runs `before-all.sh` if present
 7. For each iteration: mounts the prompt, runs `before-each.sh` inside the container, pipes the prompt to Claude Code, and streams output through `jq`

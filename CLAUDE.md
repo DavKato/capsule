@@ -23,3 +23,17 @@ The macro lives in `capsule-macros/src/lib.rs`. Test files must have:
 mod common;
 use common::requires_docker;  // re-exported from capsule-macros
 ```
+
+## Feedback loops
+
+Before committing, always run:
+
+```sh
+cargo fmt
+cargo clippy -- -D warnings
+cargo test
+```
+
+## Versioning
+
+**Never bump the version in `Cargo.toml` manually.** Releases are managed by [`cargo-release`](https://github.com/crate-ci/cargo-release) and the version is set automatically during the release workflow.

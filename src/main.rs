@@ -25,7 +25,8 @@ enum CliGithubScope {
     name = "capsule",
     about = "Prompt-agnostic Claude container launcher",
     subcommand_required = true,
-    arg_required_else_help = true
+    arg_required_else_help = true,
+    version
 )]
 struct Cli {
     #[command(subcommand)]
@@ -57,7 +58,7 @@ enum Commands {
         model: Option<String>,
 
         /// Print verbose diagnostic output
-        #[arg(short = 'v', long)]
+        #[arg(long)]
         verbose: bool,
 
         /// Git commit identity: host user config or a generic Capsule identity
@@ -82,6 +83,13 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Handle -v as a short alias for --version before clap parses args,
+    // since clap's built-in version flag uses -V (uppercase).
+    if std::env::args().any(|a| a == "-v") {
+        println!("capsule {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let cli = Cli::parse();
 
     match cli.command {

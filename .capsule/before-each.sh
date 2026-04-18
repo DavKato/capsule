@@ -19,8 +19,22 @@ tmpfile=$(mktemp)
 		echo "No commits found"
 	echo ""
 
-	echo "Open AFK issues (JSON):"
-	gh issue list --state open --label AFK --json number,title,body,comments,labels
+	echo "Open AFK issues:"
+	gh issue list --state open --label AFK --json number,title,body,comments,labels \
+		| python3 -c "
+import json, sys
+issues = json.load(sys.stdin)
+for issue in issues:
+    print(f\"### Issue #{issue['number']}: {issue['title']}\")
+    print(issue['body'])
+    comments = issue.get('comments', [])
+    if comments:
+        print(f\"\nComments ({len(comments)})\")
+        for c in comments:
+            print(f\"\n> {c['author']['login']}:\")
+            print(c['body'])
+    print()
+"
 	echo ""
 
 	cat /home/claude/prompt.txt

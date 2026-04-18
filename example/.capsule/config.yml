@@ -1,42 +1,30 @@
 # capsule configuration
-# All keys are optional. CLI flags take precedence over this file;
-# environment variables (CAPSULE_*) take precedence over this file
-# but lose to CLI flags.
+# All keys are optional. CLI flags take precedence over this file.
 #
 # Precedence (highest → lowest):
-#   CLI flag → environment variable → this file → compiled-in default
+#   CLI flag → this file → compiled-in default
 
 # Number of iterations to run.
 # CLI: --iterations / -i
-# Env: CAPSULE_ITERATIONS
 iterations: 3
 
 # Path to the prompt file. Defaults to .capsule/prompt.md in the capsule dir.
 # CLI: --prompt / -p
-# Env: CAPSULE_PROMPT
 prompt: .capsule/prompt.md
-
-# Force a fresh Docker image build even when an image already exists.
-# CLI: --rebuild
-# Env: CAPSULE_REBUILD (1 / true / yes)
-rebuild: false
 
 # Claude model to use inside the container.
 # CLI: --model / -m
-# Env: CAPSULE_MODEL
 model: claude-sonnet-4-6
 
 # Print verbose (unfiltered) container output to stderr in addition to the
 # jq-filtered view. Useful for diagnosing a failing run.
 # CLI: --verbose / -v
-# Env: CAPSULE_VERBOSE (1 / true / yes)
 verbose: false
 
 # Git commit identity for commits made inside the container.
 #   user    — read host `git config user.name` / `user.email` (default)
 #   capsule — use "Capsule <capsule@localhost>"
 # CLI: --git-identity
-# Env: CAPSULE_GIT_IDENTITY
 git_identity: user
 
 # GitHub token injection scope.
@@ -44,5 +32,4 @@ git_identity: user
 #   global — read from process env, fall back to `gh auth token`
 # When absent, no token is injected.
 # CLI: --github
-# Env: CAPSULE_GITHUB
 github: local

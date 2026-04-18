@@ -34,8 +34,7 @@ impl RunSession {
     /// Phases 1-10: resolve config, load env/tokens, build images,
     /// detect infrastructure, register Ctrl-C handler.
     pub(crate) fn prepare(capsule_dir: PathBuf, overrides: CliOverrides) -> Result<Self> {
-        let env: HashMap<String, String> = std::env::vars().collect();
-        let cfg = resolve(&capsule_dir, overrides, &env)?;
+        let cfg = resolve(&capsule_dir, overrides)?;
 
         check_docker()?;
 

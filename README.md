@@ -88,7 +88,7 @@ model: claude-sonnet-4-6
 git_identity: user  # or: capsule
 ```
 
-Precedence: **CLI flag → env var (`CAPSULE_*`) → config.yml → default**.
+Precedence: **CLI flag → config.yml → default**.
 
 See `example/.capsule/config.yml` for all keys with descriptions.
 

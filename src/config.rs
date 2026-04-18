@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Git commit identity mode.
@@ -52,7 +51,6 @@ pub struct CliOverrides {
 struct ConfigFile {
     iterations: Option<u32>,
     prompt: Option<String>,
-    rebuild: Option<bool>,
     model: Option<String>,
     verbose: Option<bool>,
     git_identity: Option<String>,
@@ -80,15 +78,8 @@ fn github_scope_from_str(s: &str) -> Option<GithubScope> {
 }
 
 /// Resolve configuration by merging (highest → lowest priority):
-///   CLI overrides → environment variables → config file → compiled-in defaults.
-///
-/// `env` is the full environment map; pass `&std::env::vars().collect()` in
-/// production, or a controlled map in tests.
-pub fn resolve(
-    capsule_dir: &Path,
-    cli: CliOverrides,
-    env: &HashMap<String, String>,
-) -> Result<Config> {
+///   CLI overrides → config file → compiled-in defaults.
+pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     let config_path = capsule_dir.join("config.yml");
     let file = if config_path.exists() {
         let raw = std::fs::read_to_string(&config_path)
@@ -98,54 +89,25 @@ pub fn resolve(
         ConfigFile::default()
     };
 
-    let iterations = cli
-        .iterations
-        .or_else(|| {
-            env.get("CAPSULE_ITERATIONS")
-                .and_then(|s| s.parse::<u32>().ok())
-        })
-        .or(file.iterations)
-        .ok_or_else(|| anyhow::anyhow!("--iterations is required (no CLI flag, env var CAPSULE_ITERATIONS, or config.yml value found)"))?;
+    let iterations = cli.iterations.or(file.iterations).ok_or_else(|| {
+        anyhow::anyhow!("--iterations is required (no CLI flag or config.yml value found)")
+    })?;
 
-    let prompt = cli.prompt.or_else(|| {
-        env.get("CAPSULE_PROMPT")
-            .map(PathBuf::from)
-            .or_else(|| file.prompt.map(PathBuf::from))
-    });
+    let prompt = cli.prompt.or_else(|| file.prompt.map(PathBuf::from));
 
-    let rebuild = cli.rebuild
-        || env
-            .get("CAPSULE_REBUILD")
-            .map(|s| matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false)
-        || file.rebuild.unwrap_or(false);
+    let rebuild = cli.rebuild;
 
-    let model = cli
-        .model
-        .or_else(|| env.get("CAPSULE_MODEL").cloned().or(file.model));
+    let model = cli.model.or(file.model);
 
-    let verbose = cli.verbose
-        || env
-            .get("CAPSULE_VERBOSE")
-            .map(|s| matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false)
-        || file.verbose.unwrap_or(false);
+    let verbose = cli.verbose || file.verbose.unwrap_or(false);
 
     let git_identity = cli
         .git_identity
-        .or_else(|| {
-            env.get("CAPSULE_GIT_IDENTITY")
-                .and_then(|s| git_identity_from_str(s))
-        })
         .or_else(|| file.git_identity.as_deref().and_then(git_identity_from_str))
         .unwrap_or(GitIdentity::User);
 
     let github = cli
         .github
-        .or_else(|| {
-            env.get("CAPSULE_GITHUB")
-                .and_then(|s| github_scope_from_str(s))
-        })
         .or_else(|| file.github.as_deref().and_then(github_scope_from_str));
 
     Ok(Config {

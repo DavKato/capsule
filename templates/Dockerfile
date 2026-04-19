@@ -27,8 +27,6 @@ ENV PATH="/home/claude/.npm-global/bin:${PATH}"
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-WORKDIR /workspace
-
 ENV PATH="/home/claude/.local/bin:/home/claude/.npm-global/bin:${PATH}"
 ENV CI=true
 

@@ -7,7 +7,7 @@
 # - Can modify /home/claude/prompt.txt before Claude reads it
 # - Exit non-zero to abort that iteration with an error
 #
-# The workspace is at /workspace. git, gh, ripgrep, and Claude Code are available.
+# The workspace path is available as $CAPSULE_WORKSPACE. git, gh, ripgrep, and Claude Code are available.
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ tmpfile=$(mktemp)
 
 {
     echo "Previous commits:"
-    git -C /workspace log -n 5 --format="%h%n%ad%n%B---" --date=short 2>/dev/null \
+    git -C "$CAPSULE_WORKSPACE" log -n 5 --format="%h%n%ad%n%B---" --date=short 2>/dev/null \
         || echo "No commits found"
     echo ""
 

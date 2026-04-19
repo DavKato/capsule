@@ -246,13 +246,16 @@ pub fn build_docker_args(
     prompt_path: &std::path::Path,
     container_name: &str,
 ) -> Vec<String> {
+    let workspace = cfg.pwd.to_string_lossy();
     let mut args = vec![
         "run".to_string(),
         "--rm".to_string(),
         "--name".to_string(),
         container_name.to_string(),
         format!("-v={}:/home/claude/prompt.txt", prompt_path.display()),
-        format!("-v={}:/workspace", cfg.pwd.display()),
+        format!("-v={workspace}:{workspace}"),
+        format!("--workdir={workspace}"),
+        format!("-e=CAPSULE_WORKSPACE={workspace}"),
         format!("-v={}:/home/claude/.claude", cfg.claude_dir.display()),
     ];
 
@@ -263,7 +266,7 @@ pub fn build_docker_args(
     let git_config = cfg.pwd.join(".git").join("config");
     if git_config.exists() {
         args.push(format!(
-            "-v={}:/workspace/.git/config:ro",
+            "-v={}:{workspace}/.git/config:ro",
             git_config.display()
         ));
     }

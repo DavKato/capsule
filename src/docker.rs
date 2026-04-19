@@ -14,6 +14,35 @@ pub const ENTRYPOINT_SH: &str = include_str!("../templates/entrypoint.sh");
 pub const STREAM_DISPLAY_JQ: &str = include_str!("../templates/stream_display.jq");
 
 const BASE_IMAGE: &str = "capsule";
+const DOCKERFILE_HASH_LABEL: &str = "capsule.dockerfile.hash";
+
+fn dockerfile_hash(content: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in content.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn image_label(name: &str, label: &str) -> Option<String> {
+    let out = Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            &format!("{{{{index .Config.Labels \"{label}\"}}}}"),
+            name,
+        ])
+        .output()
+        .ok()?;
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
 
 fn image_exists(name: &str) -> bool {
     Command::new("docker")
@@ -59,18 +88,27 @@ pub fn build_derived_image(
     }
 
     let name = derived_image_name(pwd);
+    let content = std::fs::read_to_string(&dockerfile)
+        .with_context(|| format!("failed to read {}", dockerfile.display()))?;
+    let hash = dockerfile_hash(&content);
 
     if !rebuild && image_exists(&name) {
-        return Ok(Some(name));
+        if image_label(&name, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
+            return Ok(Some(name));
+        }
+        eprintln!("Derived Dockerfile changed — rebuilding {name}…");
+    } else {
+        eprintln!("Building derived image {name}…");
     }
 
-    eprintln!("Building derived image {name}…");
-
+    let label = format!("{DOCKERFILE_HASH_LABEL}={hash}");
     let status = Command::new("docker")
         .args([
             "build",
             "-t",
             &name,
+            "--label",
+            &label,
             "-f",
             &dockerfile.to_string_lossy(),
             &capsule_dir.to_string_lossy(),
@@ -91,14 +129,20 @@ pub fn build_derived_image(
 
 /// Build the base `capsule` Docker image from the embedded Dockerfile.
 ///
-/// If `rebuild` is `false` and the image already exists, the build is skipped.
-/// If `rebuild` is `true`, the image is always rebuilt.
+/// Skips the build when the image exists and its stored hash matches the
+/// embedded Dockerfile. Auto-rebuilds (with layer cache) when the hash
+/// differs. With `rebuild: true`, always rebuilds using `--no-cache`.
 pub fn build_base_image(rebuild: bool) -> Result<()> {
-    if !rebuild && image_exists(BASE_IMAGE) {
-        return Ok(());
-    }
+    let hash = dockerfile_hash(DOCKERFILE);
 
-    eprintln!("Building {BASE_IMAGE} image…");
+    if !rebuild && image_exists(BASE_IMAGE) {
+        if image_label(BASE_IMAGE, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
+            return Ok(());
+        }
+        eprintln!("Base Dockerfile changed — rebuilding {BASE_IMAGE}…");
+    } else {
+        eprintln!("Building {BASE_IMAGE} image…");
+    }
 
     let ctx = tempfile::tempdir().context("failed to create build context tempdir")?;
     std::fs::write(ctx.path().join("Dockerfile"), DOCKERFILE)
@@ -107,7 +151,8 @@ pub fn build_base_image(rebuild: bool) -> Result<()> {
         .context("failed to write entrypoint.sh to build context")?;
 
     let ctx_path = ctx.path().to_string_lossy().into_owned();
-    let mut build_args = vec!["build", "-t", BASE_IMAGE];
+    let label = format!("{DOCKERFILE_HASH_LABEL}={hash}");
+    let mut build_args = vec!["build", "-t", BASE_IMAGE, "--label", &label];
     if rebuild {
         build_args.push("--no-cache");
     }

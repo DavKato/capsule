@@ -999,3 +999,138 @@ fn build_derived_image_skips_build_when_image_exists_and_no_rebuild() {
         .args(["rmi", "-f", &name])
         .output();
 }
+
+#[test]
+#[requires_docker]
+#[serial]
+fn build_base_image_stores_hash_label() {
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule"])
+        .output();
+
+    build_base_image(false).expect("build_base_image should succeed");
+
+    let out = std::process::Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            r#"{{index .Config.Labels "capsule.dockerfile.hash"}}"#,
+            "capsule",
+        ])
+        .output()
+        .expect("docker inspect should run");
+
+    let label = String::from_utf8(out.stdout).unwrap();
+    let label = label.trim();
+    assert!(
+        !label.is_empty(),
+        "capsule.dockerfile.hash label should be set"
+    );
+    assert_eq!(label.len(), 16, "hash should be a 16-char hex string");
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule"])
+        .output();
+}
+
+#[test]
+#[requires_docker]
+fn build_derived_image_stores_hash_label() {
+    let capsule_dir = tempfile::tempdir().expect("temp dir");
+    let base = tempfile::tempdir().expect("temp dir");
+    let pwd = base.path().join("hashtest");
+    std::fs::create_dir(&pwd).unwrap();
+
+    std::fs::write(
+        capsule_dir.path().join("Dockerfile"),
+        "FROM busybox\nRUN echo hashtest\n",
+    )
+    .unwrap();
+
+    let name = build_derived_image(capsule_dir.path(), &pwd, false)
+        .unwrap()
+        .unwrap();
+
+    let out = std::process::Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            r#"{{index .Config.Labels "capsule.dockerfile.hash"}}"#,
+            &name,
+        ])
+        .output()
+        .expect("docker inspect should run");
+
+    let label = String::from_utf8(out.stdout).unwrap();
+    let label = label.trim();
+    assert!(
+        !label.is_empty(),
+        "capsule.dockerfile.hash label should be set on derived image"
+    );
+    assert_eq!(label.len(), 16, "hash should be a 16-char hex string");
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", &name])
+        .output();
+}
+
+#[test]
+#[requires_docker]
+fn build_derived_image_rebuilds_when_dockerfile_changes() {
+    let capsule_dir = tempfile::tempdir().expect("temp dir");
+    let base = tempfile::tempdir().expect("temp dir");
+    let pwd = base.path().join("changetest");
+    std::fs::create_dir(&pwd).unwrap();
+
+    let dockerfile_path = capsule_dir.path().join("Dockerfile");
+    std::fs::write(&dockerfile_path, "FROM busybox\nRUN echo version1\n").unwrap();
+
+    let name = build_derived_image(capsule_dir.path(), &pwd, false)
+        .unwrap()
+        .unwrap();
+
+    // Record hash from first build.
+    let out1 = std::process::Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            r#"{{index .Config.Labels "capsule.dockerfile.hash"}}"#,
+            &name,
+        ])
+        .output()
+        .unwrap();
+    let hash1 = String::from_utf8(out1.stdout).unwrap().trim().to_owned();
+
+    // Change the Dockerfile content.
+    std::fs::write(&dockerfile_path, "FROM busybox\nRUN echo version2\n").unwrap();
+
+    // Should auto-rebuild without --rebuild flag.
+    let name2 = build_derived_image(capsule_dir.path(), &pwd, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(name, name2, "image name should be unchanged");
+
+    let out2 = std::process::Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            r#"{{index .Config.Labels "capsule.dockerfile.hash"}}"#,
+            &name2,
+        ])
+        .output()
+        .unwrap();
+    let hash2 = String::from_utf8(out2.stdout).unwrap().trim().to_owned();
+
+    assert_ne!(
+        hash1, hash2,
+        "hash label should update after Dockerfile change"
+    );
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", &name])
+        .output();
+}

@@ -9,6 +9,7 @@ use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use capsule::prompt::{prepend_preamble, resolve_prompt};
+use capsule::update_check;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -182,6 +183,7 @@ impl RunSession {
     /// Phase 11: run the iteration loop until Done or iterations exhausted.
     /// Consumes self so gh_token_tempfile drops deterministically on return.
     pub(crate) fn execute(self) -> Result<()> {
+        let update_rx = update_check::spawn_check();
         for i in 1..=self.cfg.iterations {
             println!("── Iteration {} / {} ──", i, self.cfg.iterations);
             let run_cfg = RunConfig {
@@ -207,6 +209,7 @@ impl RunSession {
                 break;
             }
         }
+        update_check::maybe_print_notice(update_rx);
         Ok(())
     }
 }

@@ -48,6 +48,7 @@ pub struct CliOverrides {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct ConfigFile {
     iterations: Option<u32>,
     prompt: Option<String>,

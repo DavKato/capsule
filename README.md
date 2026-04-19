@@ -98,6 +98,12 @@ See `example/.capsule/config.yml` for all keys with descriptions.
 
 **`before-each.sh`** — runs inside the container before Claude starts each iteration. Can modify `/home/claude/prompt.txt` to inject dynamic context. Non-zero exit aborts that iteration.
 
+The following environment variables are available inside `before-each.sh`:
+
+| Variable | Description |
+|---|---|
+| `CAPSULE_WORKSPACE` | Absolute path to the workspace inside the container (mirrors the host path) |
+
 Both hooks receive variables from `.capsule/.env`.
 
 ## Releasing

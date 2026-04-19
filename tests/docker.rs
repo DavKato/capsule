@@ -85,6 +85,61 @@ fn prompt_mount_is_not_read_only() {
 }
 
 #[test]
+fn workspace_mounted_at_host_path_not_slash_workspace() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        pwd: dir.path().to_path_buf(),
+        ..RunConfig::default()
+    };
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+    let joined = args.join(" ");
+    let pwd_str = dir.path().to_string_lossy();
+    assert!(
+        joined.contains(&format!("-v={pwd_str}:{pwd_str}")),
+        "workspace must be mounted at host path, not /workspace: {joined}"
+    );
+    assert!(
+        !joined.contains(":/workspace"),
+        "must not mount workspace at /workspace: {joined}"
+    );
+}
+
+#[test]
+fn workdir_set_to_host_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        pwd: dir.path().to_path_buf(),
+        ..RunConfig::default()
+    };
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+    let joined = args.join(" ");
+    let pwd_str = dir.path().to_string_lossy();
+    assert!(
+        joined.contains(&format!("--workdir={pwd_str}")),
+        "expected --workdir set to host path in args: {joined}"
+    );
+}
+
+#[test]
+fn capsule_workspace_env_var_set_to_host_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_file = tempfile::NamedTempFile::new().unwrap();
+    let cfg = RunConfig {
+        pwd: dir.path().to_path_buf(),
+        ..RunConfig::default()
+    };
+    let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+    let joined = args.join(" ");
+    let pwd_str = dir.path().to_string_lossy();
+    assert!(
+        joined.contains(&format!("-e=CAPSULE_WORKSPACE={pwd_str}")),
+        "expected -e=CAPSULE_WORKSPACE=<host-path> in args: {joined}"
+    );
+}
+
+#[test]
 fn env_file_arg_present_when_file_exists() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(dir.path().join(".env"), "FOO=bar\n").unwrap();
@@ -206,9 +261,10 @@ fn git_config_mounted_readonly_when_present() {
     };
     let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
     let joined = args.join(" ");
+    let pwd_str = dir.path().to_string_lossy();
     assert!(
-        joined.contains(".git/config:/workspace/.git/config:ro"),
-        "expected read-only git config mount in args: {joined}"
+        joined.contains(&format!(".git/config:{pwd_str}/.git/config:ro")),
+        "expected read-only git config mount at host path in args: {joined}"
     );
 }
 
@@ -412,9 +468,9 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
     let workdir = tempfile::tempdir().expect("temp workdir");
     let output_file = workdir.path().join("model_output.txt");
 
-    // Entrypoint: write $CAPSULE_MODEL to /workspace/model_output.txt then exit 0.
+    // Entrypoint: write $CAPSULE_MODEL to $CAPSULE_WORKSPACE/model_output.txt then exit 0.
     let dockerfile =
-        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"echo \\\"$CAPSULE_MODEL\\\" > /workspace/model_output.txt; exit 0\"]\n";
+        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"echo \\\"$CAPSULE_MODEL\\\" > \\\"$CAPSULE_WORKSPACE/model_output.txt\\\"; exit 0\"]\n";
     let mut child = std::process::Command::new("docker")
         .args(["build", "-t", "capsule-test-model", "-"])
         .stdin(std::process::Stdio::piped())

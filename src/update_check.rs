@@ -40,14 +40,12 @@ pub fn maybe_print_notice(rx: Receiver<Option<UpdateNotice>>) {
 }
 
 fn padding(used: usize) -> &'static str {
-    // "  Update available: X.X.X → X.X.X" + padding + "│"
-    // Box inner width = 41, "  Update available: " = 20, " → " = 3, trailing " │" = 2
-    // available for versions: 41 - 20 - 3 - 2 = 16 chars; we pad the rest
+    // Box inner width = 41, "  Update available: " = 20, " → " = 3
+    // padding fills the rest: 41 - 20 - 3 - used = 18 - used
     const INNER: usize = 41;
     const PREFIX: usize = 20; // "  Update available: "
     const ARROW: usize = 3; // " → "
-    const SUFFIX: usize = 2; // "  │" (two spaces + │ are part of format)
-    let space = INNER.saturating_sub(PREFIX + ARROW + used + SUFFIX);
+    let space = INNER.saturating_sub(PREFIX + ARROW + used);
     // Return a static slice from a fixed-length spaces string.
     &"                                         "[..space.min(41)]
 }

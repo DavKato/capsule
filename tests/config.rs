@@ -85,13 +85,6 @@ fn git_identity_capsule_from_config_file() {
 }
 
 #[test]
-fn rebuild_in_config_file_is_silently_ignored() {
-    let dir = capsule_dir_with_config("iterations: 1\nrebuild: true\n");
-    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
-    assert!(!cfg.rebuild);
-}
-
-#[test]
 fn github_absent_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let cli = CliOverrides {

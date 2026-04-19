@@ -110,6 +110,44 @@ fn github_global_from_config_file() {
 }
 
 #[test]
+fn unknown_field_in_config_produces_clear_error() {
+    let dir = capsule_dir_with_config("iterations: 1\niteraions: 5\n");
+    let cli = CliOverrides {
+        iterations: Some(1),
+        ..Default::default()
+    };
+    let err = resolve(dir.path(), cli).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("iteraions"),
+        "error chain should name the unknown field; got: {chain}"
+    );
+}
+
+#[test]
+fn removed_rebuild_key_produces_clear_error() {
+    let dir = capsule_dir_with_config("iterations: 1\nrebuild: true\n");
+    let cli = CliOverrides {
+        iterations: Some(1),
+        ..Default::default()
+    };
+    let err = resolve(dir.path(), cli).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("rebuild"),
+        "error chain should name the removed field; got: {chain}"
+    );
+}
+
+#[test]
 fn github_cli_overrides_config() {
     let dir = capsule_dir_with_config("iterations: 1\ngithub: global\n");
     let cli = CliOverrides {

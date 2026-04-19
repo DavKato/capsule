@@ -8,7 +8,7 @@ use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
 use capsule::preflight::{check_docker, env_gitignore_warning};
-use capsule::prompt::resolve_prompt;
+use capsule::prompt::{prepend_preamble, resolve_prompt};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -64,7 +64,8 @@ impl RunSession {
             resolve_git_identity(&cfg.git_identity, &process_env);
 
         let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
-        let prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
+        let user_prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
+        let prompt = prepend_preamble(&user_prompt);
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;

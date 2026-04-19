@@ -1,4 +1,4 @@
-use capsule::prompt::resolve_prompt;
+use capsule::prompt::{prepend_preamble, resolve_prompt, SYSTEM_PREAMBLE};
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -57,4 +57,20 @@ fn prompt_contents_are_byte_for_byte() {
     std::fs::write(dir.path().join("prompt.md"), &bytes).unwrap();
     let contents = resolve_prompt(dir.path(), None).unwrap();
     assert_eq!(contents, bytes);
+}
+
+#[test]
+fn system_preamble_is_non_empty() {
+    assert!(!SYSTEM_PREAMBLE.trim().is_empty());
+}
+
+#[test]
+fn preamble_is_prepended_before_user_content() {
+    let result = prepend_preamble("do the thing");
+    let preamble_pos = result.find(SYSTEM_PREAMBLE).unwrap();
+    let user_pos = result.find("do the thing").unwrap();
+    assert!(
+        preamble_pos < user_pos,
+        "preamble must come before user content"
+    );
 }

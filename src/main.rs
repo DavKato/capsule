@@ -53,7 +53,7 @@ enum Commands {
         #[arg(long, default_value = ".capsule")]
         capsule_dir: PathBuf,
 
-        /// Force a clean rebuild of Docker images, bypassing the layer cache. Useful when something outside the Dockerfile changed (upstream base image, network resources fetched by RUN, etc.)
+        /// Force a clean rebuild, bypassing the layer cache
         #[arg(long)]
         rebuild: bool,
 

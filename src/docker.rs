@@ -17,6 +17,7 @@ const BASE_IMAGE: &str = "capsule";
 const DOCKERFILE_HASH_LABEL: &str = "capsule.dockerfile.hash";
 
 fn dockerfile_hash(content: &str) -> String {
+    // FNV-1a with hardcoded constants — DefaultHasher is not stable across Rust versions.
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in content.bytes() {
         hash ^= byte as u64;

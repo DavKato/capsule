@@ -1036,6 +1036,37 @@ fn build_base_image_stores_hash_label() {
 
 #[test]
 #[requires_docker]
+#[serial]
+fn build_base_image_skips_rebuild_when_hash_matches() {
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule"])
+        .output();
+
+    build_base_image(false).expect("first build should succeed");
+
+    let id1 = std::process::Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", "capsule"])
+        .output()
+        .expect("docker inspect should run");
+    let id1 = String::from_utf8(id1.stdout).unwrap().trim().to_owned();
+
+    build_base_image(false).expect("second build should succeed");
+
+    let id2 = std::process::Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", "capsule"])
+        .output()
+        .expect("docker inspect should run");
+    let id2 = String::from_utf8(id2.stdout).unwrap().trim().to_owned();
+
+    assert_eq!(id1, id2, "image should not be rebuilt when hash matches");
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule"])
+        .output();
+}
+
+#[test]
+#[requires_docker]
 fn build_derived_image_stores_hash_label() {
     let capsule_dir = tempfile::tempdir().expect("temp dir");
     let base = tempfile::tempdir().expect("temp dir");
@@ -1091,18 +1122,12 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
         .unwrap()
         .unwrap();
 
-    // Record hash from first build.
-    let out1 = std::process::Command::new("docker")
-        .args([
-            "image",
-            "inspect",
-            "--format",
-            r#"{{index .Config.Labels "capsule.dockerfile.hash"}}"#,
-            &name,
-        ])
+    // Record image ID from first build.
+    let id1_out = std::process::Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", &name])
         .output()
         .unwrap();
-    let hash1 = String::from_utf8(out1.stdout).unwrap().trim().to_owned();
+    let id1 = String::from_utf8(id1_out.stdout).unwrap().trim().to_owned();
 
     // Change the Dockerfile content.
     std::fs::write(&dockerfile_path, "FROM busybox\nRUN echo version2\n").unwrap();
@@ -1113,22 +1138,13 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
         .unwrap();
     assert_eq!(name, name2, "image name should be unchanged");
 
-    let out2 = std::process::Command::new("docker")
-        .args([
-            "image",
-            "inspect",
-            "--format",
-            r#"{{index .Config.Labels "capsule.dockerfile.hash"}}"#,
-            &name2,
-        ])
+    let id2_out = std::process::Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", &name2])
         .output()
         .unwrap();
-    let hash2 = String::from_utf8(out2.stdout).unwrap().trim().to_owned();
+    let id2 = String::from_utf8(id2_out.stdout).unwrap().trim().to_owned();
 
-    assert_ne!(
-        hash1, hash2,
-        "hash label should update after Dockerfile change"
-    );
+    assert_ne!(id1, id2, "image should be rebuilt after Dockerfile change");
 
     let _ = std::process::Command::new("docker")
         .args(["rmi", "-f", &name])

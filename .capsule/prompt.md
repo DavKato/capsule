@@ -6,9 +6,8 @@ Follow all conventions in CLAUDE.md.
 
 # ISSUES
 
-GitHub issues are provided at start of context.
-
 You will work on the issues that have "AFK" label only.
+Filtered gitHub issues are provided at start of context.
 
 If all AFK tasks are complete, output <promise>AFK_COMPLETE</promise>.
 

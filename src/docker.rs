@@ -1,3 +1,5 @@
+use crate::stream_parser::StreamParser;
+use crate::verdict::VerdictStatus;
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -223,11 +225,6 @@ pub fn contains_auth_failure(line: &str) -> bool {
     line.contains("authentication_failed")
 }
 
-/// Returns `true` if the given line contains the AFK_COMPLETE completion marker.
-pub fn contains_no_more_tasks(line: &str) -> bool {
-    line.contains("<promise>AFK_COMPLETE</promise>")
-}
-
 /// Returns a unique container name for the given iteration.
 ///
 /// Format: `capsule-run-<pid>-<iteration>`.  Unique per process per iteration
@@ -359,13 +356,20 @@ pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Returns the JSON content for a per-run `.mcp.json` file that points
+/// `capsule mcp-serve` at the given binary path inside the container.
+pub fn make_mcp_config(capsule_container_bin: &std::path::Path) -> String {
+    let bin = capsule_container_bin.to_string_lossy();
+    format!(r#"{{"mcpServers":{{"capsule":{{"command":"{bin}","args":["mcp-serve"]}}}}}}"#)
+}
+
 fn stream_output(
     reader: BufReader<impl std::io::Read>,
     mut jq_stdin: impl Write,
     verbose: bool,
-) -> Result<(bool, bool)> {
+) -> Result<(bool, Option<crate::verdict::Verdict>)> {
     let mut auth_failed = false;
-    let mut no_more_tasks = false;
+    let mut parser = StreamParser::new();
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
@@ -373,16 +377,14 @@ fn stream_output(
         if contains_auth_failure(&line) {
             auth_failed = true;
         }
-        if contains_no_more_tasks(&line) {
-            no_more_tasks = true;
-        }
+        parser.feed(&line);
         if verbose {
             eprintln!("{line}");
         }
         let _ = writeln!(jq_stdin, "{line}");
     }
 
-    Ok((auth_failed, no_more_tasks))
+    Ok((auth_failed, parser.verdict().cloned()))
 }
 
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
@@ -392,7 +394,7 @@ fn stream_output(
 /// `active_container` is a shared slot; this function writes the container name
 /// before spawning and clears it after the container exits.
 ///
-/// Returns [`IterationOutcome::Done`] when the output contains the NO MORE TASKS marker.
+/// Returns [`IterationOutcome::Done`] when a `pass` verdict is observed in the stream.
 ///
 /// # Errors
 /// - Container exits non-zero → error naming the exit code.
@@ -413,6 +415,23 @@ pub fn run_iteration(
     prompt_file.flush().context("failed to flush prompt file")?;
     let prompt_path = prompt_file.path().to_owned();
 
+    // Per-run MCP config: points `capsule mcp-serve` at the bind-mounted binary.
+    const CAPSULE_CONTAINER_BIN: &str = "/usr/local/bin/capsule";
+    let mcp_config = make_mcp_config(std::path::Path::new(CAPSULE_CONTAINER_BIN));
+    let mut mcp_file = tempfile::Builder::new()
+        .prefix("capsule-mcp-")
+        .suffix(".json")
+        .tempfile()
+        .context("failed to create mcp config temp file")?;
+    mcp_file
+        .write_all(mcp_config.as_bytes())
+        .context("failed to write mcp config")?;
+    mcp_file.flush().context("failed to flush mcp config")?;
+    let mcp_path = mcp_file.path().to_owned();
+
+    let capsule_host_bin =
+        std::env::current_exe().context("failed to resolve capsule binary path")?;
+
     let name = container_name_for(iteration);
 
     // Register the container name so the ctrlc handler can stop it.
@@ -420,7 +439,22 @@ pub fn run_iteration(
         *slot = Some(name.clone());
     }
 
-    let docker_args = build_docker_args(cfg, &prompt_path, &name);
+    let mut docker_args = build_docker_args(cfg, &prompt_path, &name);
+    // Insert mcp mounts before the image name (last element).
+    let image = docker_args
+        .pop()
+        .expect("docker args must end with image name");
+    docker_args.push(format!(
+        "-v={}:{}:ro",
+        capsule_host_bin.display(),
+        CAPSULE_CONTAINER_BIN
+    ));
+    docker_args.push(format!(
+        "-v={}:/home/claude/.mcp.json:ro",
+        mcp_path.display()
+    ));
+    docker_args.push(image);
+    let docker_args = docker_args;
 
     let mut docker_child = Command::new("docker")
         .args(&docker_args)
@@ -441,7 +475,7 @@ pub fn run_iteration(
     let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
 
     // stream_output drops jq_stdin on return, signalling EOF to jq.
-    let (auth_failed, no_more_tasks) = stream_output(reader, jq_stdin, cfg.verbose)?;
+    let (auth_failed, verdict) = stream_output(reader, jq_stdin, cfg.verbose)?;
 
     let _ = jq_child.wait();
     let status = docker_child.wait().context("docker run did not complete")?;
@@ -461,7 +495,7 @@ pub fn run_iteration(
         bail!("container exited with code {}", status.code().unwrap_or(-1));
     }
 
-    if no_more_tasks {
+    if verdict.as_ref().map(|v| &v.status) == Some(&VerdictStatus::Pass) {
         Ok(IterationOutcome::Done)
     } else {
         Ok(IterationOutcome::Continue)

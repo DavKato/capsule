@@ -6,6 +6,7 @@ use std::io;
 use std::path::PathBuf;
 
 mod run;
+use capsule::mcp_server;
 use run::RunSession;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -84,6 +85,10 @@ enum Commands {
 
     /// Download and install the latest capsule release
     Update,
+
+    /// Run the MCP server over stdio (used inside the container by Claude Code)
+    #[command(hide = true)]
+    McpServe,
 }
 
 fn main() -> Result<()> {
@@ -109,6 +114,10 @@ fn main() -> Result<()> {
             if !status.success() {
                 std::process::exit(status.code().unwrap_or(1));
             }
+            Ok(())
+        }
+        Commands::McpServe => {
+            mcp_server::run_server();
             Ok(())
         }
         Commands::Run {

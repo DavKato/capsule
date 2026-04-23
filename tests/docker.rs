@@ -2,8 +2,8 @@ mod common;
 
 use capsule::docker::{
     build_base_image, build_derived_image, build_docker_args, contains_auth_failure,
-    contains_no_more_tasks, derived_image_name, detect_compose_network, run_iteration,
-    IterationOutcome, RunConfig, DOCKERFILE, STREAM_DISPLAY_JQ,
+    derived_image_name, detect_compose_network, make_mcp_config, run_iteration, RunConfig,
+    DOCKERFILE, STREAM_DISPLAY_JQ,
 };
 use common::requires_docker;
 use serial_test::serial;
@@ -51,21 +51,15 @@ fn auth_failure_not_triggered_on_empty() {
 }
 
 #[test]
-fn no_more_tasks_detected_in_result_line() {
-    let line =
-        r#"{"type":"result","subtype":"success","result":"<promise>AFK_COMPLETE</promise>"}"#;
-    assert!(contains_no_more_tasks(line));
-}
-
-#[test]
-fn no_more_tasks_not_triggered_on_normal_output() {
-    let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#;
-    assert!(!contains_no_more_tasks(line));
-}
-
-#[test]
-fn no_more_tasks_not_triggered_on_empty() {
-    assert!(!contains_no_more_tasks(""));
+fn make_mcp_config_contains_binary_path_and_mcp_serve() {
+    let bin = std::path::Path::new("/usr/local/bin/capsule");
+    let cfg = make_mcp_config(bin);
+    let v: serde_json::Value = serde_json::from_str(&cfg).expect("valid JSON");
+    assert_eq!(
+        v["mcpServers"]["capsule"]["command"],
+        "/usr/local/bin/capsule"
+    );
+    assert_eq!(v["mcpServers"]["capsule"]["args"][0], "mcp-serve");
 }
 
 #[test]
@@ -849,4 +843,55 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
     let _ = std::process::Command::new("docker")
         .args(["rmi", "-f", &name])
         .output();
+}
+
+/// Smoke test: spawn `capsule mcp-serve` over stdio, send MCP initialize +
+/// submit_verdict tool call, assert canonical responses.
+/// Does not invoke Claude — tests the MCP server binary directly.
+#[test]
+#[requires_docker]
+fn mcp_serve_handles_initialize_and_submit_verdict() {
+    use std::io::{BufRead, BufReader, Write};
+
+    let capsule_bin = assert_cmd::cargo::cargo_bin("capsule");
+
+    let mut child = std::process::Command::new(&capsule_bin)
+        .arg("mcp-serve")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn capsule mcp-serve");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+
+    // initialize
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":0,"method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"test","version":"0.1"}}}}}}"#
+    )
+    .unwrap();
+    let mut init_resp = String::new();
+    reader.read_line(&mut init_resp).unwrap();
+    let init_v: serde_json::Value = serde_json::from_str(init_resp.trim()).unwrap();
+    assert_eq!(init_v["result"]["protocolVersion"], "2024-11-05");
+
+    // tools/call submit_verdict pass
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"submit_verdict","arguments":{{"status":"pass","notes":"smoke test"}}}}}}"#
+    )
+    .unwrap();
+    let mut call_resp = String::new();
+    reader.read_line(&mut call_resp).unwrap();
+    let call_v: serde_json::Value = serde_json::from_str(call_resp.trim()).unwrap();
+    let text = call_v["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["ok"], true);
+    assert_eq!(inner["verdict"]["status"], "pass");
+    assert_eq!(inner["verdict"]["notes"], "smoke test");
+
+    drop(stdin);
+    let _ = child.wait();
 }

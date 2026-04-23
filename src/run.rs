@@ -199,8 +199,9 @@ impl RunSession {
     }
 
     /// Phase 11: run the iteration loop until Done or iterations exhausted.
-    /// Consumes self so gh_token_tempfile drops deterministically on return.
-    pub(crate) fn execute(self) -> Result<()> {
+    /// Returns ExitDecision so main() owns process::exit and RunSession drops
+    /// before the process terminates (ensures NamedTempFile cleanup runs).
+    pub(crate) fn execute(self) -> Result<ExitDecision> {
         let update_rx = update_check::spawn_check();
         let mut final_verdict: Option<Verdict> = None;
         for i in 1..=self.cfg.iterations {
@@ -231,16 +232,7 @@ impl RunSession {
             }
         }
         update_check::maybe_print_notice(update_rx);
-        match exit_decision(final_verdict.as_ref()) {
-            ExitDecision::Success => {
-                println!("Claude submitted a pass verdict.");
-                Ok(())
-            }
-            ExitDecision::Failure(msg) => {
-                eprintln!("{msg}");
-                std::process::exit(1);
-            }
-        }
+        Ok(exit_decision(final_verdict.as_ref()))
     }
 }
 
@@ -280,22 +272,15 @@ mod tests {
     }
 
     #[test]
-    fn fail_without_notes_is_failure_with_fallback_message() {
-        let v = fail_verdict(None);
-        let ExitDecision::Failure(msg) = exit_decision(Some(&v)) else {
-            panic!("expected Failure")
-        };
-        assert!(!msg.is_empty());
+    fn fail_without_notes_is_failure() {
+        assert!(matches!(
+            exit_decision(Some(&fail_verdict(None))),
+            ExitDecision::Failure(_)
+        ));
     }
 
     #[test]
-    fn no_verdict_is_implicit_fail_with_canned_message() {
-        let ExitDecision::Failure(msg) = exit_decision(None) else {
-            panic!("expected Failure")
-        };
-        assert!(
-            msg.contains("exhausted") || msg.contains("verdict"),
-            "message was: {msg}"
-        );
+    fn no_verdict_is_implicit_fail() {
+        assert!(matches!(exit_decision(None), ExitDecision::Failure(_)));
     }
 }

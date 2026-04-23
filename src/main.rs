@@ -147,7 +147,16 @@ fn main() -> Result<()> {
                 git_identity,
                 github,
             };
-            RunSession::prepare(capsule_dir, overrides)?.execute()
+            match RunSession::prepare(capsule_dir, overrides)?.execute()? {
+                run::ExitDecision::Success => {
+                    println!("Claude submitted a pass verdict.");
+                    Ok(())
+                }
+                run::ExitDecision::Failure(msg) => {
+                    eprintln!("{msg}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }

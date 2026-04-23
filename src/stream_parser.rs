@@ -104,11 +104,36 @@ mod tests {
     }
 
     #[test]
+    fn fail_verdict_preserves_notes() {
+        let mut p = StreamParser::new();
+        let v = p.feed(FAIL_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Fail);
+        assert_eq!(v.notes.as_deref(), Some("tests broke"));
+    }
+
+    #[test]
     fn last_wins_on_duplicate_calls() {
         let mut p = StreamParser::new();
         p.feed(PASS_LINE);
         let v = p.feed(FAIL_LINE).unwrap();
         assert_eq!(v.status, VerdictStatus::Fail);
+    }
+
+    #[test]
+    fn fail_then_pass_last_wins_is_pass() {
+        let mut p = StreamParser::new();
+        p.feed(FAIL_LINE);
+        let v = p.feed(PASS_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Pass);
+    }
+
+    #[test]
+    fn no_verdict_in_stream_returns_none() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        p.feed(RESULT_LINE);
+        p.feed("not json");
+        assert!(p.verdict().is_none());
     }
 
     #[test]

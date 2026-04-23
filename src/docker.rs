@@ -1,5 +1,4 @@
 use crate::stream_parser::StreamParser;
-use crate::verdict::VerdictStatus;
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -212,12 +211,12 @@ pub struct RunConfig {
 }
 
 /// Outcome of a single iteration.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum IterationOutcome {
     /// Loop should continue to the next iteration.
     Continue,
-    /// Claude signalled completion; loop should stop.
-    Done,
+    /// Claude submitted a verdict; loop should stop. Carries the verdict.
+    Done(crate::verdict::Verdict),
 }
 
 /// Returns `true` if the given line of container output signals an authentication failure.
@@ -498,9 +497,8 @@ pub fn run_iteration(
         bail!("container exited with code {}", status.code().unwrap_or(-1));
     }
 
-    if verdict.as_ref().map(|v| &v.status) == Some(&VerdictStatus::Pass) {
-        Ok(IterationOutcome::Done)
-    } else {
-        Ok(IterationOutcome::Continue)
+    match verdict {
+        Some(v) => Ok(IterationOutcome::Done(v)),
+        None => Ok(IterationOutcome::Continue),
     }
 }

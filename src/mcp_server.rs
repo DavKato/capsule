@@ -203,4 +203,18 @@ mod tests {
         let req = r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
         assert!(handle_message(req).is_none());
     }
+
+    #[test]
+    fn malformed_call_does_not_produce_verdict() {
+        // ok:false responses from mcp_server must not carry a Verdict field.
+        let bad_status = json!({"status": "bogus"});
+        let res = handle_verdict_call(&bad_status);
+        assert_eq!(res["ok"], false);
+        assert!(res.get("verdict").is_none() || res["verdict"].is_null());
+
+        let missing_status = json!({"notes": "oops"});
+        let res = handle_verdict_call(&missing_status);
+        assert_eq!(res["ok"], false);
+        assert!(res.get("verdict").is_none() || res["verdict"].is_null());
+    }
 }

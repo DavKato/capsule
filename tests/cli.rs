@@ -21,6 +21,7 @@ fn make_capsule_dir(prompt: &str) -> TempDir {
 #[requires_docker]
 fn iterations_prints_headers() {
     let dir = make_capsule_dir("test prompt");
+    // No verdict is submitted → capsule exhausts the budget and exits non-zero.
     cmd()
         .args([
             "run",
@@ -31,10 +32,11 @@ fn iterations_prints_headers() {
             dir.path().to_str().unwrap(),
         ])
         .assert()
-        .success()
+        .failure()
         .stdout(predicate::str::contains("── Iteration 1 / 3 ──"))
         .stdout(predicate::str::contains("── Iteration 2 / 3 ──"))
-        .stdout(predicate::str::contains("── Iteration 3 / 3 ──"));
+        .stdout(predicate::str::contains("── Iteration 3 / 3 ──"))
+        .stderr(predicate::str::contains("exhausted"));
 }
 
 #[test]

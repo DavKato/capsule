@@ -845,22 +845,32 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
         .output();
 }
 
-/// Smoke test: spawn `capsule mcp-serve` over stdio, send MCP initialize +
-/// submit_verdict tool call, assert canonical responses.
-/// Does not invoke Claude — tests the MCP server binary directly.
 #[test]
 #[requires_docker]
-fn mcp_serve_handles_initialize_and_submit_verdict() {
+fn mcp_serve_handles_initialize_and_submit_verdict_in_container() {
     use std::io::{BufRead, BufReader, Write};
 
     let capsule_bin = assert_cmd::cargo::cargo_bin("capsule");
 
-    let mut child = std::process::Command::new(&capsule_bin)
-        .arg("mcp-serve")
+    let _ = std::process::Command::new("docker")
+        .args(["pull", "--quiet", "archlinux:base"])
+        .output();
+
+    let mut child = std::process::Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "-i",
+            &format!("-v={}:/usr/local/bin/capsule:ro", capsule_bin.display()),
+            "archlinux:base",
+            "/usr/local/bin/capsule",
+            "mcp-serve",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("failed to spawn capsule mcp-serve");
+        .expect("failed to spawn docker run capsule mcp-serve");
 
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
@@ -877,7 +887,6 @@ fn mcp_serve_handles_initialize_and_submit_verdict() {
     let init_v: serde_json::Value = serde_json::from_str(init_resp.trim()).unwrap();
     assert_eq!(init_v["result"]["protocolVersion"], "2024-11-05");
 
-    // tools/call submit_verdict pass
     writeln!(
         stdin,
         r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"submit_verdict","arguments":{{"status":"pass","notes":"smoke test"}}}}}}"#

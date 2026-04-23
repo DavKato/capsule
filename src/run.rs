@@ -205,7 +205,7 @@ impl RunSession {
                 claude_dir: self.claude_dir.clone(),
             };
             if run_iteration(&run_cfg, i, &self.active_container)? == IterationOutcome::Done {
-                println!("Claude signalled completion after iteration {i}. No more tasks.");
+                println!("Claude submitted a pass verdict after iteration {i}.");
                 break;
             }
         }

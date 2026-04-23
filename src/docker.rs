@@ -360,7 +360,10 @@ pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
 /// `capsule mcp-serve` at the given binary path inside the container.
 pub fn make_mcp_config(capsule_container_bin: &std::path::Path) -> String {
     let bin = capsule_container_bin.to_string_lossy();
-    format!(r#"{{"mcpServers":{{"capsule":{{"command":"{bin}","args":["mcp-serve"]}}}}}}"#)
+    serde_json::json!({
+        "mcpServers": {"capsule": {"command": bin.as_ref(), "args": ["mcp-serve"]}}
+    })
+    .to_string()
 }
 
 fn stream_output(

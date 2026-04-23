@@ -25,8 +25,8 @@ pub fn handle_verdict_call(args: &Value) -> Value {
 /// `Some(response_json)` for requests.
 pub fn handle_message(line: &str) -> Option<String> {
     let msg: Value = serde_json::from_str(line).ok()?;
-    let id = msg.get("id")?;
     let method = msg.get("method")?.as_str()?;
+    let id = msg.get("id")?;
 
     let result: Value = match method {
         "initialize" => json!({
@@ -65,7 +65,13 @@ pub fn handle_message(line: &str) -> Option<String> {
                 json!({"content": [{"type": "text", "text": text}]})
             }
         }
-        _ => return None,
+        _ => {
+            let response = json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": {"code": -32601, "message": "Method not found"}
+            });
+            return Some(serde_json::to_string(&response).unwrap_or_default());
+        }
     };
 
     let response = json!({"jsonrpc": "2.0", "id": id, "result": result});
@@ -185,8 +191,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_method_returns_none() {
+    fn unknown_method_with_id_returns_error() {
         let req = r#"{"jsonrpc":"2.0","id":4,"method":"unknown/method","params":{}}"#;
+        let res = handle_message(req).unwrap();
+        let v: Value = serde_json::from_str(&res).unwrap();
+        assert_eq!(v["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn notification_no_id_returns_none() {
+        let req = r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
         assert!(handle_message(req).is_none());
     }
 }

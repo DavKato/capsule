@@ -5,16 +5,23 @@ use serde_json::Value;
 /// Last-wins: calling `feed` multiple times keeps the latest valid verdict.
 pub struct StreamParser {
     verdict: Option<Verdict>,
+    auth_failed: bool,
 }
 
 impl StreamParser {
     pub fn new() -> Self {
-        Self { verdict: None }
+        Self {
+            verdict: None,
+            auth_failed: false,
+        }
     }
 
     /// Feed one line of stream-json. Returns the latest valid verdict seen so
     /// far (updated when this line contains a valid `submit_verdict` call).
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
+        if line.contains("authentication_failed") {
+            self.auth_failed = true;
+        }
         if let Some(v) = extract_verdict(line) {
             self.verdict = Some(v);
         }
@@ -23,6 +30,10 @@ impl StreamParser {
 
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
+    }
+
+    pub fn auth_failed(&self) -> bool {
+        self.auth_failed
     }
 }
 
@@ -69,6 +80,7 @@ mod tests {
     const TEXT_LINE: &str =
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking..."}]}}"#;
     const RESULT_LINE: &str = r#"{"type":"result","subtype":"success","result":"done"}"#;
+    const AUTH_FAIL_LINE: &str = r#"{"type":"result","subtype":"error","error":{"type":"authentication_failed","message":"invalid token"}}"#;
 
     #[test]
     fn non_json_returns_none() {
@@ -165,5 +177,19 @@ mod tests {
         p.feed(PASS_LINE);
         let v = p.feed(TEXT_LINE).unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
+    }
+
+    #[test]
+    fn auth_failure_line_sets_auth_failed() {
+        let mut p = StreamParser::new();
+        p.feed(AUTH_FAIL_LINE);
+        assert!(p.auth_failed());
+    }
+
+    #[test]
+    fn normal_line_does_not_set_auth_failed() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        assert!(!p.auth_failed());
     }
 }

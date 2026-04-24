@@ -1,9 +1,9 @@
 mod common;
 
 use capsule::docker::{
-    build_base_image, build_derived_image, build_docker_args, contains_auth_failure,
-    derived_image_name, detect_compose_network, make_mcp_config, run_iteration, RunConfig,
-    DOCKERFILE, STREAM_DISPLAY_JQ,
+    build_base_image, build_derived_image, build_docker_args, derived_image_name,
+    detect_compose_network, make_mcp_config, run_iteration, RunConfig, DOCKERFILE,
+    STREAM_DISPLAY_JQ,
 };
 use common::requires_docker;
 use serial_test::serial;
@@ -31,23 +31,6 @@ fn embedded_stream_display_jq_is_non_empty() {
         STREAM_DISPLAY_JQ.contains("fromjson"),
         "jq filter must contain fromjson"
     );
-}
-
-#[test]
-fn auth_failure_detected_in_output() {
-    let line = r#"{"type":"result","subtype":"error","error":"authentication_failed"}"#;
-    assert!(contains_auth_failure(line));
-}
-
-#[test]
-fn auth_failure_not_triggered_on_normal_output() {
-    let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#;
-    assert!(!contains_auth_failure(line));
-}
-
-#[test]
-fn auth_failure_not_triggered_on_empty() {
-    assert!(!contains_auth_failure(""));
 }
 
 #[test]

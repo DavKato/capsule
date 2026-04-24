@@ -219,11 +219,6 @@ pub enum IterationOutcome {
     Done(crate::verdict::Verdict),
 }
 
-/// Returns `true` if the given line of container output signals an authentication failure.
-pub fn contains_auth_failure(line: &str) -> bool {
-    line.contains("authentication_failed")
-}
-
 /// Returns a unique container name for the given iteration.
 ///
 /// Format: `capsule-run-<pid>-<iteration>`.  Unique per process per iteration
@@ -370,15 +365,10 @@ fn stream_output(
     mut jq_stdin: impl Write,
     verbose: bool,
 ) -> Result<(bool, Option<crate::verdict::Verdict>)> {
-    let mut auth_failed = false;
     let mut parser = StreamParser::new();
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
-
-        if contains_auth_failure(&line) {
-            auth_failed = true;
-        }
         parser.feed(&line);
         if verbose {
             eprintln!("{line}");
@@ -386,7 +376,7 @@ fn stream_output(
         let _ = writeln!(jq_stdin, "{line}");
     }
 
-    Ok((auth_failed, parser.verdict().cloned()))
+    Ok((parser.auth_failed(), parser.verdict().cloned()))
 }
 
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.

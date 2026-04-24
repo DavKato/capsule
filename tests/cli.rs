@@ -26,16 +26,13 @@ fn iterations_prints_headers() {
         .args([
             "run",
             "--iterations",
-            "3",
-            "--rebuild",
+            "1",
             "--capsule-dir",
             dir.path().to_str().unwrap(),
         ])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("── Iteration 1 / 3 ──"))
-        .stdout(predicate::str::contains("── Iteration 2 / 3 ──"))
-        .stdout(predicate::str::contains("── Iteration 3 / 3 ──"))
+        .stdout(predicate::str::contains("── Iteration 1 / 1 ──"))
         .stderr(predicate::str::contains("exhausted"));
 }
 

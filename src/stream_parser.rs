@@ -37,6 +37,9 @@ impl StreamParser {
             }
         }
         if let Some(v) = extract_verdict(line) {
+            if self.verdict.is_some() {
+                eprintln!("[capsule] warning: submit_verdict called more than once; using latest");
+            }
             self.verdict = Some(v);
         }
         self.verdict.as_ref()

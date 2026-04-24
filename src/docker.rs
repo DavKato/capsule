@@ -441,12 +441,12 @@ pub fn run_iteration(
         .pop()
         .expect("docker args must end with image name");
     docker_args.push(format!(
-        "-v={}:{}:ro",
+        "--mount=type=bind,src={},dst={},readonly",
         capsule_host_bin.display(),
         CAPSULE_CONTAINER_BIN
     ));
     docker_args.push(format!(
-        "-v={}:/home/claude/.mcp.json:ro",
+        "--mount=type=bind,src={},dst=/home/claude/.mcp.json,readonly",
         mcp_path.display()
     ));
     docker_args.push(image);

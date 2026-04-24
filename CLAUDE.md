@@ -19,11 +19,6 @@ unavailable (e.g. inside a capsule container) and run fully when it is available
 
 The macro lives in `capsule-macros/src/lib.rs`. Test files must have:
 
-```rust
-mod common;
-use common::requires_docker;  // re-exported from capsule-macros
-```
-
 Unit tests (no subprocesses) live inline in `src/` via `#[cfg(test)]`; integration tests live in `tests/`.
 
 ## Feedback loops
@@ -32,7 +27,7 @@ Before committing, always run:
 
 ```sh
 cargo fmt
-cargo clippy -- -D warnings
+cargo clippy --tests -- -D warnings
 cargo test
 ```
 

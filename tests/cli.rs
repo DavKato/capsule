@@ -1,5 +1,4 @@
 use assert_cmd::Command;
-use predicates::prelude::*;
 
 fn cmd() -> Command {
     Command::cargo_bin("capsule").unwrap()

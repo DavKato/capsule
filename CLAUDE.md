@@ -21,6 +21,10 @@ The macro lives in `capsule-macros/src/lib.rs`. Test files must have:
 
 Unit tests (no subprocesses) live inline in `src/` via `#[cfg(test)]`; integration tests live in `tests/`.
 
+## Domain language
+
+Domain vocabulary lives in `CONTEXT.md` — use it for code, commits, and issues.
+
 ## Feedback loops
 
 Before committing, always run:

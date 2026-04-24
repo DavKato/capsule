@@ -24,6 +24,8 @@ mod common;
 use common::requires_docker;  // re-exported from capsule-macros
 ```
 
+Unit tests (no subprocesses) live inline in `src/` via `#[cfg(test)]`; integration tests live in `tests/`.
+
 ## Feedback loops
 
 Before committing, always run:

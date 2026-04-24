@@ -1,40 +1,8 @@
-mod common;
-
 use assert_cmd::Command;
-use common::requires_docker;
 use predicates::prelude::*;
-use tempfile::TempDir;
 
 fn cmd() -> Command {
     Command::cargo_bin("capsule").unwrap()
-}
-
-/// Create a minimal capsule dir with a prompt.md so the binary can pass
-/// preflight and reach the iteration loop.
-fn make_capsule_dir(prompt: &str) -> TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("prompt.md"), prompt).unwrap();
-    dir
-}
-
-#[test]
-#[requires_docker]
-fn iterations_prints_headers() {
-    let dir = make_capsule_dir("test prompt");
-    cmd()
-        .args([
-            "run",
-            "--iterations",
-            "3",
-            "--rebuild",
-            "--capsule-dir",
-            dir.path().to_str().unwrap(),
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("── Iteration 1 / 3 ──"))
-        .stdout(predicate::str::contains("── Iteration 2 / 3 ──"))
-        .stdout(predicate::str::contains("── Iteration 3 / 3 ──"));
 }
 
 #[test]

@@ -14,4 +14,4 @@ if [ -x /home/claude/before-each.sh ]; then
   /home/claude/before-each.sh
   echo "── before-each.sh complete ───────────────────────────────────"
 fi
-cat /home/claude/prompt.txt | claude --dangerously-skip-permissions --model "${CAPSULE_MODEL:-claude-sonnet-4-6}" -p --verbose --output-format stream-json
+cat /home/claude/prompt.txt | claude --dangerously-skip-permissions --model "${CAPSULE_MODEL:-claude-sonnet-4-6}" -p --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json

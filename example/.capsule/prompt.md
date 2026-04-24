@@ -10,7 +10,7 @@ GitHub issues are provided at start of context.
 
 You will work on the issues that have "AFK" label only.
 
-If all AFK tasks are complete, output <promise>AFK_COMPLETE</promise>.
+When all AFK tasks are complete, call `submit_verdict(status="pass", notes="Queue drained.")`.
 
 # CONSTRAINTS
 

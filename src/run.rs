@@ -10,10 +10,28 @@ use capsule::hooks::run_before_all;
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use capsule::prompt::{prepend_preamble, resolve_prompt};
 use capsule::update_check;
+use capsule::verdict::{Verdict, VerdictStatus};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+pub(crate) enum ExitDecision {
+    Success,
+    Failure(String),
+}
+
+pub(crate) fn exit_decision(verdict: Option<&Verdict>) -> ExitDecision {
+    match verdict {
+        Some(v) if v.status == VerdictStatus::Pass => ExitDecision::Success,
+        Some(v) => ExitDecision::Failure(
+            v.notes
+                .clone()
+                .unwrap_or_else(|| "fail verdict (no notes provided)".to_string()),
+        ),
+        None => ExitDecision::Failure("capsule exhausted iterations without a verdict".to_string()),
+    }
+}
 
 pub(crate) struct RunSession {
     cfg: Config,
@@ -181,9 +199,11 @@ impl RunSession {
     }
 
     /// Phase 11: run the iteration loop until Done or iterations exhausted.
-    /// Consumes self so gh_token_tempfile drops deterministically on return.
-    pub(crate) fn execute(self) -> Result<()> {
+    /// Returns ExitDecision so main() owns process::exit and RunSession drops
+    /// before the process terminates (ensures NamedTempFile cleanup runs).
+    pub(crate) fn execute(self) -> Result<ExitDecision> {
         let update_rx = update_check::spawn_check();
+        let mut final_verdict: Option<Verdict> = None;
         for i in 1..=self.cfg.iterations {
             println!("── Iteration {} / {} ──", i, self.cfg.iterations);
             let run_cfg = RunConfig {
@@ -204,12 +224,63 @@ impl RunSession {
                 compose_network: self.compose_network.clone(),
                 claude_dir: self.claude_dir.clone(),
             };
-            if run_iteration(&run_cfg, i, &self.active_container)? == IterationOutcome::Done {
-                println!("Claude signalled completion after iteration {i}. No more tasks.");
+            if let IterationOutcome::Done(verdict) =
+                run_iteration(&run_cfg, i, &self.active_container)?
+            {
+                final_verdict = Some(verdict);
                 break;
             }
         }
         update_check::maybe_print_notice(update_rx);
-        Ok(())
+        Ok(exit_decision(final_verdict.as_ref()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pass_verdict(notes: Option<&str>) -> Verdict {
+        Verdict {
+            status: VerdictStatus::Pass,
+            notes: notes.map(str::to_owned),
+        }
+    }
+
+    fn fail_verdict(notes: Option<&str>) -> Verdict {
+        Verdict {
+            status: VerdictStatus::Fail,
+            notes: notes.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn pass_is_success() {
+        assert!(matches!(
+            exit_decision(Some(&pass_verdict(None))),
+            ExitDecision::Success
+        ));
+    }
+
+    #[test]
+    fn fail_with_notes_is_failure_containing_notes() {
+        let v = fail_verdict(Some("build broke"));
+        let ExitDecision::Failure(msg) = exit_decision(Some(&v)) else {
+            panic!("expected Failure")
+        };
+        assert!(msg.contains("build broke"), "message was: {msg}");
+    }
+
+    #[test]
+    fn fail_without_notes_is_failure() {
+        assert!(matches!(
+            exit_decision(Some(&fail_verdict(None))),
+            ExitDecision::Failure(_)
+        ));
+    }
+
+    #[test]
+    fn no_verdict_is_implicit_fail() {
+        assert!(matches!(exit_decision(None), ExitDecision::Failure(_)));
     }
 }

@@ -1,0 +1,281 @@
+use crate::verdict::{Verdict, VerdictStatus};
+use serde_json::Value;
+
+/// Scans Claude Code stream-json lines for `submit_verdict` tool_use events.
+/// Last-wins: calling `feed` multiple times keeps the latest valid verdict.
+pub struct StreamParser {
+    verdict: Option<Verdict>,
+    auth_failed: bool,
+    init_seen: bool,
+    submit_verdict_registered: bool,
+}
+
+impl StreamParser {
+    pub fn new() -> Self {
+        Self {
+            verdict: None,
+            auth_failed: false,
+            init_seen: false,
+            submit_verdict_registered: false,
+        }
+    }
+
+    /// Feed one line of stream-json. Returns the latest valid verdict seen so
+    /// far (updated when this line contains a valid `submit_verdict` call).
+    pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
+        if line.contains("authentication_failed") {
+            self.auth_failed = true;
+        }
+        if is_init_event(line) {
+            self.init_seen = true;
+            if let Some(tools) = extract_init_tools(line) {
+                self.submit_verdict_registered = tools.iter().any(|t| {
+                    // tools array contains plain strings in real Claude Code stream-json
+                    let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
+                    name.is_some_and(|n| n == "submit_verdict" || n.ends_with("__submit_verdict"))
+                });
+            }
+        }
+        if let Some(v) = extract_verdict(line) {
+            if self.verdict.is_some() {
+                eprintln!("[capsule] warning: submit_verdict called more than once; using latest");
+            }
+            self.verdict = Some(v);
+        }
+        self.verdict.as_ref()
+    }
+
+    pub fn verdict(&self) -> Option<&Verdict> {
+        self.verdict.as_ref()
+    }
+
+    pub fn auth_failed(&self) -> bool {
+        self.auth_failed
+    }
+
+    /// True when the init event was seen but `submit_verdict` was not in the tool list.
+    pub fn submit_verdict_missing(&self) -> bool {
+        self.init_seen && !self.submit_verdict_registered
+    }
+}
+
+impl Default for StreamParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn is_init_event(line: &str) -> bool {
+    let Ok(msg) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    msg.get("type").and_then(Value::as_str) == Some("system")
+        && msg.get("subtype").and_then(Value::as_str) == Some("init")
+}
+
+fn extract_init_tools(line: &str) -> Option<Vec<Value>> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    Some(msg.get("tools")?.as_array()?.clone())
+}
+
+fn extract_verdict(line: &str) -> Option<Verdict> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    if msg.get("type")?.as_str()? != "assistant" {
+        return None;
+    }
+    let content = msg.pointer("/message/content")?.as_array()?;
+    for block in content {
+        if block.get("type")?.as_str()? == "tool_use"
+            && block.get("name")?.as_str()? == "submit_verdict"
+        {
+            let input = block.get("input")?;
+            let status_str = input.get("status")?.as_str()?;
+            let status = match status_str {
+                "pass" => VerdictStatus::Pass,
+                "fail" => VerdictStatus::Fail,
+                _ => continue,
+            };
+            let notes = input
+                .get("notes")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            return Some(Verdict { status, notes });
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::verdict::VerdictStatus;
+
+    const PASS_LINE: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01abc","name":"submit_verdict","input":{"status":"pass","notes":"all done"}}]}}"#;
+    const FAIL_LINE: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_02def","name":"submit_verdict","input":{"status":"fail","notes":"tests broke"}}]}}"#;
+    const TEXT_LINE: &str =
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking..."}]}}"#;
+    const RESULT_LINE: &str = r#"{"type":"result","subtype":"success","result":"done"}"#;
+    const AUTH_FAIL_LINE: &str = r#"{"type":"result","subtype":"error","error":{"type":"authentication_failed","message":"invalid token"}}"#;
+
+    #[test]
+    fn non_json_returns_none() {
+        let mut p = StreamParser::new();
+        assert!(p.feed("not json at all").is_none());
+    }
+
+    #[test]
+    fn non_assistant_event_returns_none() {
+        let mut p = StreamParser::new();
+        assert!(p.feed(RESULT_LINE).is_none());
+    }
+
+    #[test]
+    fn text_content_returns_none() {
+        let mut p = StreamParser::new();
+        assert!(p.feed(TEXT_LINE).is_none());
+    }
+
+    #[test]
+    fn pass_line_returns_pass_verdict() {
+        let mut p = StreamParser::new();
+        let v = p.feed(PASS_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Pass);
+        assert_eq!(v.notes.as_deref(), Some("all done"));
+    }
+
+    #[test]
+    fn fail_line_returns_fail_verdict() {
+        let mut p = StreamParser::new();
+        let v = p.feed(FAIL_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Fail);
+    }
+
+    #[test]
+    fn fail_verdict_preserves_notes() {
+        let mut p = StreamParser::new();
+        let v = p.feed(FAIL_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Fail);
+        assert_eq!(v.notes.as_deref(), Some("tests broke"));
+    }
+
+    #[test]
+    fn last_wins_on_duplicate_calls() {
+        let mut p = StreamParser::new();
+        p.feed(PASS_LINE);
+        let v = p.feed(FAIL_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Fail);
+    }
+
+    #[test]
+    fn fail_then_pass_last_wins_is_pass() {
+        let mut p = StreamParser::new();
+        p.feed(FAIL_LINE);
+        let v = p.feed(PASS_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Pass);
+    }
+
+    #[test]
+    fn no_verdict_in_stream_returns_none() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        p.feed(RESULT_LINE);
+        p.feed("not json");
+        assert!(p.verdict().is_none());
+    }
+
+    #[test]
+    fn verdict_without_notes_is_valid() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_03","name":"submit_verdict","input":{"status":"pass"}}]}}"#;
+        let mut p = StreamParser::new();
+        let v = p.feed(line).unwrap();
+        assert_eq!(v.status, VerdictStatus::Pass);
+        assert!(v.notes.is_none());
+    }
+
+    #[test]
+    fn invalid_status_enum_is_skipped() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_04","name":"submit_verdict","input":{"status":"done"}}]}}"#;
+        let mut p = StreamParser::new();
+        assert!(p.feed(line).is_none());
+    }
+
+    #[test]
+    fn non_verdict_tool_use_is_skipped() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_05","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let mut p = StreamParser::new();
+        assert!(p.feed(line).is_none());
+    }
+
+    #[test]
+    fn verdict_persists_across_non_verdict_lines() {
+        let mut p = StreamParser::new();
+        p.feed(PASS_LINE);
+        let v = p.feed(TEXT_LINE).unwrap();
+        assert_eq!(v.status, VerdictStatus::Pass);
+    }
+
+    // Claude Code stream-json: tools are plain strings, MCP tools prefixed mcp__<server>__<tool>.
+    const SYSTEM_INIT_WITH_VERDICT_TOOL: &str = r#"{"type":"system","subtype":"init","session_id":"sess_01","tools":["Bash","Read","mcp__capsule__submit_verdict"]}"#;
+    const SYSTEM_INIT_BARE_VERDICT_TOOL: &str =
+        r#"{"type":"system","subtype":"init","session_id":"sess_03","tools":["submit_verdict"]}"#;
+    const SYSTEM_INIT_WITHOUT_VERDICT_TOOL: &str = r#"{"type":"system","subtype":"init","session_id":"sess_02","tools":["Bash","Read","Write"]}"#;
+
+    #[test]
+    fn system_init_with_submit_verdict_marks_registered() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_WITH_VERDICT_TOOL);
+        assert!(!p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_with_bare_submit_verdict_marks_registered() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_BARE_VERDICT_TOOL);
+        assert!(!p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_without_submit_verdict_signals_missing() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_WITHOUT_VERDICT_TOOL);
+        assert!(p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn no_init_event_does_not_signal_missing() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        p.feed(PASS_LINE);
+        assert!(!p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_with_null_tools_still_signals_missing() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_04","tools":null}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert!(p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_with_missing_tools_field_still_signals_missing() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_05"}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert!(p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn auth_failure_line_sets_auth_failed() {
+        let mut p = StreamParser::new();
+        p.feed(AUTH_FAIL_LINE);
+        assert!(p.auth_failed());
+    }
+
+    #[test]
+    fn normal_line_does_not_set_auth_failed() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        assert!(!p.auth_failed());
+    }
+}

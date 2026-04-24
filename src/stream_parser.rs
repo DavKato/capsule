@@ -26,13 +26,15 @@ impl StreamParser {
         if line.contains("authentication_failed") {
             self.auth_failed = true;
         }
-        if let Some(tools) = extract_init_tools(line) {
+        if is_init_event(line) {
             self.init_seen = true;
-            self.submit_verdict_registered = tools.iter().any(|t| {
-                // tools array contains plain strings in real Claude Code stream-json
-                let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
-                name.is_some_and(|n| n == "submit_verdict" || n.ends_with("__submit_verdict"))
-            });
+            if let Some(tools) = extract_init_tools(line) {
+                self.submit_verdict_registered = tools.iter().any(|t| {
+                    // tools array contains plain strings in real Claude Code stream-json
+                    let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
+                    name.is_some_and(|n| n == "submit_verdict" || n.ends_with("__submit_verdict"))
+                });
+            }
         }
         if let Some(v) = extract_verdict(line) {
             self.verdict = Some(v);
@@ -48,14 +50,6 @@ impl StreamParser {
         self.auth_failed
     }
 
-    pub fn init_seen(&self) -> bool {
-        self.init_seen
-    }
-
-    pub fn submit_verdict_registered(&self) -> bool {
-        self.submit_verdict_registered
-    }
-
     /// True when the init event was seen but `submit_verdict` was not in the tool list.
     pub fn submit_verdict_missing(&self) -> bool {
         self.init_seen && !self.submit_verdict_registered
@@ -68,16 +62,17 @@ impl Default for StreamParser {
     }
 }
 
+fn is_init_event(line: &str) -> bool {
+    let Ok(msg) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    msg.get("type").and_then(Value::as_str) == Some("system")
+        && msg.get("subtype").and_then(Value::as_str) == Some("init")
+}
+
 fn extract_init_tools(line: &str) -> Option<Vec<Value>> {
     let msg: Value = serde_json::from_str(line).ok()?;
-    if msg.get("type")?.as_str()? != "system" {
-        return None;
-    }
-    if msg.get("subtype")?.as_str()? != "init" {
-        return None;
-    }
-    let tools = msg.get("tools")?.as_array()?.clone();
-    Some(tools)
+    Some(msg.get("tools")?.as_array()?.clone())
 }
 
 fn extract_verdict(line: &str) -> Option<Verdict> {
@@ -226,8 +221,6 @@ mod tests {
     fn system_init_with_submit_verdict_marks_registered() {
         let mut p = StreamParser::new();
         p.feed(SYSTEM_INIT_WITH_VERDICT_TOOL);
-        assert!(p.init_seen());
-        assert!(p.submit_verdict_registered());
         assert!(!p.submit_verdict_missing());
     }
 
@@ -235,15 +228,13 @@ mod tests {
     fn system_init_with_bare_submit_verdict_marks_registered() {
         let mut p = StreamParser::new();
         p.feed(SYSTEM_INIT_BARE_VERDICT_TOOL);
-        assert!(p.submit_verdict_registered());
+        assert!(!p.submit_verdict_missing());
     }
 
     #[test]
     fn system_init_without_submit_verdict_signals_missing() {
         let mut p = StreamParser::new();
         p.feed(SYSTEM_INIT_WITHOUT_VERDICT_TOOL);
-        assert!(p.init_seen());
-        assert!(!p.submit_verdict_registered());
         assert!(p.submit_verdict_missing());
     }
 
@@ -252,8 +243,23 @@ mod tests {
         let mut p = StreamParser::new();
         p.feed(TEXT_LINE);
         p.feed(PASS_LINE);
-        assert!(!p.init_seen());
         assert!(!p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_with_null_tools_still_signals_missing() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_04","tools":null}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert!(p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_with_missing_tools_field_still_signals_missing() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_05"}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert!(p.submit_verdict_missing());
     }
 
     #[test]

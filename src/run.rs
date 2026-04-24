@@ -15,6 +15,72 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
+struct CredentialsGuard {
+    tempfile: tempfile::NamedTempFile,
+    original_bytes: Vec<u8>,
+    host_mtime: SystemTime,
+    claude_dir: PathBuf,
+}
+
+impl CredentialsGuard {
+    fn new(claude_dir: &std::path::Path) -> Result<Option<Self>> {
+        let src = claude_dir.join(".credentials.json");
+        if !src.exists() {
+            return Ok(None);
+        }
+        let host_mtime = src
+            .metadata()
+            .and_then(|m| m.modified())
+            .context("failed to read credentials file mtime")?;
+        let content =
+            std::fs::read(&src).with_context(|| format!("failed to read {}", src.display()))?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix("capsule-credentials-")
+            .suffix(".json")
+            .tempfile()
+            .context("failed to create credentials temp file")?;
+        tmp.write_all(&content)
+            .context("failed to write credentials temp file")?;
+        Ok(Some(Self {
+            tempfile: tmp,
+            original_bytes: content,
+            host_mtime,
+            claude_dir: claude_dir.to_path_buf(),
+        }))
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.tempfile.path()
+    }
+}
+
+impl Drop for CredentialsGuard {
+    fn drop(&mut self) {
+        let dest = self.claude_dir.join(".credentials.json");
+        // Skip write-back if the host refreshed its token during the run.
+        if let Ok(current_mtime) = dest.metadata().and_then(|m| m.modified()) {
+            if current_mtime != self.host_mtime {
+                return;
+            }
+        }
+        // Skip write-back if the container never refreshed.
+        let current = match std::fs::read(self.tempfile.path()) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("warning: failed to read credentials temp file: {e}");
+                return;
+            }
+        };
+        if current == self.original_bytes {
+            return;
+        }
+        if let Err(e) = std::fs::copy(self.tempfile.path(), &dest) {
+            eprintln!("warning: failed to write back credentials: {e}");
+        }
+    }
+}
 
 pub(crate) enum ExitDecision {
     Success,
@@ -44,9 +110,9 @@ pub(crate) struct RunSession {
     env_file: Option<PathBuf>,
     before_each_path: Option<PathBuf>,
     compose_network: Option<String>,
-    // Held here so the temp files stay alive through execute().
+    // Held here so the temp file stays alive through execute().
     gh_token_tempfile: Option<tempfile::NamedTempFile>,
-    credentials_tempfile: Option<tempfile::NamedTempFile>,
+    credentials_guard: Option<CredentialsGuard>,
     active_container: Arc<Mutex<Option<String>>>,
 }
 
@@ -90,7 +156,7 @@ impl RunSession {
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;
         let claude_dir = PathBuf::from(home).join(".claude");
-        let credentials_tempfile = Self::copy_credentials(&claude_dir)?;
+        let credentials_guard = CredentialsGuard::new(&claude_dir)?;
 
         build_base_image(cfg.rebuild)?;
 
@@ -142,7 +208,7 @@ impl RunSession {
             before_each_path,
             compose_network,
             gh_token_tempfile,
-            credentials_tempfile,
+            credentials_guard,
             active_container,
         })
     }
@@ -201,34 +267,6 @@ impl RunSession {
         Ok(Some(tmp))
     }
 
-    /// Copy `~/.claude/.credentials.json` to a temp file so each run has an
-    /// isolated credential snapshot that the host session cannot race over.
-    fn copy_credentials(claude_dir: &std::path::Path) -> Result<Option<tempfile::NamedTempFile>> {
-        let src = claude_dir.join(".credentials.json");
-        if !src.exists() {
-            return Ok(None);
-        }
-        let mut tmp = tempfile::Builder::new()
-            .prefix("capsule-credentials-")
-            .suffix(".json")
-            .tempfile()
-            .context("failed to create credentials temp file")?;
-        let content =
-            std::fs::read(&src).with_context(|| format!("failed to read {}", src.display()))?;
-        tmp.write_all(&content)
-            .context("failed to write credentials temp file")?;
-        Ok(Some(tmp))
-    }
-
-    /// Write the container's (possibly refreshed) credentials back to the host
-    /// so the host session keeps a valid token after long capsule runs.
-    fn write_back_credentials(tempfile: &tempfile::NamedTempFile, claude_dir: &std::path::Path) {
-        let dest = claude_dir.join(".credentials.json");
-        if let Err(e) = std::fs::copy(tempfile.path(), &dest) {
-            eprintln!("warning: failed to write back credentials: {e}");
-        }
-    }
-
     /// Phase 11: run the iteration loop until Done or iterations exhausted.
     /// Returns ExitDecision so main() owns process::exit and RunSession drops
     /// before the process terminates (ensures NamedTempFile cleanup runs).
@@ -255,9 +293,9 @@ impl RunSession {
                 compose_network: self.compose_network.clone(),
                 claude_dir: self.claude_dir.clone(),
                 credentials_file: self
-                    .credentials_tempfile
+                    .credentials_guard
                     .as_ref()
-                    .map(|f| f.path().to_path_buf()),
+                    .map(|g| g.path().to_path_buf()),
             };
             if let IterationOutcome::Done(verdict) =
                 run_iteration(&run_cfg, i, &self.active_container)?
@@ -267,9 +305,6 @@ impl RunSession {
             }
         }
         update_check::maybe_print_notice(update_rx);
-        if let Some(ref tmp) = self.credentials_tempfile {
-            Self::write_back_credentials(tmp, &self.claude_dir);
-        }
         Ok(exit_decision(final_verdict.as_ref()))
     }
 }
@@ -277,6 +312,45 @@ impl RunSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_written_back_when_container_refreshed_and_host_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        std::fs::write(guard.path(), b"refreshed").unwrap();
+        drop(guard);
+
+        assert_eq!(std::fs::read(&creds_path).unwrap(), b"refreshed");
+    }
+
+    #[test]
+    fn credentials_not_written_back_when_host_modified_during_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        std::fs::write(guard.path(), b"container-refreshed").unwrap();
+        std::fs::write(&creds_path, b"host-refreshed").unwrap();
+        drop(guard);
+
+        assert_eq!(std::fs::read(&creds_path).unwrap(), b"host-refreshed");
+    }
+
+    #[test]
+    fn credentials_unchanged_when_container_did_not_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        drop(guard);
+
+        assert_eq!(std::fs::read(&creds_path).unwrap(), b"original");
+    }
 
     fn pass_verdict(notes: Option<&str>) -> Verdict {
         Verdict {

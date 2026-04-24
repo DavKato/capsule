@@ -6,6 +6,8 @@ use serde_json::Value;
 pub struct StreamParser {
     verdict: Option<Verdict>,
     auth_failed: bool,
+    init_seen: bool,
+    submit_verdict_registered: bool,
 }
 
 impl StreamParser {
@@ -13,6 +15,8 @@ impl StreamParser {
         Self {
             verdict: None,
             auth_failed: false,
+            init_seen: false,
+            submit_verdict_registered: false,
         }
     }
 
@@ -21,6 +25,14 @@ impl StreamParser {
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
         if line.contains("authentication_failed") {
             self.auth_failed = true;
+        }
+        if let Some(tools) = extract_init_tools(line) {
+            self.init_seen = true;
+            self.submit_verdict_registered = tools.iter().any(|t| {
+                // tools array contains plain strings in real Claude Code stream-json
+                let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
+                name.is_some_and(|n| n == "submit_verdict" || n.ends_with("__submit_verdict"))
+            });
         }
         if let Some(v) = extract_verdict(line) {
             self.verdict = Some(v);
@@ -35,12 +47,37 @@ impl StreamParser {
     pub fn auth_failed(&self) -> bool {
         self.auth_failed
     }
+
+    pub fn init_seen(&self) -> bool {
+        self.init_seen
+    }
+
+    pub fn submit_verdict_registered(&self) -> bool {
+        self.submit_verdict_registered
+    }
+
+    /// True when the init event was seen but `submit_verdict` was not in the tool list.
+    pub fn submit_verdict_missing(&self) -> bool {
+        self.init_seen && !self.submit_verdict_registered
+    }
 }
 
 impl Default for StreamParser {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn extract_init_tools(line: &str) -> Option<Vec<Value>> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    if msg.get("type")?.as_str()? != "system" {
+        return None;
+    }
+    if msg.get("subtype")?.as_str()? != "init" {
+        return None;
+    }
+    let tools = msg.get("tools")?.as_array()?.clone();
+    Some(tools)
 }
 
 fn extract_verdict(line: &str) -> Option<Verdict> {
@@ -177,6 +214,46 @@ mod tests {
         p.feed(PASS_LINE);
         let v = p.feed(TEXT_LINE).unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
+    }
+
+    // Claude Code stream-json: tools are plain strings, MCP tools prefixed mcp__<server>__<tool>.
+    const SYSTEM_INIT_WITH_VERDICT_TOOL: &str = r#"{"type":"system","subtype":"init","session_id":"sess_01","tools":["Bash","Read","mcp__capsule__submit_verdict"]}"#;
+    const SYSTEM_INIT_BARE_VERDICT_TOOL: &str =
+        r#"{"type":"system","subtype":"init","session_id":"sess_03","tools":["submit_verdict"]}"#;
+    const SYSTEM_INIT_WITHOUT_VERDICT_TOOL: &str = r#"{"type":"system","subtype":"init","session_id":"sess_02","tools":["Bash","Read","Write"]}"#;
+
+    #[test]
+    fn system_init_with_submit_verdict_marks_registered() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_WITH_VERDICT_TOOL);
+        assert!(p.init_seen());
+        assert!(p.submit_verdict_registered());
+        assert!(!p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_with_bare_submit_verdict_marks_registered() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_BARE_VERDICT_TOOL);
+        assert!(p.submit_verdict_registered());
+    }
+
+    #[test]
+    fn system_init_without_submit_verdict_signals_missing() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_WITHOUT_VERDICT_TOOL);
+        assert!(p.init_seen());
+        assert!(!p.submit_verdict_registered());
+        assert!(p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn no_init_event_does_not_signal_missing() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        p.feed(PASS_LINE);
+        assert!(!p.init_seen());
+        assert!(!p.submit_verdict_missing());
     }
 
     #[test]

@@ -364,7 +364,7 @@ fn stream_output(
     reader: BufReader<impl std::io::Read>,
     mut jq_stdin: impl Write,
     verbose: bool,
-) -> Result<(bool, Option<crate::verdict::Verdict>)> {
+) -> Result<(bool, bool, Option<crate::verdict::Verdict>)> {
     let mut parser = StreamParser::new();
 
     for line in reader.lines() {
@@ -376,7 +376,11 @@ fn stream_output(
         let _ = writeln!(jq_stdin, "{line}");
     }
 
-    Ok((parser.auth_failed(), parser.verdict().cloned()))
+    Ok((
+        parser.auth_failed(),
+        parser.submit_verdict_missing(),
+        parser.verdict().cloned(),
+    ))
 }
 
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
@@ -467,7 +471,8 @@ pub fn run_iteration(
     let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
 
     // stream_output drops jq_stdin on return, signalling EOF to jq.
-    let (auth_failed, verdict) = stream_output(reader, jq_stdin, cfg.verbose)?;
+    let (auth_failed, submit_verdict_missing, verdict) =
+        stream_output(reader, jq_stdin, cfg.verbose)?;
 
     let _ = jq_child.wait();
     let status = docker_child.wait().context("docker run did not complete")?;
@@ -480,6 +485,15 @@ pub fn run_iteration(
     if auth_failed {
         bail!(
             "Claude authentication failed. Run `claude` on the host to refresh credentials, then retry."
+        );
+    }
+
+    if submit_verdict_missing {
+        bail!(
+            "The `submit_verdict` MCP tool was not registered. \
+             Likely causes: the capsule binary is not on PATH inside the container, \
+             or `.mcp.json` was not mounted. \
+             Check that the capsule binary exists at /usr/local/bin/capsule inside the image."
         );
     }
 

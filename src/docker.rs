@@ -208,6 +208,11 @@ pub struct RunConfig {
     /// Host `~/.claude` directory, mounted writable at `/home/claude/.claude` so
     /// the container can authenticate and share memory/sessions with the host.
     pub claude_dir: PathBuf,
+    /// Isolated copy of `~/.claude/.credentials.json`, mounted over the directory
+    /// mount to prevent concurrent host/container token rotation from invalidating
+    /// each other's sessions (issue #55). `None` when the credentials file does not
+    /// exist on the host.
+    pub credentials_file: Option<PathBuf>,
 }
 
 /// Outcome of a single iteration.
@@ -249,6 +254,15 @@ pub fn build_docker_args(
         format!("-e=CAPSULE_WORKSPACE={workspace}"),
         format!("-v={}:/home/claude/.claude", cfg.claude_dir.display()),
     ];
+
+    // Shadow the credentials file inside the directory mount with an isolated
+    // per-run copy so the host and container never race over token rotation.
+    if let Some(creds) = &cfg.credentials_file {
+        args.push(format!(
+            "-v={}:/home/claude/.claude/.credentials.json",
+            creds.display()
+        ));
+    }
 
     // Protect the host git config from container mutations (issue #20).
     // If the workspace is a git repo, mount .git/config read-only so that
@@ -995,6 +1009,45 @@ mod tests {
         assert!(
             !joined.contains("--network"),
             "expected no --network when compose_network is None: {joined}"
+        );
+    }
+
+    #[test]
+    fn credentials_file_shadowed_over_claude_dir_mount() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let creds_file = tempfile::NamedTempFile::new().unwrap();
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = RunConfig {
+            pwd: dir.path().to_path_buf(),
+            credentials_file: Some(creds_file.path().to_path_buf()),
+            ..RunConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let joined = args.join(" ");
+        assert!(
+            joined.contains(":/home/claude/.claude/.credentials.json"),
+            "expected credentials shadow mount in args: {joined}"
+        );
+        assert!(
+            joined.contains(creds_file.path().to_string_lossy().as_ref()),
+            "expected temp credentials path in mount: {joined}"
+        );
+    }
+
+    #[test]
+    fn credentials_file_absent_when_none() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = RunConfig {
+            pwd: dir.path().to_path_buf(),
+            credentials_file: None,
+            ..RunConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let joined = args.join(" ");
+        assert!(
+            !joined.contains(".credentials.json"),
+            "expected no credentials mount when credentials_file is None: {joined}"
         );
     }
 

@@ -44,8 +44,9 @@ pub(crate) struct RunSession {
     env_file: Option<PathBuf>,
     before_each_path: Option<PathBuf>,
     compose_network: Option<String>,
-    // Held here so the temp file stays alive through execute().
+    // Held here so the temp files stay alive through execute().
     gh_token_tempfile: Option<tempfile::NamedTempFile>,
+    credentials_tempfile: Option<tempfile::NamedTempFile>,
     active_container: Arc<Mutex<Option<String>>>,
 }
 
@@ -89,6 +90,7 @@ impl RunSession {
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;
         let claude_dir = PathBuf::from(home).join(".claude");
+        let credentials_tempfile = Self::copy_credentials(&claude_dir)?;
 
         build_base_image(cfg.rebuild)?;
 
@@ -140,6 +142,7 @@ impl RunSession {
             before_each_path,
             compose_network,
             gh_token_tempfile,
+            credentials_tempfile,
             active_container,
         })
     }
@@ -198,6 +201,34 @@ impl RunSession {
         Ok(Some(tmp))
     }
 
+    /// Copy `~/.claude/.credentials.json` to a temp file so each run has an
+    /// isolated credential snapshot that the host session cannot race over.
+    fn copy_credentials(claude_dir: &std::path::Path) -> Result<Option<tempfile::NamedTempFile>> {
+        let src = claude_dir.join(".credentials.json");
+        if !src.exists() {
+            return Ok(None);
+        }
+        let mut tmp = tempfile::Builder::new()
+            .prefix("capsule-credentials-")
+            .suffix(".json")
+            .tempfile()
+            .context("failed to create credentials temp file")?;
+        let content =
+            std::fs::read(&src).with_context(|| format!("failed to read {}", src.display()))?;
+        tmp.write_all(&content)
+            .context("failed to write credentials temp file")?;
+        Ok(Some(tmp))
+    }
+
+    /// Write the container's (possibly refreshed) credentials back to the host
+    /// so the host session keeps a valid token after long capsule runs.
+    fn write_back_credentials(tempfile: &tempfile::NamedTempFile, claude_dir: &std::path::Path) {
+        let dest = claude_dir.join(".credentials.json");
+        if let Err(e) = std::fs::copy(tempfile.path(), &dest) {
+            eprintln!("warning: failed to write back credentials: {e}");
+        }
+    }
+
     /// Phase 11: run the iteration loop until Done or iterations exhausted.
     /// Returns ExitDecision so main() owns process::exit and RunSession drops
     /// before the process terminates (ensures NamedTempFile cleanup runs).
@@ -223,6 +254,10 @@ impl RunSession {
                 before_each_path: self.before_each_path.clone(),
                 compose_network: self.compose_network.clone(),
                 claude_dir: self.claude_dir.clone(),
+                credentials_file: self
+                    .credentials_tempfile
+                    .as_ref()
+                    .map(|f| f.path().to_path_buf()),
             };
             if let IterationOutcome::Done(verdict) =
                 run_iteration(&run_cfg, i, &self.active_container)?
@@ -232,6 +267,9 @@ impl RunSession {
             }
         }
         update_check::maybe_print_notice(update_rx);
+        if let Some(ref tmp) = self.credentials_tempfile {
+            Self::write_back_credentials(tmp, &self.claude_dir);
+        }
         Ok(exit_decision(final_verdict.as_ref()))
     }
 }

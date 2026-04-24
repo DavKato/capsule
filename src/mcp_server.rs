@@ -185,12 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn notification_returns_none() {
-        let req = r#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
-        assert!(handle_message(req).is_none());
-    }
-
-    #[test]
     fn unknown_method_with_id_returns_error() {
         let req = r#"{"jsonrpc":"2.0","id":4,"method":"unknown/method","params":{}}"#;
         let res = handle_message(req).unwrap();

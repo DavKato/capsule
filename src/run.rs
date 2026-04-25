@@ -89,7 +89,9 @@ pub(crate) enum ExitDecision {
 
 pub(crate) fn exit_decision(verdict: Option<&Verdict>) -> ExitDecision {
     match verdict {
-        Some(v) if v.status == VerdictStatus::Pass => ExitDecision::Success,
+        Some(v) if matches!(v.status, VerdictStatus::Pass | VerdictStatus::Done) => {
+            ExitDecision::Success
+        }
         Some(v) => ExitDecision::Failure(
             v.notes
                 .clone()
@@ -394,5 +396,14 @@ mod tests {
     #[test]
     fn no_verdict_is_implicit_fail() {
         assert!(matches!(exit_decision(None), ExitDecision::Failure(_)));
+    }
+
+    #[test]
+    fn done_is_success() {
+        let v = Verdict {
+            status: VerdictStatus::Done,
+            notes: Some("scope complete".to_string()),
+        };
+        assert!(matches!(exit_decision(Some(&v)), ExitDecision::Success));
     }
 }

@@ -12,6 +12,7 @@ pub fn handle_verdict_call(args: &Value) -> Value {
     let status = match status_str {
         "pass" => VerdictStatus::Pass,
         "fail" => VerdictStatus::Fail,
+        "done" => VerdictStatus::Done,
         other => {
             return json!({"ok": false, "error": format!("unknown status: {other}")});
         }
@@ -41,7 +42,7 @@ pub fn handle_message(line: &str) -> Option<String> {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "status": {"type": "string", "enum": ["pass", "fail"]},
+                        "status": {"type": "string", "enum": ["pass", "fail", "done"]},
                         "notes": {"type": "string"}
                     },
                     "required": ["status"]
@@ -125,6 +126,15 @@ mod tests {
     }
 
     #[test]
+    fn valid_done_returns_ok_with_done_verdict() {
+        let args = json!({"status": "done", "notes": "loop exited"});
+        let res = handle_verdict_call(&args);
+        assert_eq!(res["ok"], true);
+        assert_eq!(res["verdict"]["status"], "done");
+        assert_eq!(res["verdict"]["notes"], "loop exited");
+    }
+
+    #[test]
     fn unknown_status_returns_error() {
         let args = json!({"status": "unknown"});
         let res = handle_verdict_call(&args);
@@ -161,6 +171,23 @@ mod tests {
         let res = handle_message(req).unwrap();
         let v: Value = serde_json::from_str(&res).unwrap();
         assert_eq!(v["result"]["tools"][0]["name"], "submit_verdict");
+    }
+
+    #[test]
+    fn tools_list_includes_done_in_status_enum() {
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+        let res = handle_message(req).unwrap();
+        let v: Value = serde_json::from_str(&res).unwrap();
+        let status_enum = &v["result"]["tools"][0]["inputSchema"]["properties"]["status"]["enum"];
+        let values: Vec<&str> = status_enum
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap())
+            .collect();
+        assert!(values.contains(&"pass"));
+        assert!(values.contains(&"fail"));
+        assert!(values.contains(&"done"));
     }
 
     #[test]

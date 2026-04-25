@@ -505,9 +505,9 @@ pub fn run_iteration(
     if submit_verdict_missing {
         bail!(
             "The `submit_verdict` MCP tool was not registered. \
-             Likely causes: the capsule binary is not on PATH inside the container, \
-             or `.mcp.json` was not mounted. \
-             Check that the capsule binary exists at /usr/local/bin/capsule inside the image."
+             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
+             the capsule binary is not on PATH inside the container, \
+             or `.mcp.json` was not mounted."
         );
     }
 

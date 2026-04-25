@@ -135,7 +135,7 @@ pub fn build_derived_image(
 /// embedded Dockerfile. Auto-rebuilds (with layer cache) when the hash
 /// differs. With `rebuild: true`, always rebuilds using `--no-cache`.
 pub fn build_base_image(rebuild: bool) -> Result<()> {
-    let hash = dockerfile_hash(DOCKERFILE);
+    let hash = dockerfile_hash(&format!("{DOCKERFILE}{ENTRYPOINT_SH}"));
 
     if !rebuild && image_exists(BASE_IMAGE) {
         if image_label(BASE_IMAGE, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {

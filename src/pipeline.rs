@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::config::{OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
+use crate::config::{LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
 
 pub trait StageRunner {
@@ -39,22 +39,31 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 return PipelineOutcome::Done;
             }
 
-            if global_counter >= max_pipeline {
-                return PipelineOutcome::CapHit;
-            }
-            global_counter += 1;
-
             let entry = self.config.entries[current_idx].clone();
             match entry {
                 PipelineEntry::Stage(stage) => {
+                    if global_counter >= max_pipeline {
+                        return PipelineOutcome::CapHit;
+                    }
+                    global_counter += 1;
                     match run_stage(&mut self.runner, &stage, &name_to_entry, &mut fail_counts) {
                         StageOutcome::Advance(next_idx) => current_idx = next_idx,
                         StageOutcome::Done => return PipelineOutcome::Done,
                         StageOutcome::Exit => return PipelineOutcome::Exit,
                     }
                 }
-                PipelineEntry::Loop(_) => {
-                    unimplemented!("loop entry handling is implemented in issue #61");
+                PipelineEntry::Loop(loop_config) => {
+                    match run_loop(
+                        &mut self.runner,
+                        &loop_config,
+                        &mut fail_counts,
+                        &mut global_counter,
+                        max_pipeline,
+                    ) {
+                        LoopOutcome::LoopDone => current_idx += 1,
+                        LoopOutcome::Exit => return PipelineOutcome::Exit,
+                        LoopOutcome::CapHit => return PipelineOutcome::CapHit,
+                    }
                 }
             }
         }
@@ -65,6 +74,103 @@ enum StageOutcome {
     Advance(usize),
     Done,
     Exit,
+}
+
+enum LoopOutcome {
+    LoopDone,
+    Exit,
+    CapHit,
+}
+
+fn run_loop(
+    runner: &mut dyn StageRunner,
+    loop_config: &LoopConfig,
+    fail_counts: &mut HashMap<String, u32>,
+    global_counter: &mut u32,
+    max_pipeline: u32,
+) -> LoopOutcome {
+    let loop_name_to_idx: HashMap<String, usize> = loop_config
+        .stages
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect();
+
+    let mut iteration_count: u32 = 0;
+    let mut stage_idx: usize = 0;
+    let mut retrying_top = false;
+
+    loop {
+        if stage_idx >= loop_config.stages.len() {
+            stage_idx = 0;
+            retrying_top = false;
+        }
+
+        if stage_idx == 0 && !retrying_top {
+            iteration_count += 1;
+            if let Some(max) = loop_config.max_iteration {
+                if iteration_count > max {
+                    return LoopOutcome::CapHit;
+                }
+            }
+        }
+        retrying_top = false;
+
+        if *global_counter >= max_pipeline {
+            return LoopOutcome::CapHit;
+        }
+        *global_counter += 1;
+
+        let stage = loop_config.stages[stage_idx].clone();
+        let prompt = stage.prompt.as_deref().unwrap_or("");
+        let verdict = runner.run(&stage.name, prompt, stage.model.as_deref());
+
+        if matches!(
+            verdict.as_ref().map(|v| &v.status),
+            Some(VerdictStatus::Done)
+        ) {
+            return LoopOutcome::LoopDone;
+        }
+
+        let is_pass = matches!(
+            verdict.as_ref().map(|v| &v.status),
+            Some(VerdictStatus::Pass)
+        );
+
+        if is_pass {
+            fail_counts.remove(&stage.name);
+            match &stage.on_pass {
+                OnPass::Next => stage_idx += 1,
+                OnPass::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
+                    Some(&idx) => stage_idx = idx,
+                    None => return LoopOutcome::Exit,
+                },
+                OnPass::Exit => return LoopOutcome::Exit,
+            }
+        } else {
+            let fail_count = fail_counts.entry(stage.name.clone()).or_insert(0);
+            *fail_count += 1;
+
+            if let Some(max) = stage.max_retries {
+                if *fail_count > max {
+                    return LoopOutcome::Exit;
+                }
+            }
+
+            match &stage.on_fail {
+                OnFail::Exit => return LoopOutcome::Exit,
+                OnFail::Retry => {
+                    if stage_idx == 0 {
+                        retrying_top = true;
+                    }
+                }
+                OnFail::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
+                    Some(&idx) => stage_idx = idx,
+                    None => return LoopOutcome::Exit,
+                },
+            }
+        }
+    }
 }
 
 /// Builds a map from stage name to entry index for all `Stage` entries.
@@ -152,7 +258,7 @@ fn route_fail(stage: &StageConfig, name_to_entry: &HashMap<String, usize>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
+    use crate::config::{LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
     use crate::verdict::{Verdict, VerdictStatus};
     use std::collections::VecDeque;
 
@@ -343,6 +449,59 @@ mod tests {
         assert_eq!(
             PipelineExecutor::new(config, runner).run(),
             PipelineOutcome::Exit
+        );
+    }
+
+    // done inside a loop exits the loop; pipeline continues with post-loop stages.
+    #[test]
+    fn done_inside_loop_exits_loop_pipeline_continues() {
+        let loop_entry = PipelineEntry::Loop(LoopConfig {
+            max_iteration: Some(10),
+            stages: vec![stage("a")],
+        });
+        let config = pipeline(vec![loop_entry, single_stage_entry(stage("b"))]);
+        // a emits done → loop exits → b runs and passes → pipeline Done
+        let runner = FakeRunner::new([done(), pass()]);
+        assert_eq!(
+            PipelineExecutor::new(config, runner).run(),
+            PipelineOutcome::Done
+        );
+    }
+
+    // max_iteration cap-hit terminates pipeline non-zero.
+    #[test]
+    fn max_iteration_cap_hit_terminates_nok() {
+        let loop_entry = PipelineEntry::Loop(LoopConfig {
+            max_iteration: Some(2),
+            stages: vec![stage("a")],
+        });
+        let config = pipeline(vec![loop_entry]);
+        // a passes twice (iterations 1 and 2), then iteration 3 exceeds cap → CapHit
+        let runner = FakeRunner::new([pass(), pass()]);
+        assert_eq!(
+            PipelineExecutor::new(config, runner).run(),
+            PipelineOutcome::CapHit
+        );
+    }
+
+    // max_iteration ticks on top-of-body re-entry via explicit route, not on self-retry.
+    #[test]
+    fn max_iteration_ticks_on_top_of_body_reentry() {
+        let implementer = stage("implementer");
+        let mut reviewer = stage("reviewer");
+        reviewer.on_fail = OnFail::Stage("implementer".to_string());
+
+        let loop_entry = PipelineEntry::Loop(LoopConfig {
+            max_iteration: Some(2),
+            stages: vec![implementer, reviewer],
+        });
+        let config = pipeline(vec![loop_entry]);
+        // iteration 1: implementer pass, reviewer fail → back to implementer (ticks to 2)
+        // iteration 2: implementer pass, reviewer pass → end of body → iteration 3 > 2 → CapHit
+        let runner = FakeRunner::new([pass(), fail(), pass(), pass()]);
+        assert_eq!(
+            PipelineExecutor::new(config, runner).run(),
+            PipelineOutcome::CapHit
         );
     }
 

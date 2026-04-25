@@ -9,9 +9,9 @@ _name="${GIT_AUTHOR_NAME:-Capsule}"
 _email="${GIT_AUTHOR_EMAIL:-capsule@localhost}"
 git config --global user.name "${_name}"
 git config --global user.email "${_email}"
-if [ -x /home/claude/before-each.sh ]; then
+if [ -f /home/claude/before-each.sh ]; then
   echo "── Running before-each.sh ────────────────────────────────────"
-  /home/claude/before-each.sh
+  bash /home/claude/before-each.sh
   echo "── before-each.sh complete ───────────────────────────────────"
 fi
 cat /home/claude/prompt.txt | claude --dangerously-skip-permissions --model "${CAPSULE_MODEL:-claude-sonnet-4-6}" -p --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json

@@ -5,6 +5,7 @@ pub mod git;
 pub mod hooks;
 pub mod mcp_server;
 pub mod note_block;
+pub mod pipeline;
 pub mod preflight;
 pub mod prompt;
 pub mod stream_parser;

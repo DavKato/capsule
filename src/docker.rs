@@ -176,7 +176,7 @@ pub fn build_base_image(rebuild: bool) -> Result<()> {
 }
 
 /// Configuration for a single iteration's `docker run`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RunConfig {
     /// Docker image to run (base or derived).
     pub image: String,

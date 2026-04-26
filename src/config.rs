@@ -72,6 +72,8 @@ pub enum PipelineEntry {
 pub struct PipelineConfig {
     pub entries: Vec<PipelineEntry>,
     pub max_pipeline_iterations: u32,
+    /// True when desugared from flat-form config (no explicit `stages:`).
+    pub is_flat_form: bool,
 }
 
 /// Resolved configuration used by all downstream modules.
@@ -103,6 +105,7 @@ pub struct CliOverrides {
     pub verbose: bool,
     pub git_identity: Option<GitIdentity>,
     pub github: Option<GithubScope>,
+    pub input: Option<String>,
 }
 
 // ── Flat-form serde types ─────────────────────────────────────────────────────
@@ -303,6 +306,7 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
         max_pipeline_iterations: cfg
             .max_pipeline_iterations
             .unwrap_or(MAX_PIPELINE_ITERATIONS_DEFAULT),
+        is_flat_form: false,
     })
 }
 
@@ -321,6 +325,7 @@ fn desugar_flat_form(iterations: u32, prompt: Option<&str>) -> PipelineConfig {
             stages: vec![stage],
         })],
         max_pipeline_iterations: MAX_PIPELINE_ITERATIONS_DEFAULT,
+        is_flat_form: true,
     }
 }
 

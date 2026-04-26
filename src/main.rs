@@ -75,6 +75,10 @@ enum Commands {
         /// When absent, no token is injected.
         #[arg(long, value_enum)]
         github: Option<CliGithubScope>,
+
+        /// Runtime input injected into the first stage's first invocation only.
+        #[arg(long)]
+        input: Option<String>,
     },
 
     /// Print shell completion script to stdout
@@ -129,6 +133,7 @@ fn main() -> Result<()> {
             verbose,
             git_identity,
             github,
+            input,
         } => {
             let git_identity = match git_identity {
                 CliGitIdentity::User => Some(GitIdentity::User),
@@ -146,6 +151,7 @@ fn main() -> Result<()> {
                 verbose,
                 git_identity,
                 github,
+                input,
             };
             match RunSession::prepare(capsule_dir, overrides)?.execute()? {
                 run::ExitDecision::Success => {

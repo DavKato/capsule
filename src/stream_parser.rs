@@ -93,6 +93,7 @@ fn extract_verdict(line: &str) -> Option<Verdict> {
             let status = match status_str {
                 "pass" => VerdictStatus::Pass,
                 "fail" => VerdictStatus::Fail,
+                "done" => VerdictStatus::Done,
                 _ => continue,
             };
             let notes = input
@@ -193,8 +194,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_status_enum_is_skipped() {
-        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_04","name":"submit_verdict","input":{"status":"done"}}]}}"#;
+    fn done_status_returns_done_verdict() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_04","name":"submit_verdict","input":{"status":"done","notes":"scope complete"}}]}}"#;
+        let mut p = StreamParser::new();
+        let v = p.feed(line).unwrap();
+        assert_eq!(v.status, VerdictStatus::Done);
+        assert_eq!(v.notes.as_deref(), Some("scope complete"));
+    }
+
+    #[test]
+    fn unknown_status_enum_is_skipped() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_05","name":"submit_verdict","input":{"status":"unknown"}}]}}"#;
         let mut p = StreamParser::new();
         assert!(p.feed(line).is_none());
     }

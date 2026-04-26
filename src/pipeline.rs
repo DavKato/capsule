@@ -281,7 +281,8 @@ fn run_loop(
 
         let stage = loop_config.stages[stage_idx].clone();
         let base_prompt = stage.prompt.as_deref().unwrap_or("");
-        let effective_prompt = inject_input(input, base_prompt);
+        let with_input = inject_input(input, base_prompt);
+        let effective_prompt = inject_note_block(last_stage.as_deref(), last_verdict, &with_input);
         *last_stage = Some(stage.name.clone());
         let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref());
         *last_verdict = verdict.clone();
@@ -384,6 +385,22 @@ fn inject_input(input: &mut Option<String>, base_prompt: &str) -> String {
     }
 }
 
+/// Prepends `<previous-stage>` block from the last verdict when notes are present.
+fn inject_note_block(
+    last_stage: Option<&str>,
+    last_verdict: &Option<Verdict>,
+    base_prompt: &str,
+) -> String {
+    if let (Some(name), Some(verdict)) = (last_stage, last_verdict.as_ref()) {
+        if let Some(block) =
+            crate::note_block::format(name, &verdict.status, verdict.notes.as_deref())
+        {
+            return format!("{block}\n\n{base_prompt}");
+        }
+    }
+    base_prompt.to_string()
+}
+
 fn run_stage(
     runner: &mut dyn StageRunner,
     stage: &StageConfig,
@@ -394,7 +411,8 @@ fn run_stage(
     last_verdict: &mut Option<Verdict>,
 ) -> StageOutcome {
     let base_prompt = stage.prompt.as_deref().unwrap_or("");
-    let effective_prompt = inject_input(input, base_prompt);
+    let with_input = inject_input(input, base_prompt);
+    let effective_prompt = inject_note_block(last_stage.as_deref(), last_verdict, &with_input);
     *last_stage = Some(stage.name.clone());
     let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref());
     *last_verdict = verdict.clone();
@@ -795,6 +813,106 @@ mod tests {
         let (runner, prompts) = RecordingRunner::new([pass()]);
         PipelineExecutor::new(config, runner).run();
         assert_eq!(prompts.lock().unwrap()[0], "hello");
+    }
+
+    // ── Note injection tests ────────────────────────────────────────────────────
+
+    fn pass_with_notes(notes: &str) -> Option<Verdict> {
+        Some(Verdict {
+            status: VerdictStatus::Pass,
+            notes: Some(notes.to_string()),
+        })
+    }
+
+    // First stage never receives a note block.
+    #[test]
+    fn first_stage_has_no_note_block() {
+        let config = pipeline(vec![single_stage_entry(stage("a"))]);
+        let (runner, prompts) = RecordingRunner::new([pass_with_notes("first done")]);
+        PipelineExecutor::new(config, runner).run();
+        assert!(!prompts.lock().unwrap()[0].contains("<previous-stage>"));
+    }
+
+    // Second stage receives the note block from the first stage.
+    #[test]
+    fn second_stage_receives_note_block_from_first() {
+        let mut a = stage("a");
+        a.prompt = Some("prompt-a".to_string());
+        let mut b = stage("b");
+        b.prompt = Some("prompt-b".to_string());
+        let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
+        let (runner, prompts) = RecordingRunner::new([pass_with_notes("result from a"), pass()]);
+        PipelineExecutor::new(config, runner).run();
+        let prompts = prompts.lock().unwrap();
+        assert!(
+            !prompts[0].contains("<previous-stage>"),
+            "first prompt must not have note block"
+        );
+        assert!(
+            prompts[1].contains("<previous-stage>"),
+            "second prompt must have note block"
+        );
+        assert!(
+            prompts[1].contains("Stage: a"),
+            "note block must reference previous stage name"
+        );
+        assert!(prompts[1].contains("Status: pass"));
+        assert!(prompts[1].contains("Notes: result from a"));
+        assert!(prompts[1].contains("prompt-b"), "base prompt still present");
+    }
+
+    // No note block when previous verdict has no notes.
+    #[test]
+    fn no_note_block_when_previous_verdict_has_no_notes() {
+        let config = pipeline(vec![
+            single_stage_entry(stage("a")),
+            single_stage_entry(stage("b")),
+        ]);
+        let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
+        PipelineExecutor::new(config, runner).run();
+        assert!(!prompts.lock().unwrap()[1].contains("<previous-stage>"));
+    }
+
+    // Inside a loop, the first stage of iteration 2 receives notes from the last stage of iteration 1.
+    #[test]
+    fn loop_note_block_carried_between_iterations() {
+        let mut s = stage("a");
+        s.on_fail = OnFail::Retry;
+        let loop_entry = PipelineEntry::Loop(LoopConfig {
+            max_iteration: Some(2),
+            stages: vec![s],
+        });
+        let config = pipeline(vec![loop_entry]);
+        // iteration 1 passes with notes, iteration 2 passes (cap then terminates)
+        let (runner, prompts) = RecordingRunner::new([pass_with_notes("iter 1 output"), pass()]);
+        PipelineExecutor::new(config, runner).run();
+        let prompts = prompts.lock().unwrap();
+        assert!(
+            !prompts[0].contains("<previous-stage>"),
+            "first call must not have note block"
+        );
+        assert!(
+            prompts[1].contains("<previous-stage>"),
+            "second call must have note block"
+        );
+        assert!(prompts[1].contains("iter 1 output"));
+    }
+
+    // Note block is placed before base prompt (and before any input block).
+    #[test]
+    fn note_block_ordering_notes_before_input_before_base() {
+        let mut a = stage("a");
+        a.prompt = Some("task-a".to_string());
+        let mut b = stage("b");
+        b.prompt = Some("task-b".to_string());
+        let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
+        let (runner, prompts) = RecordingRunner::new([pass_with_notes("output"), pass()]);
+        // No external input — just verify note block precedes base prompt
+        PipelineExecutor::new(config, runner).run();
+        let second = &prompts.lock().unwrap()[1].clone();
+        let notes_pos = second.find("<previous-stage>").unwrap();
+        let base_pos = second.find("task-b").unwrap();
+        assert!(notes_pos < base_pos, "note block must precede base prompt");
     }
 
     // ── Terminal reason tests ───────────────────────────────────────────────────

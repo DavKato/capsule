@@ -417,6 +417,34 @@ pub struct StreamResult {
     pub session_id: Option<String>,
 }
 
+pub fn post_stream_error(
+    result: &StreamResult,
+    status: &std::process::ExitStatus,
+    context: &str,
+) -> Option<anyhow::Error> {
+    if result.auth_failed {
+        return Some(anyhow::anyhow!(
+            "Claude authentication failed on {context}. \
+             Run `claude auth login` on the host to refresh credentials, then retry."
+        ));
+    }
+    if result.submit_verdict_missing {
+        return Some(anyhow::anyhow!(
+            "The `submit_verdict` MCP tool was not registered. \
+             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
+             the capsule binary is not on PATH inside the container, \
+             or `.mcp.json` was not mounted."
+        ));
+    }
+    if !status.success() {
+        return Some(anyhow::anyhow!(
+            "container exited with code {} during {context}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    None
+}
+
 fn stream_output(
     reader: BufReader<impl std::io::Read>,
     mut jq_stdin: impl Write,
@@ -567,34 +595,22 @@ pub fn run_iteration(
     let name = container_name_for(iteration);
     let (result, status) = run_container(cfg, &name, active_container, None)?;
 
-    if result.auth_failed {
-        if should_attempt_resume(
+    if result.auth_failed
+        && should_attempt_resume(
             result.session_id.as_deref(),
             cfg.credentials_file.is_some(),
             host_token_is_expired(&cfg.claude_dir),
-        ) {
-            return Ok(IterationOutcome::AuthFailedResumable {
-                session_id: result
-                    .session_id
-                    .expect("session_id is Some when should_attempt_resume returns true"),
-            });
-        }
-        bail!(
-            "Claude authentication failed. Run `claude auth login` on the host to refresh credentials, then retry."
-        );
+        )
+    {
+        return Ok(IterationOutcome::AuthFailedResumable {
+            session_id: result
+                .session_id
+                .expect("session_id is Some when should_attempt_resume returns true"),
+        });
     }
 
-    if result.submit_verdict_missing {
-        bail!(
-            "The `submit_verdict` MCP tool was not registered. \
-             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
-             the capsule binary is not on PATH inside the container, \
-             or `.mcp.json` was not mounted."
-        );
-    }
-
-    if !status.success() {
-        bail!("container exited with code {}", status.code().unwrap_or(-1));
+    if let Some(e) = post_stream_error(&result, &status, "iteration") {
+        return Err(e);
     }
 
     match result.verdict {

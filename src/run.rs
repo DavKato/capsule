@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, Config, GithubScope, PipelineEntry};
 use capsule::docker::{
     build_base_image, build_derived_image, container_name_for, detect_compose_network,
-    run_container, run_iteration, token_remaining_minutes, IterationOutcome, RunConfig,
-    StreamResult,
+    post_stream_error, run_container, run_iteration, token_remaining_minutes, IterationOutcome,
+    RunConfig,
 };
 use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
@@ -437,34 +437,6 @@ impl DockerStageRunner {
         }
         result.verdict
     }
-}
-
-fn post_stream_error(
-    result: &StreamResult,
-    status: &std::process::ExitStatus,
-    context: &str,
-) -> Option<anyhow::Error> {
-    if result.auth_failed {
-        return Some(anyhow::anyhow!(
-            "Claude authentication failed on {context}. \
-             Run `claude auth login` on the host to refresh credentials, then retry."
-        ));
-    }
-    if result.submit_verdict_missing {
-        return Some(anyhow::anyhow!(
-            "The `submit_verdict` MCP tool was not registered. \
-             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
-             the capsule binary is not on PATH inside the container, \
-             or `.mcp.json` was not mounted."
-        ));
-    }
-    if !status.success() {
-        return Some(anyhow::anyhow!(
-            "container exited with code {} during {context}",
-            status.code().unwrap_or(-1)
-        ));
-    }
-    None
 }
 
 pub(crate) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {

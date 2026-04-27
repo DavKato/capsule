@@ -437,23 +437,20 @@ fn stream_output(
     })
 }
 
-/// Run one iteration: mount prompt, stream output through jq, propagate exit code.
+/// Shared scaffolding for one container run: temp files, docker args, MCP config,
+/// jq piping, streaming, wait, and active-container slot management.
 ///
-/// `iteration` is used to derive a unique `--name` for the container so that a
-/// registered ctrlc handler can call `docker stop <name>` on SIGINT.
-/// `active_container` is a shared slot; this function writes the container name
-/// before spawning and clears it after the container exits.
+/// `resume_session_id` — when `Some`, adds `-e=CAPSULE_RESUME_SESSION=<id>` so the
+/// entrypoint invokes `claude --resume` instead of piping `prompt.txt`.
 ///
-/// Returns [`IterationOutcome::Done`] when a `pass` verdict is observed in the stream.
-///
-/// # Errors
-/// - Container exits non-zero → error naming the exit code.
-/// - Output contains `authentication_failed` → error with remediation hint.
-pub fn run_iteration(
+/// Returns the parsed stream result and the container exit status. Callers own all
+/// post-stream policy (retry, bail, verdict routing).
+fn run_container(
     cfg: &RunConfig,
-    iteration: u32,
+    container_name: &str,
     active_container: &Arc<Mutex<Option<String>>>,
-) -> Result<IterationOutcome> {
+    resume_session_id: Option<&str>,
+) -> Result<(StreamResult, std::process::ExitStatus)> {
     let mut prompt_file = tempfile::Builder::new()
         .prefix("capsule-prompt-")
         .suffix(".txt")
@@ -465,7 +462,6 @@ pub fn run_iteration(
     prompt_file.flush().context("failed to flush prompt file")?;
     let prompt_path = prompt_file.path().to_owned();
 
-    // Per-run MCP config: points `capsule mcp-serve` at the bind-mounted binary.
     const CAPSULE_CONTAINER_BIN: &str = "/usr/local/bin/capsule";
     let mcp_config = make_mcp_config(std::path::Path::new(CAPSULE_CONTAINER_BIN));
     let mut mcp_file = tempfile::Builder::new()
@@ -482,15 +478,11 @@ pub fn run_iteration(
     let capsule_host_bin =
         std::env::current_exe().context("failed to resolve capsule binary path")?;
 
-    let name = container_name_for(iteration);
-
-    // Register the container name so the ctrlc handler can stop it.
     if let Ok(mut slot) = active_container.lock() {
-        *slot = Some(name.clone());
+        *slot = Some(container_name.to_string());
     }
 
-    let mut docker_args = build_docker_args(cfg, &prompt_path, &name);
-    // Insert mcp mounts before the image name (last element).
+    let mut docker_args = build_docker_args(cfg, &prompt_path, container_name);
     let image = docker_args
         .pop()
         .expect("docker args must end with image name");
@@ -503,8 +495,10 @@ pub fn run_iteration(
         "--mount=type=bind,src={},dst=/home/claude/.mcp.json,readonly",
         mcp_path.display()
     ));
+    if let Some(sid) = resume_session_id {
+        docker_args.push(format!("-e=CAPSULE_RESUME_SESSION={sid}"));
+    }
     docker_args.push(image);
-    let docker_args = docker_args;
 
     let mut docker_child = Command::new("docker")
         .args(&docker_args)
@@ -523,17 +517,37 @@ pub fn run_iteration(
         .context("failed to spawn `jq`")?;
 
     let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
-
-    // stream_output drops jq_stdin on return, signalling EOF to jq.
     let result = stream_output(reader, jq_stdin, cfg.verbose)?;
 
     let _ = jq_child.wait();
     let status = docker_child.wait().context("docker run did not complete")?;
 
-    // Container has exited — clear the shared slot so the handler becomes a no-op.
     if let Ok(mut slot) = active_container.lock() {
         *slot = None;
     }
+
+    Ok((result, status))
+}
+
+/// Run one iteration: mount prompt, stream output through jq, propagate exit code.
+///
+/// `iteration` is used to derive a unique `--name` for the container so that a
+/// registered ctrlc handler can call `docker stop <name>` on SIGINT.
+/// `active_container` is a shared slot; this function writes the container name
+/// before spawning and clears it after the container exits.
+///
+/// Returns [`IterationOutcome::Done`] when a `pass` verdict is observed in the stream.
+///
+/// # Errors
+/// - Container exits non-zero → error naming the exit code.
+/// - Output contains `authentication_failed` → error with remediation hint.
+pub fn run_iteration(
+    cfg: &RunConfig,
+    iteration: u32,
+    active_container: &Arc<Mutex<Option<String>>>,
+) -> Result<IterationOutcome> {
+    let name = container_name_for(iteration);
+    let (result, status) = run_container(cfg, &name, active_container, None)?;
 
     if result.auth_failed {
         // Resume-retry: if host token is still valid, re-copy credentials and resume.
@@ -544,16 +558,13 @@ pub fn run_iteration(
                         "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
                         session_id
                     );
-                    // Re-copy host credentials to the temp file.
                     let host_creds = cfg.claude_dir.join(".credentials.json");
                     std::fs::copy(&host_creds, creds)
                         .context("failed to re-copy host credentials for resume-retry")?;
-
                     return run_iteration_resume(cfg, iteration, active_container, session_id);
                 }
             }
         }
-
         bail!(
             "Claude authentication failed. Run `claude auth login` on the host to refresh credentials, then retry."
         );
@@ -583,95 +594,30 @@ pub fn run_iteration(
     }
 }
 
-/// One-shot resume after auth failure. Same as `run_iteration` but passes
-/// `CAPSULE_RESUME_SESSION` to the container. Bails on any error — no second retry.
+/// One-shot resume after auth failure. Passes `CAPSULE_RESUME_SESSION` to the
+/// container. Bails on any error — no second retry.
 fn run_iteration_resume(
     cfg: &RunConfig,
     iteration: u32,
     active_container: &Arc<Mutex<Option<String>>>,
     session_id: &str,
 ) -> Result<IterationOutcome> {
-    let mut prompt_file = tempfile::Builder::new()
-        .prefix("capsule-prompt-")
-        .suffix(".txt")
-        .tempfile()
-        .context("failed to create prompt temp file")?;
-    prompt_file
-        .write_all(cfg.prompt.as_bytes())
-        .context("failed to write prompt to temp file")?;
-    prompt_file.flush().context("failed to flush prompt file")?;
-    let prompt_path = prompt_file.path().to_owned();
-
-    const CAPSULE_CONTAINER_BIN: &str = "/usr/local/bin/capsule";
-    let mcp_config = make_mcp_config(std::path::Path::new(CAPSULE_CONTAINER_BIN));
-    let mut mcp_file = tempfile::Builder::new()
-        .prefix("capsule-mcp-")
-        .suffix(".json")
-        .tempfile()
-        .context("failed to create mcp config temp file")?;
-    mcp_file
-        .write_all(mcp_config.as_bytes())
-        .context("failed to write mcp config")?;
-    mcp_file.flush().context("failed to flush mcp config")?;
-    let mcp_path = mcp_file.path().to_owned();
-
-    let capsule_host_bin =
-        std::env::current_exe().context("failed to resolve capsule binary path")?;
-
-    // Use a distinct name so it doesn't collide with the original container.
     let name = format!("{}-resume", container_name_for(iteration));
-
-    if let Ok(mut slot) = active_container.lock() {
-        *slot = Some(name.clone());
-    }
-
-    let mut docker_args = build_docker_args(cfg, &prompt_path, &name);
-    let image = docker_args
-        .pop()
-        .expect("docker args must end with image name");
-    docker_args.push(format!(
-        "--mount=type=bind,src={},dst={},readonly",
-        capsule_host_bin.display(),
-        CAPSULE_CONTAINER_BIN
-    ));
-    docker_args.push(format!(
-        "--mount=type=bind,src={},dst=/home/claude/.mcp.json,readonly",
-        mcp_path.display()
-    ));
-    docker_args.push(format!("-e=CAPSULE_RESUME_SESSION={session_id}"));
-    docker_args.push(image);
-    let docker_args = docker_args;
-
-    let mut docker_child = Command::new("docker")
-        .args(&docker_args)
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("failed to spawn `docker run` for resume-retry")?;
-
-    let reader = BufReader::new(docker_child.stdout.take().expect("stdout piped"));
-
-    let mut jq_child = Command::new("jq")
-        .args(["-R", "-r", STREAM_DISPLAY_JQ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn `jq`")?;
-
-    let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
-    let result = stream_output(reader, jq_stdin, cfg.verbose)?;
-
-    let _ = jq_child.wait();
-    let status = docker_child.wait().context("docker run did not complete")?;
-
-    if let Ok(mut slot) = active_container.lock() {
-        *slot = None;
-    }
+    let (result, status) = run_container(cfg, &name, active_container, Some(session_id))?;
 
     if result.auth_failed {
         bail!(
             "Claude authentication failed on resume-retry. \
              Run `claude auth login` on the host to refresh credentials, then retry."
+        );
+    }
+
+    if result.submit_verdict_missing {
+        bail!(
+            "The `submit_verdict` MCP tool was not registered. \
+             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
+             the capsule binary is not on PATH inside the container, \
+             or `.mcp.json` was not mounted."
         );
     }
 
@@ -1220,11 +1166,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
         // expiresAt far in the future (year ~2050)
-        std::fs::write(
-            &creds,
-            r#"{"claudeAiOauth":{"expiresAt":2524608000000}}"#,
-        )
-        .unwrap();
+        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":2524608000000}}"#).unwrap();
         assert!(!host_token_is_expired(dir.path()));
     }
 

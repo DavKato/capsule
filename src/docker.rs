@@ -225,6 +225,10 @@ pub enum IterationOutcome {
         verdict: crate::verdict::Verdict,
         session_id: Option<String>,
     },
+    /// Auth failed but the host token is still valid; caller should re-copy
+    /// credentials, call `CredentialsGuard::reset_baseline`, and retry with
+    /// `run_container(..., Some(session_id))`.
+    AuthFailedResumable { session_id: String },
 }
 
 /// Returns a unique container name for the given iteration.
@@ -406,11 +410,11 @@ pub fn host_token_is_expired(claude_dir: &std::path::Path) -> bool {
     }
 }
 
-struct StreamResult {
-    auth_failed: bool,
-    submit_verdict_missing: bool,
-    verdict: Option<crate::verdict::Verdict>,
-    session_id: Option<String>,
+pub struct StreamResult {
+    pub auth_failed: bool,
+    pub submit_verdict_missing: bool,
+    pub verdict: Option<crate::verdict::Verdict>,
+    pub session_id: Option<String>,
 }
 
 fn stream_output(
@@ -445,7 +449,7 @@ fn stream_output(
 ///
 /// Returns the parsed stream result and the container exit status. Callers own all
 /// post-stream policy (retry, bail, verdict routing).
-fn run_container(
+pub fn run_container(
     cfg: &RunConfig,
     container_name: &str,
     active_container: &Arc<Mutex<Option<String>>>,
@@ -529,6 +533,18 @@ fn run_container(
     Ok((result, status))
 }
 
+/// Returns true when an auth failure can be retried via `--resume`.
+///
+/// All three conditions must hold: there is a captured session ID to resume,
+/// a credentials file to re-copy, and the host token has not already expired.
+fn should_attempt_resume(
+    session_id: Option<&str>,
+    has_credentials: bool,
+    host_token_expired: bool,
+) -> bool {
+    session_id.is_some() && has_credentials && !host_token_expired
+}
+
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
 ///
 /// `iteration` is used to derive a unique `--name` for the container so that a
@@ -536,11 +552,13 @@ fn run_container(
 /// `active_container` is a shared slot; this function writes the container name
 /// before spawning and clears it after the container exits.
 ///
-/// Returns [`IterationOutcome::Done`] when a `pass` verdict is observed in the stream.
+/// Returns [`IterationOutcome::AuthFailedResumable`] when auth failed but the host
+/// token is still valid — the caller is responsible for re-copying credentials,
+/// resetting the guard baseline, and launching the resume container.
 ///
 /// # Errors
 /// - Container exits non-zero → error naming the exit code.
-/// - Output contains `authentication_failed` → error with remediation hint.
+/// - Auth failed and host token is already expired → error with remediation hint.
 pub fn run_iteration(
     cfg: &RunConfig,
     iteration: u32,
@@ -550,20 +568,16 @@ pub fn run_iteration(
     let (result, status) = run_container(cfg, &name, active_container, None)?;
 
     if result.auth_failed {
-        // Resume-retry: if host token is still valid, re-copy credentials and resume.
-        if let Some(ref session_id) = result.session_id {
-            if let Some(creds) = &cfg.credentials_file {
-                if !host_token_is_expired(&cfg.claude_dir) {
-                    eprintln!(
-                        "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
-                        session_id
-                    );
-                    let host_creds = cfg.claude_dir.join(".credentials.json");
-                    std::fs::copy(&host_creds, creds)
-                        .context("failed to re-copy host credentials for resume-retry")?;
-                    return run_iteration_resume(cfg, iteration, active_container, session_id);
-                }
-            }
+        if should_attempt_resume(
+            result.session_id.as_deref(),
+            cfg.credentials_file.is_some(),
+            host_token_is_expired(&cfg.claude_dir),
+        ) {
+            return Ok(IterationOutcome::AuthFailedResumable {
+                session_id: result
+                    .session_id
+                    .expect("session_id is Some when should_attempt_resume returns true"),
+            });
         }
         bail!(
             "Claude authentication failed. Run `claude auth login` on the host to refresh credentials, then retry."
@@ -581,51 +595,6 @@ pub fn run_iteration(
 
     if !status.success() {
         bail!("container exited with code {}", status.code().unwrap_or(-1));
-    }
-
-    match result.verdict {
-        Some(verdict) => Ok(IterationOutcome::Done {
-            verdict,
-            session_id: result.session_id,
-        }),
-        None => Ok(IterationOutcome::Continue {
-            session_id: result.session_id,
-        }),
-    }
-}
-
-/// One-shot resume after auth failure. Passes `CAPSULE_RESUME_SESSION` to the
-/// container. Bails on any error — no second retry.
-fn run_iteration_resume(
-    cfg: &RunConfig,
-    iteration: u32,
-    active_container: &Arc<Mutex<Option<String>>>,
-    session_id: &str,
-) -> Result<IterationOutcome> {
-    let name = format!("{}-resume", container_name_for(iteration));
-    let (result, status) = run_container(cfg, &name, active_container, Some(session_id))?;
-
-    if result.auth_failed {
-        bail!(
-            "Claude authentication failed on resume-retry. \
-             Run `claude auth login` on the host to refresh credentials, then retry."
-        );
-    }
-
-    if result.submit_verdict_missing {
-        bail!(
-            "The `submit_verdict` MCP tool was not registered. \
-             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
-             the capsule binary is not on PATH inside the container, \
-             or `.mcp.json` was not mounted."
-        );
-    }
-
-    if !status.success() {
-        bail!(
-            "container exited with code {} during resume-retry",
-            status.code().unwrap_or(-1)
-        );
     }
 
     match result.verdict {
@@ -1150,6 +1119,28 @@ mod tests {
             joined.contains(creds_file.path().to_string_lossy().as_ref()),
             "expected temp credentials path in mount: {joined}"
         );
+    }
+
+    // ── should_attempt_resume ─────────────────────────────────────────────────
+
+    #[test]
+    fn resume_attempted_when_session_id_valid_token_and_credentials() {
+        assert!(should_attempt_resume(Some("sess_01"), true, false));
+    }
+
+    #[test]
+    fn resume_not_attempted_when_host_token_expired() {
+        assert!(!should_attempt_resume(Some("sess_01"), true, true));
+    }
+
+    #[test]
+    fn resume_not_attempted_when_no_session_id() {
+        assert!(!should_attempt_resume(None, true, false));
+    }
+
+    #[test]
+    fn resume_not_attempted_when_no_credentials_file() {
+        assert!(!should_attempt_resume(Some("sess_01"), false, false));
     }
 
     #[test]

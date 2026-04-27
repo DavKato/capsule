@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, Config, GithubScope, PipelineEntry};
 use capsule::docker::{
-    build_base_image, build_derived_image, detect_compose_network, run_iteration,
-    token_remaining_minutes, IterationOutcome, RunConfig,
+    build_base_image, build_derived_image, container_name_for, detect_compose_network,
+    run_container, run_iteration, token_remaining_minutes, IterationOutcome, RunConfig,
+    StreamResult,
 };
 use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
@@ -54,6 +55,20 @@ impl CredentialsGuard {
 
     fn path(&self) -> &std::path::Path {
         self.tempfile.path()
+    }
+
+    /// Re-read host mtime and temp file content after an external mutation of the
+    /// temp file (e.g. re-copying host credentials for a resume-retry). Resets the
+    /// write-back baseline so the guard correctly detects further token rotations.
+    fn reset_baseline(&mut self) -> Result<()> {
+        let src = self.claude_dir.join(".credentials.json");
+        self.host_mtime = src
+            .metadata()
+            .and_then(|m| m.modified())
+            .context("failed to re-read credentials mtime")?;
+        self.original_bytes = std::fs::read(self.tempfile.path())
+            .context("failed to re-read credentials temp file")?;
+        Ok(())
     }
 }
 
@@ -269,7 +284,7 @@ impl RunSession {
     /// Phase 11: run the pipeline until terminal or cap hit.
     /// Returns ExitDecision so main() owns process::exit and RunSession drops
     /// before the process terminates (ensures NamedTempFile cleanup runs).
-    pub(crate) fn execute(self) -> Result<ExitDecision> {
+    pub(crate) fn execute(mut self) -> Result<ExitDecision> {
         let update_rx = update_check::spawn_check();
         if let Some(warning) = token_lifetime_warning(
             token_remaining_minutes(&self.claude_dir),
@@ -286,6 +301,10 @@ impl RunSession {
                 anyhow::bail!("Aborted. Refresh token with `claude auth login` and retry.");
             }
         }
+        // Move the guard into the runner so it can reset the baseline after a
+        // resume-retry re-copies host credentials.
+        let credentials_guard = self.credentials_guard.take();
+        let credentials_file = credentials_guard.as_ref().map(|g| g.path().to_path_buf());
         let base_cfg = RunConfig {
             image: self.image.clone(),
             prompt: String::new(),
@@ -303,10 +322,7 @@ impl RunSession {
             before_each_path: self.before_each_path.clone(),
             compose_network: self.compose_network.clone(),
             claude_dir: self.claude_dir.clone(),
-            credentials_file: self
-                .credentials_guard
-                .as_ref()
-                .map(|g| g.path().to_path_buf()),
+            credentials_file,
         };
         let last_error: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
         let last_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -316,6 +332,7 @@ impl RunSession {
             iteration: 0,
             last_error: Arc::clone(&last_error),
             last_session_id: Arc::clone(&last_session_id),
+            credentials_guard,
         };
         let mut result = PipelineExecutor::new(self.cfg.pipeline.clone(), runner)
             .with_input(self.input)
@@ -342,6 +359,7 @@ struct DockerStageRunner {
     iteration: u32,
     last_error: Arc<Mutex<Option<anyhow::Error>>>,
     last_session_id: Arc<Mutex<Option<String>>>,
+    credentials_guard: Option<CredentialsGuard>,
 }
 
 impl StageRunner for DockerStageRunner {
@@ -354,7 +372,10 @@ impl StageRunner for DockerStageRunner {
             cfg.model = Some(m.to_string());
         }
         match run_iteration(&cfg, self.iteration, &self.active_container) {
-            Ok(IterationOutcome::Done { verdict, session_id }) => {
+            Ok(IterationOutcome::Done {
+                verdict,
+                session_id,
+            }) => {
                 if let Some(id) = session_id {
                     *self.last_session_id.lock().unwrap() = Some(id);
                 }
@@ -366,12 +387,84 @@ impl StageRunner for DockerStageRunner {
                 }
                 None
             }
+            Ok(IterationOutcome::AuthFailedResumable { session_id }) => {
+                self.run_resume(&cfg, &session_id)
+            }
             Err(e) => {
                 *self.last_error.lock().unwrap() = Some(e);
                 None
             }
         }
     }
+}
+
+impl DockerStageRunner {
+    /// Re-copy host credentials, reset the guard baseline, and launch a resume container.
+    /// Returns the verdict if the resumed session submits one.
+    fn run_resume(&mut self, cfg: &RunConfig, session_id: &str) -> Option<Verdict> {
+        eprintln!(
+            "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
+            session_id
+        );
+        if let Some(ref mut guard) = self.credentials_guard {
+            let host_creds = cfg.claude_dir.join(".credentials.json");
+            if let Err(e) = std::fs::copy(&host_creds, guard.path())
+                .context("failed to re-copy credentials for resume-retry")
+            {
+                *self.last_error.lock().unwrap() = Some(e);
+                return None;
+            }
+            if let Err(e) = guard.reset_baseline() {
+                *self.last_error.lock().unwrap() = Some(e);
+                return None;
+            }
+        }
+        let resume_name = format!("{}-resume", container_name_for(self.iteration));
+        let (result, status) =
+            match run_container(cfg, &resume_name, &self.active_container, Some(session_id)) {
+                Ok(r) => r,
+                Err(e) => {
+                    *self.last_error.lock().unwrap() = Some(e);
+                    return None;
+                }
+            };
+        if let Some(e) = post_stream_error(&result, &status, "resume-retry") {
+            *self.last_error.lock().unwrap() = Some(e);
+            return None;
+        }
+        if let Some(id) = result.session_id {
+            *self.last_session_id.lock().unwrap() = Some(id);
+        }
+        result.verdict
+    }
+}
+
+fn post_stream_error(
+    result: &StreamResult,
+    status: &std::process::ExitStatus,
+    context: &str,
+) -> Option<anyhow::Error> {
+    if result.auth_failed {
+        return Some(anyhow::anyhow!(
+            "Claude authentication failed on {context}. \
+             Run `claude auth login` on the host to refresh credentials, then retry."
+        ));
+    }
+    if result.submit_verdict_missing {
+        return Some(anyhow::anyhow!(
+            "The `submit_verdict` MCP tool was not registered. \
+             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
+             the capsule binary is not on PATH inside the container, \
+             or `.mcp.json` was not mounted."
+        ));
+    }
+    if !status.success() {
+        return Some(anyhow::anyhow!(
+            "container exited with code {} during {context}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    None
 }
 
 pub(crate) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
@@ -520,6 +613,23 @@ mod tests {
                 ExitDecision::Failure("capsule exhausted iterations without a verdict".to_string())
             }
         }
+    }
+
+    #[test]
+    fn credentials_written_back_after_reset_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        // Simulate re-copying host creds to the temp file (as resume-retry does).
+        std::fs::write(guard.path(), b"resumed-creds").unwrap();
+        guard.reset_baseline().unwrap();
+        // Simulate the resumed container rotating the token.
+        std::fs::write(guard.path(), b"rotated-by-resume").unwrap();
+        drop(guard);
+
+        assert_eq!(std::fs::read(&creds_path).unwrap(), b"rotated-by-resume");
     }
 
     #[test]

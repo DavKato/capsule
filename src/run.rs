@@ -358,6 +358,12 @@ impl RunSession {
                 .run()
         };
         if let Some(e) = last_error.lock().unwrap().take() {
+            result.summary.session_id = last_session_id.lock().unwrap().take();
+            let _ = write_last_run(
+                &self.cfg.capsule_dir,
+                &result.summary,
+                Some(&result.pipeline_state),
+            );
             return Err(e);
         }
         result.summary.session_id = last_session_id.lock().unwrap().take();

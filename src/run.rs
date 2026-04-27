@@ -163,11 +163,19 @@ impl RunSession {
             let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
             let user_prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
             let resolved = prepend_preamble(&user_prompt);
-            if let Some(PipelineEntry::Loop(loop_cfg)) = cfg.pipeline.entries.first_mut() {
-                if let Some(stage) = loop_cfg.stages.first_mut() {
-                    stage.prompt = Some(resolved);
-                }
-            }
+            let first = cfg
+                .pipeline
+                .entries
+                .first_mut()
+                .ok_or_else(|| anyhow::anyhow!("flat-form pipeline has no entries"))?;
+            let PipelineEntry::Loop(loop_cfg) = first else {
+                anyhow::bail!("flat-form pipeline: first entry is not a loop");
+            };
+            let stage = loop_cfg
+                .stages
+                .first_mut()
+                .ok_or_else(|| anyhow::anyhow!("flat-form pipeline: loop has no stages"))?;
+            stage.prompt = Some(resolved);
         }
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;

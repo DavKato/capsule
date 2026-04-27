@@ -59,6 +59,7 @@ pub struct RunSummary {
     pub iteration_counters: IterationCounters,
     /// Which counter tripped, if `terminal_reason` is `CapHit` or `Ok`.
     pub cap_hit: Option<CapHitKind>,
+    pub session_id: Option<String>,
 }
 
 /// Return value of `PipelineExecutor::run`.
@@ -66,6 +67,7 @@ pub struct RunSummary {
 pub struct PipelineRunResult {
     pub outcome: PipelineOutcome,
     pub summary: RunSummary,
+    pub last_session_id: Option<String>,
 }
 
 pub struct PipelineExecutor<R> {
@@ -202,7 +204,9 @@ impl<R: StageRunner> PipelineExecutor<R> {
                     loops: loop_iterations,
                 },
                 cap_hit,
+                session_id: None,
             },
+            last_session_id: None,
         }
     }
 }

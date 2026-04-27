@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, Config, GithubScope, PipelineEntry};
 use capsule::docker::{
-    build_base_image, build_derived_image, detect_compose_network, run_iteration, IterationOutcome,
-    RunConfig,
+    build_base_image, build_derived_image, detect_compose_network, run_iteration,
+    token_remaining_minutes, IterationOutcome, RunConfig,
 };
 use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
@@ -271,6 +271,21 @@ impl RunSession {
     /// before the process terminates (ensures NamedTempFile cleanup runs).
     pub(crate) fn execute(self) -> Result<ExitDecision> {
         let update_rx = update_check::spawn_check();
+        if let Some(warning) = token_lifetime_warning(
+            token_remaining_minutes(&self.claude_dir),
+            self.cfg.min_token_lifetime_minutes,
+        ) {
+            eprintln!("{warning}");
+            eprint!("Continue anyway? [y/N] ");
+            let _ = std::io::stderr().flush();
+            let mut answer = String::new();
+            std::io::stdin()
+                .read_line(&mut answer)
+                .context("failed to read confirmation")?;
+            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                anyhow::bail!("Aborted. Refresh token with `claude auth login` and retry.");
+            }
+        }
         let base_cfg = RunConfig {
             image: self.image.clone(),
             prompt: String::new(),
@@ -294,19 +309,28 @@ impl RunSession {
                 .map(|g| g.path().to_path_buf()),
         };
         let last_error: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
+        let last_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let runner = DockerStageRunner {
             base_cfg,
             active_container: Arc::clone(&self.active_container),
             iteration: 0,
             last_error: Arc::clone(&last_error),
+            last_session_id: Arc::clone(&last_session_id),
         };
-        let result = PipelineExecutor::new(self.cfg.pipeline.clone(), runner)
+        let mut result = PipelineExecutor::new(self.cfg.pipeline.clone(), runner)
             .with_input(self.input)
             .run();
         if let Some(e) = last_error.lock().unwrap().take() {
             return Err(e);
         }
+        result.summary.session_id = last_session_id.lock().unwrap().take();
         write_last_run(&self.cfg.capsule_dir, &result.summary)?;
+        if let Some(hint) = resume_hint(
+            result.summary.session_id.as_deref(),
+            &result.summary.terminal_reason,
+        ) {
+            eprintln!("\n{hint}");
+        }
         update_check::maybe_print_notice(update_rx);
         Ok(exit_decision_from_summary(&result.summary))
     }
@@ -317,6 +341,7 @@ struct DockerStageRunner {
     active_container: Arc<Mutex<Option<String>>>,
     iteration: u32,
     last_error: Arc<Mutex<Option<anyhow::Error>>>,
+    last_session_id: Arc<Mutex<Option<String>>>,
 }
 
 impl StageRunner for DockerStageRunner {
@@ -329,8 +354,18 @@ impl StageRunner for DockerStageRunner {
             cfg.model = Some(m.to_string());
         }
         match run_iteration(&cfg, self.iteration, &self.active_container) {
-            Ok(IterationOutcome::Done(v)) => Some(v),
-            Ok(IterationOutcome::Continue) => None,
+            Ok(IterationOutcome::Done { verdict, session_id }) => {
+                if let Some(id) = session_id {
+                    *self.last_session_id.lock().unwrap() = Some(id);
+                }
+                Some(verdict)
+            }
+            Ok(IterationOutcome::Continue { session_id }) => {
+                if let Some(id) = session_id {
+                    *self.last_session_id.lock().unwrap() = Some(id);
+                }
+                None
+            }
             Err(e) => {
                 *self.last_error.lock().unwrap() = Some(e);
                 None
@@ -407,6 +442,7 @@ fn build_last_run_json(summary: &RunSummary, workspace_dirty: bool) -> serde_jso
         "cap_hit_counter": cap_hit_counter,
         "last_stage": summary.last_stage,
         "last_verdict": last_verdict,
+        "session_id": summary.session_id,
         "iteration_counters": {
             "global": summary.iteration_counters.global,
             "loops": loops,
@@ -414,6 +450,31 @@ fn build_last_run_json(summary: &RunSummary, workspace_dirty: bool) -> serde_jso
         "timestamp": iso8601_now(),
         "workspace_dirty": workspace_dirty,
     })
+}
+
+fn token_lifetime_warning(
+    remaining_minutes: Option<u64>,
+    threshold_minutes: Option<u32>,
+) -> Option<String> {
+    let threshold = threshold_minutes?;
+    let remaining = remaining_minutes?;
+    if remaining >= threshold as u64 {
+        return None;
+    }
+    Some(format!(
+        "Warning: OAuth token expires in {remaining} minutes (threshold: {threshold} min).\n\
+         Run `claude auth login` to refresh before starting."
+    ))
+}
+
+fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> Option<String> {
+    let id = session_id?;
+    match reason {
+        TerminalReason::FailExit | TerminalReason::CapHit => {
+            Some(format!("To continue the session, run: capsule resume {id}"))
+        }
+        _ => None,
+    }
 }
 
 fn iso8601_now() -> String {
@@ -563,6 +624,7 @@ mod tests {
                 loops: HashMap::new(),
             },
             cap_hit: None,
+            session_id: None,
         }
     }
 
@@ -653,6 +715,77 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["terminal_reason"], "exit");
         assert!(parsed["timestamp"].as_str().unwrap().ends_with('Z'));
+    }
+
+    #[test]
+    fn json_includes_session_id_when_present() {
+        let mut s = minimal_summary(TerminalReason::Done);
+        s.session_id = Some("sess_abc123".to_string());
+        let v = build_last_run_json(&s, false);
+        assert_eq!(v["session_id"], "sess_abc123");
+    }
+
+    #[test]
+    fn json_session_id_null_when_absent() {
+        let s = minimal_summary(TerminalReason::Done);
+        let v = build_last_run_json(&s, false);
+        assert!(v["session_id"].is_null());
+    }
+
+    #[test]
+    fn resume_hint_shown_on_fail_exit_with_session_id() {
+        let hint = resume_hint(Some("sess_abc"), &TerminalReason::FailExit);
+        assert!(hint.is_some());
+        let msg = hint.unwrap();
+        assert!(msg.contains("sess_abc"), "hint was: {msg}");
+        assert!(msg.contains("capsule resume"), "hint was: {msg}");
+    }
+
+    #[test]
+    fn resume_hint_shown_on_cap_hit_with_session_id() {
+        assert!(resume_hint(Some("sess_xyz"), &TerminalReason::CapHit).is_some());
+    }
+
+    #[test]
+    fn resume_hint_none_when_no_session_id() {
+        assert!(resume_hint(None, &TerminalReason::FailExit).is_none());
+    }
+
+    #[test]
+    fn resume_hint_none_on_success() {
+        assert!(resume_hint(Some("sess_abc"), &TerminalReason::Done).is_none());
+        assert!(resume_hint(Some("sess_abc"), &TerminalReason::Ok).is_none());
+        assert!(resume_hint(Some("sess_abc"), &TerminalReason::Exit).is_none());
+    }
+
+    #[test]
+    fn token_warning_when_below_threshold() {
+        let msg = token_lifetime_warning(Some(10), Some(15));
+        assert!(msg.is_some());
+        let text = msg.unwrap();
+        assert!(text.contains("10"), "msg: {text}");
+        assert!(text.contains("15"), "msg: {text}");
+    }
+
+    #[test]
+    fn no_token_warning_when_above_threshold() {
+        assert!(token_lifetime_warning(Some(30), Some(15)).is_none());
+    }
+
+    #[test]
+    fn no_token_warning_when_no_threshold() {
+        assert!(token_lifetime_warning(Some(10), None).is_none());
+    }
+
+    #[test]
+    fn no_token_warning_when_no_credentials() {
+        assert!(token_lifetime_warning(None, Some(15)).is_none());
+    }
+
+    #[test]
+    fn token_warning_when_expired() {
+        let msg = token_lifetime_warning(Some(0), Some(15));
+        assert!(msg.is_some());
     }
 
     #[test]

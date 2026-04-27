@@ -8,6 +8,7 @@ pub struct StreamParser {
     auth_failed: bool,
     init_seen: bool,
     submit_verdict_registered: bool,
+    session_id: Option<String>,
 }
 
 impl StreamParser {
@@ -17,6 +18,7 @@ impl StreamParser {
             auth_failed: false,
             init_seen: false,
             submit_verdict_registered: false,
+            session_id: None,
         }
     }
 
@@ -28,6 +30,7 @@ impl StreamParser {
         }
         if is_init_event(line) {
             self.init_seen = true;
+            self.session_id = extract_session_id(line);
             if let Some(tools) = extract_init_tools(line) {
                 self.submit_verdict_registered = tools.iter().any(|t| {
                     // tools array contains plain strings in real Claude Code stream-json
@@ -47,6 +50,10 @@ impl StreamParser {
 
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
     }
 
     pub fn auth_failed(&self) -> bool {
@@ -71,6 +78,11 @@ fn is_init_event(line: &str) -> bool {
     };
     msg.get("type").and_then(Value::as_str) == Some("system")
         && msg.get("subtype").and_then(Value::as_str) == Some("init")
+}
+
+fn extract_session_id(line: &str) -> Option<String> {
+    let msg: Value = serde_json::from_str(line).ok()?;
+    msg.get("session_id")?.as_str().map(str::to_owned)
 }
 
 fn extract_init_tools(line: &str) -> Option<Vec<Value>> {
@@ -287,5 +299,26 @@ mod tests {
         let mut p = StreamParser::new();
         p.feed(TEXT_LINE);
         assert!(!p.auth_failed());
+    }
+
+    #[test]
+    fn session_id_captured_from_init_event() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_WITH_VERDICT_TOOL);
+        assert_eq!(p.session_id(), Some("sess_01"));
+    }
+
+    #[test]
+    fn session_id_none_before_init() {
+        let p = StreamParser::new();
+        assert_eq!(p.session_id(), None);
+    }
+
+    #[test]
+    fn session_id_none_when_init_lacks_field() {
+        let line = r#"{"type":"system","subtype":"init","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), None);
     }
 }

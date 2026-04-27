@@ -219,9 +219,12 @@ pub struct RunConfig {
 #[derive(Debug)]
 pub enum IterationOutcome {
     /// Loop should continue to the next iteration.
-    Continue,
-    /// Claude submitted a verdict; loop should stop. Carries the verdict.
-    Done(crate::verdict::Verdict),
+    Continue { session_id: Option<String> },
+    /// Claude submitted a verdict; loop should stop.
+    Done {
+        verdict: crate::verdict::Verdict,
+        session_id: Option<String>,
+    },
 }
 
 /// Returns a unique container name for the given iteration.
@@ -374,11 +377,47 @@ pub fn make_mcp_config(capsule_container_bin: &std::path::Path) -> String {
     .to_string()
 }
 
+fn read_expires_at(claude_dir: &std::path::Path) -> Option<u64> {
+    let path = claude_dir.join(".credentials.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.pointer("/claudeAiOauth/expiresAt")
+        .and_then(serde_json::Value::as_u64)
+}
+
+pub fn token_remaining_minutes(claude_dir: &std::path::Path) -> Option<u64> {
+    let expires_at = read_expires_at(claude_dir)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    if expires_at <= now_ms {
+        Some(0)
+    } else {
+        Some((expires_at - now_ms) / 60_000)
+    }
+}
+
+pub fn host_token_is_expired(claude_dir: &std::path::Path) -> bool {
+    match token_remaining_minutes(claude_dir) {
+        None => true,
+        Some(0) => true,
+        Some(_) => false,
+    }
+}
+
+struct StreamResult {
+    auth_failed: bool,
+    submit_verdict_missing: bool,
+    verdict: Option<crate::verdict::Verdict>,
+    session_id: Option<String>,
+}
+
 fn stream_output(
     reader: BufReader<impl std::io::Read>,
     mut jq_stdin: impl Write,
     verbose: bool,
-) -> Result<(bool, bool, Option<crate::verdict::Verdict>)> {
+) -> Result<StreamResult> {
     let mut parser = StreamParser::new();
 
     for line in reader.lines() {
@@ -390,11 +429,12 @@ fn stream_output(
         let _ = writeln!(jq_stdin, "{line}");
     }
 
-    Ok((
-        parser.auth_failed(),
-        parser.submit_verdict_missing(),
-        parser.verdict().cloned(),
-    ))
+    Ok(StreamResult {
+        auth_failed: parser.auth_failed(),
+        submit_verdict_missing: parser.submit_verdict_missing(),
+        verdict: parser.verdict().cloned(),
+        session_id: parser.session_id().map(str::to_owned),
+    })
 }
 
 /// Run one iteration: mount prompt, stream output through jq, propagate exit code.
@@ -485,8 +525,7 @@ pub fn run_iteration(
     let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
 
     // stream_output drops jq_stdin on return, signalling EOF to jq.
-    let (auth_failed, submit_verdict_missing, verdict) =
-        stream_output(reader, jq_stdin, cfg.verbose)?;
+    let result = stream_output(reader, jq_stdin, cfg.verbose)?;
 
     let _ = jq_child.wait();
     let status = docker_child.wait().context("docker run did not complete")?;
@@ -496,13 +535,31 @@ pub fn run_iteration(
         *slot = None;
     }
 
-    if auth_failed {
+    if result.auth_failed {
+        // Resume-retry: if host token is still valid, re-copy credentials and resume.
+        if let Some(ref session_id) = result.session_id {
+            if let Some(creds) = &cfg.credentials_file {
+                if !host_token_is_expired(&cfg.claude_dir) {
+                    eprintln!(
+                        "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
+                        session_id
+                    );
+                    // Re-copy host credentials to the temp file.
+                    let host_creds = cfg.claude_dir.join(".credentials.json");
+                    std::fs::copy(&host_creds, creds)
+                        .context("failed to re-copy host credentials for resume-retry")?;
+
+                    return run_iteration_resume(cfg, iteration, active_container, session_id);
+                }
+            }
+        }
+
         bail!(
-            "Claude authentication failed. Run `claude` on the host to refresh credentials, then retry."
+            "Claude authentication failed. Run `claude auth login` on the host to refresh credentials, then retry."
         );
     }
 
-    if submit_verdict_missing {
+    if result.submit_verdict_missing {
         bail!(
             "The `submit_verdict` MCP tool was not registered. \
              Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
@@ -515,9 +572,124 @@ pub fn run_iteration(
         bail!("container exited with code {}", status.code().unwrap_or(-1));
     }
 
-    match verdict {
-        Some(v) => Ok(IterationOutcome::Done(v)),
-        None => Ok(IterationOutcome::Continue),
+    match result.verdict {
+        Some(verdict) => Ok(IterationOutcome::Done {
+            verdict,
+            session_id: result.session_id,
+        }),
+        None => Ok(IterationOutcome::Continue {
+            session_id: result.session_id,
+        }),
+    }
+}
+
+/// One-shot resume after auth failure. Same as `run_iteration` but passes
+/// `CAPSULE_RESUME_SESSION` to the container. Bails on any error — no second retry.
+fn run_iteration_resume(
+    cfg: &RunConfig,
+    iteration: u32,
+    active_container: &Arc<Mutex<Option<String>>>,
+    session_id: &str,
+) -> Result<IterationOutcome> {
+    let mut prompt_file = tempfile::Builder::new()
+        .prefix("capsule-prompt-")
+        .suffix(".txt")
+        .tempfile()
+        .context("failed to create prompt temp file")?;
+    prompt_file
+        .write_all(cfg.prompt.as_bytes())
+        .context("failed to write prompt to temp file")?;
+    prompt_file.flush().context("failed to flush prompt file")?;
+    let prompt_path = prompt_file.path().to_owned();
+
+    const CAPSULE_CONTAINER_BIN: &str = "/usr/local/bin/capsule";
+    let mcp_config = make_mcp_config(std::path::Path::new(CAPSULE_CONTAINER_BIN));
+    let mut mcp_file = tempfile::Builder::new()
+        .prefix("capsule-mcp-")
+        .suffix(".json")
+        .tempfile()
+        .context("failed to create mcp config temp file")?;
+    mcp_file
+        .write_all(mcp_config.as_bytes())
+        .context("failed to write mcp config")?;
+    mcp_file.flush().context("failed to flush mcp config")?;
+    let mcp_path = mcp_file.path().to_owned();
+
+    let capsule_host_bin =
+        std::env::current_exe().context("failed to resolve capsule binary path")?;
+
+    // Use a distinct name so it doesn't collide with the original container.
+    let name = format!("{}-resume", container_name_for(iteration));
+
+    if let Ok(mut slot) = active_container.lock() {
+        *slot = Some(name.clone());
+    }
+
+    let mut docker_args = build_docker_args(cfg, &prompt_path, &name);
+    let image = docker_args
+        .pop()
+        .expect("docker args must end with image name");
+    docker_args.push(format!(
+        "--mount=type=bind,src={},dst={},readonly",
+        capsule_host_bin.display(),
+        CAPSULE_CONTAINER_BIN
+    ));
+    docker_args.push(format!(
+        "--mount=type=bind,src={},dst=/home/claude/.mcp.json,readonly",
+        mcp_path.display()
+    ));
+    docker_args.push(format!("-e=CAPSULE_RESUME_SESSION={session_id}"));
+    docker_args.push(image);
+    let docker_args = docker_args;
+
+    let mut docker_child = Command::new("docker")
+        .args(&docker_args)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to spawn `docker run` for resume-retry")?;
+
+    let reader = BufReader::new(docker_child.stdout.take().expect("stdout piped"));
+
+    let mut jq_child = Command::new("jq")
+        .args(["-R", "-r", STREAM_DISPLAY_JQ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to spawn `jq`")?;
+
+    let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
+    let result = stream_output(reader, jq_stdin, cfg.verbose)?;
+
+    let _ = jq_child.wait();
+    let status = docker_child.wait().context("docker run did not complete")?;
+
+    if let Ok(mut slot) = active_container.lock() {
+        *slot = None;
+    }
+
+    if result.auth_failed {
+        bail!(
+            "Claude authentication failed on resume-retry. \
+             Run `claude auth login` on the host to refresh credentials, then retry."
+        );
+    }
+
+    if !status.success() {
+        bail!(
+            "container exited with code {} during resume-retry",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    match result.verdict {
+        Some(verdict) => Ok(IterationOutcome::Done {
+            verdict,
+            session_id: result.session_id,
+        }),
+        None => Ok(IterationOutcome::Continue {
+            session_id: result.session_id,
+        }),
     }
 }
 
@@ -1032,6 +1204,71 @@ mod tests {
             joined.contains(creds_file.path().to_string_lossy().as_ref()),
             "expected temp credentials path in mount: {joined}"
         );
+    }
+
+    #[test]
+    fn host_token_expired_when_expires_at_in_past() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir.path().join(".credentials.json");
+        // expiresAt = 1000 (epoch ms) → way in the past
+        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":1000}}"#).unwrap();
+        assert!(host_token_is_expired(dir.path()));
+    }
+
+    #[test]
+    fn host_token_not_expired_when_expires_at_in_future() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir.path().join(".credentials.json");
+        // expiresAt far in the future (year ~2050)
+        std::fs::write(
+            &creds,
+            r#"{"claudeAiOauth":{"expiresAt":2524608000000}}"#,
+        )
+        .unwrap();
+        assert!(!host_token_is_expired(dir.path()));
+    }
+
+    #[test]
+    fn host_token_expired_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(host_token_is_expired(dir.path()));
+    }
+
+    #[test]
+    fn host_token_expired_when_malformed_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir.path().join(".credentials.json");
+        std::fs::write(&creds, "not json").unwrap();
+        assert!(host_token_is_expired(dir.path()));
+    }
+
+    #[test]
+    fn token_remaining_none_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(token_remaining_minutes(dir.path()).is_none());
+    }
+
+    #[test]
+    fn token_remaining_none_when_expired() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir.path().join(".credentials.json");
+        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":1000}}"#).unwrap();
+        assert_eq!(token_remaining_minutes(dir.path()), Some(0));
+    }
+
+    #[test]
+    fn token_remaining_returns_minutes_when_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir.path().join(".credentials.json");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let future_ms = now_ms + 30 * 60 * 1000; // 30 min from now
+        let json = format!(r#"{{"claudeAiOauth":{{"expiresAt":{future_ms}}}}}"#);
+        std::fs::write(&creds, json).unwrap();
+        let remaining = token_remaining_minutes(dir.path()).unwrap();
+        assert!((29..=31).contains(&remaining), "got {remaining}");
     }
 
     #[test]

@@ -79,6 +79,10 @@ enum Commands {
         /// Runtime input injected into the first stage's first invocation only.
         #[arg(long)]
         input: Option<String>,
+
+        /// Minimum remaining token lifetime (minutes) before prompting to refresh.
+        #[arg(long)]
+        min_token_lifetime_minutes: Option<u32>,
     },
 
     /// Print shell completion script to stdout
@@ -134,6 +138,7 @@ fn main() -> Result<()> {
             git_identity,
             github,
             input,
+            min_token_lifetime_minutes,
         } => {
             let git_identity = match git_identity {
                 CliGitIdentity::User => Some(GitIdentity::User),
@@ -152,6 +157,7 @@ fn main() -> Result<()> {
                 git_identity,
                 github,
                 input,
+                min_token_lifetime_minutes,
             };
             match RunSession::prepare(capsule_dir, overrides)?.execute()? {
                 run::ExitDecision::Success => {

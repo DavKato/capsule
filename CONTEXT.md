@@ -123,8 +123,26 @@ Task/work state stored outside capsule (GitHub issues, files on disk); the sourc
 _Avoid_: User state
 
 **Summary artifact**:
-`.capsule/last-run.json` written on every pipeline exit, recording terminal reason, last stage, last verdict, counters, and workspace-dirty flag.
+`.capsule/last-run.json` written on every pipeline exit, recording terminal reason, last stage, last verdict, counters, workspace-dirty flag, and session ID of the last stage invocation. On mid-session exits only, also includes pipeline state for resumption.
 _Avoid_: Exit log, run record
+
+**Pipeline state**:
+The runtime state of the pipeline executor — current stage index, global counter, per-stage fail counts, last stage, last verdict, and per-loop iteration counters. Serialized to the summary artifact only on mid-session exits (auth failure, container crash, signal); omitted on clean pipeline completion. `capsule resume` refuses to run when pipeline state is absent.
+_Avoid_: Checkpoint, executor state
+
+### Credentials and recovery
+
+**Credential copy**:
+The `CredentialsGuard` copies `~/.claude/.credentials.json` to a temp file at `prepare()` time and bind-mounts it over the directory mount, isolating the container's OAuth tokens from the host's concurrent token rotation.
+_Avoid_: Snapshot, credential isolation
+
+**Resume-retry**:
+On `authentication_failed`, capsule re-copies the host's current credentials to the temp file and re-launches the container with `claude --resume <session_id>`, recovering the full conversation context. One attempt; if the host token is also expired, capsule bails.
+_Avoid_: Auth retry, credential refresh
+
+**`min_token_lifetime_minutes`**:
+Optional config.yml field (with CLI override). At `prepare()`, if the access token's `expiresAt` is within this threshold, capsule prompts the user before starting.
+_Avoid_: Token threshold, expiry check
 
 ### Workflow patterns
 

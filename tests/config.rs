@@ -353,3 +353,39 @@ fn multi_stage_model_and_verbose_parsed() {
     assert_eq!(cfg.model.as_deref(), Some("claude-haiku-4-5"));
     assert!(cfg.verbose);
 }
+
+// ── min_token_lifetime_minutes ───────────────────────────────────────────────
+
+#[test]
+fn min_token_lifetime_defaults_to_none() {
+    let dir = capsule_dir_with_config("iterations: 1\n");
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    assert!(cfg.min_token_lifetime_minutes.is_none());
+}
+
+#[test]
+fn min_token_lifetime_from_flat_config() {
+    let dir = capsule_dir_with_config("iterations: 1\nmin_token_lifetime_minutes: 15\n");
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    assert_eq!(cfg.min_token_lifetime_minutes, Some(15));
+}
+
+#[test]
+fn min_token_lifetime_from_multi_stage_config() {
+    let yaml = "stages:\n  - name: s\nmin_token_lifetime_minutes: 30\n";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    assert_eq!(cfg.min_token_lifetime_minutes, Some(30));
+}
+
+#[test]
+fn min_token_lifetime_cli_overrides_config() {
+    let dir = capsule_dir_with_config("iterations: 1\nmin_token_lifetime_minutes: 15\n");
+    let cli = CliOverrides {
+        iterations: Some(1),
+        min_token_lifetime_minutes: Some(45),
+        ..Default::default()
+    };
+    let cfg: Config = resolve(dir.path(), cli).unwrap();
+    assert_eq!(cfg.min_token_lifetime_minutes, Some(45));
+}

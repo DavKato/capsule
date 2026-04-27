@@ -437,3 +437,64 @@ fn entrypoint_runs_before_each_without_executable_bit() {
         .args(["rmi", "-f", "capsule-before-each-test"])
         .output();
 }
+
+#[test]
+#[requires_docker]
+#[serial(base_image)]
+fn entrypoint_uses_resume_when_env_set() {
+    build_base_image(false).expect("base image should be available");
+
+    // Stub claude that logs its args to /tmp/claude-args.
+    let dockerfile = "FROM capsule\n\
+        RUN printf '#!/bin/sh\\necho \"$@\" > /tmp/claude-args\\n' > /home/claude/.local/bin/claude \
+        && chmod +x /home/claude/.local/bin/claude\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-resume-test", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(dockerfile.as_bytes())
+        .unwrap();
+    child.wait().expect("docker build should complete");
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt = dir.path().join("prompt.txt");
+    std::fs::write(&prompt, "placeholder\n").unwrap();
+
+    let output = std::process::Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--entrypoint",
+            "bash",
+            "-v",
+            &format!("{}:/home/claude/prompt.txt", prompt.display()),
+            "-e",
+            "GIT_AUTHOR_NAME=Test",
+            "-e",
+            "GIT_AUTHOR_EMAIL=test@test.com",
+            "-e",
+            "CAPSULE_RESUME_SESSION=sess_xyz",
+            "capsule-resume-test",
+            "-c",
+            "bash /home/claude/entrypoint.sh && cat /tmp/claude-args",
+        ])
+        .output()
+        .expect("docker run should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stdout.contains("--resume sess_xyz"),
+        "expected --resume sess_xyz in claude args.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-resume-test"])
+        .output();
+}

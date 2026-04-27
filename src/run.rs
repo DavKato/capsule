@@ -8,7 +8,9 @@ use capsule::docker::{
 use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
-use capsule::pipeline::{CapHitKind, PipelineExecutor, RunSummary, StageRunner, TerminalReason};
+use capsule::pipeline::{
+    CapHitKind, PipelineExecutor, PipelineState, RunSummary, StageRunner, TerminalReason,
+};
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use capsule::prompt::{prepend_preamble, resolve_prompt};
 use capsule::update_check;
@@ -118,6 +120,7 @@ pub(crate) struct RunSession {
     gh_token_tempfile: Option<tempfile::NamedTempFile>,
     credentials_guard: Option<CredentialsGuard>,
     active_container: Arc<Mutex<Option<String>>>,
+    resume: Option<(String, PipelineState)>,
 }
 
 impl RunSession {
@@ -224,7 +227,17 @@ impl RunSession {
             gh_token_tempfile,
             credentials_guard,
             active_container,
+            resume: None,
         })
+    }
+
+    /// Read `last-run.json` from `capsule_dir`, extract saved state, then prepare
+    /// the session identically to `prepare`. `execute()` will resume the pipeline.
+    pub(crate) fn prepare_resume(capsule_dir: PathBuf) -> Result<Self> {
+        let resume_data = parse_resume_state(&capsule_dir)?;
+        let mut session = Self::prepare(capsule_dir, capsule::config::CliOverrides::default())?;
+        session.resume = Some(resume_data);
+        Ok(session)
     }
 
     /// Resolve GH_TOKEN when --github is set and write it to a temp env-file so
@@ -326,6 +339,8 @@ impl RunSession {
         };
         let last_error: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
         let last_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let resume = self.resume.take();
+        let resume_session_id = resume.as_ref().map(|(id, _)| id.clone());
         let runner = DockerStageRunner {
             base_cfg,
             active_container: Arc::clone(&self.active_container),
@@ -333,15 +348,24 @@ impl RunSession {
             last_error: Arc::clone(&last_error),
             last_session_id: Arc::clone(&last_session_id),
             credentials_guard,
+            resume_session_id,
         };
-        let mut result = PipelineExecutor::new(self.cfg.pipeline.clone(), runner)
-            .with_input(self.input)
-            .run();
+        let mut result = if let Some((_, state)) = resume {
+            PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state).run()
+        } else {
+            PipelineExecutor::new(self.cfg.pipeline.clone(), runner)
+                .with_input(self.input)
+                .run()
+        };
         if let Some(e) = last_error.lock().unwrap().take() {
             return Err(e);
         }
         result.summary.session_id = last_session_id.lock().unwrap().take();
-        write_last_run(&self.cfg.capsule_dir, &result.summary)?;
+        let state_to_write = match result.summary.terminal_reason {
+            TerminalReason::FailExit | TerminalReason::CapHit => Some(&result.pipeline_state),
+            _ => None,
+        };
+        write_last_run(&self.cfg.capsule_dir, &result.summary, state_to_write)?;
         if let Some(hint) = resume_hint(
             result.summary.session_id.as_deref(),
             &result.summary.terminal_reason,
@@ -360,6 +384,7 @@ struct DockerStageRunner {
     last_error: Arc<Mutex<Option<anyhow::Error>>>,
     last_session_id: Arc<Mutex<Option<String>>>,
     credentials_guard: Option<CredentialsGuard>,
+    resume_session_id: Option<String>,
 }
 
 impl StageRunner for DockerStageRunner {
@@ -370,6 +395,25 @@ impl StageRunner for DockerStageRunner {
         cfg.prompt = prompt.to_string();
         if let Some(m) = model {
             cfg.model = Some(m.to_string());
+        }
+        if let Some(session_id) = self.resume_session_id.take() {
+            let name = format!("{}-resume-pipeline", container_name_for(self.iteration));
+            let (result, status) =
+                match run_container(&cfg, &name, &self.active_container, Some(&session_id)) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        *self.last_error.lock().unwrap() = Some(e);
+                        return None;
+                    }
+                };
+            if let Some(e) = post_stream_error(&result, &status, "pipeline-resume") {
+                *self.last_error.lock().unwrap() = Some(e);
+                return None;
+            }
+            if let Some(id) = result.session_id {
+                *self.last_session_id.lock().unwrap() = Some(id);
+            }
+            return result.verdict;
         }
         match run_iteration(&cfg, self.iteration, &self.active_container) {
             Ok(IterationOutcome::Done {
@@ -453,9 +497,13 @@ pub(crate) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
     }
 }
 
-fn write_last_run(capsule_dir: &Path, summary: &RunSummary) -> Result<()> {
+fn write_last_run(
+    capsule_dir: &Path,
+    summary: &RunSummary,
+    pipeline_state: Option<&PipelineState>,
+) -> Result<()> {
     let dirty = is_workspace_dirty();
-    let json = build_last_run_json(summary, dirty);
+    let json = build_last_run_json(summary, dirty, pipeline_state);
     let path = capsule_dir.join("last-run.json");
     std::fs::write(&path, serde_json::to_string_pretty(&json)?)
         .with_context(|| format!("writing summary artifact {}", path.display()))?;
@@ -470,7 +518,107 @@ fn is_workspace_dirty() -> bool {
         .unwrap_or(false)
 }
 
-fn build_last_run_json(summary: &RunSummary, workspace_dirty: bool) -> serde_json::Value {
+fn pipeline_state_to_json(state: &PipelineState) -> serde_json::Value {
+    let fail_counts: serde_json::Map<String, serde_json::Value> = state
+        .fail_counts
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+        .collect();
+    let loop_iterations: serde_json::Map<String, serde_json::Value> = state
+        .loop_iterations
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    let last_verdict = state
+        .last_verdict
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+    serde_json::json!({
+        "current_idx": state.current_idx,
+        "global_counter": state.global_counter,
+        "fail_counts": fail_counts,
+        "last_stage": state.last_stage,
+        "last_verdict": last_verdict,
+        "loop_iterations": loop_iterations,
+    })
+}
+
+fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
+    let path = capsule_dir.join("last-run.json");
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("{} not found — run `capsule run` first", path.display()))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&content).context("failed to parse last-run.json")?;
+
+    let session_id = json["session_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("last-run.json has no session_id — cannot resume"))?
+        .to_string();
+
+    let state_json = &json["pipeline_state"];
+    if state_json.is_null() {
+        anyhow::bail!(
+            "last-run.json has no pipeline state — \
+             the previous run completed cleanly and cannot be resumed"
+        );
+    }
+
+    let current_idx = state_json["current_idx"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("pipeline_state.current_idx missing"))?
+        as usize;
+    let global_counter = state_json["global_counter"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("pipeline_state.global_counter missing"))?
+        as u32;
+    let fail_counts: std::collections::HashMap<String, u32> = state_json["fail_counts"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
+                .collect()
+        })
+        .unwrap_or_default();
+    let last_stage = state_json["last_stage"].as_str().map(str::to_owned);
+    let last_verdict: Option<capsule::verdict::Verdict> = if state_json["last_verdict"].is_null() {
+        None
+    } else {
+        Some(
+            serde_json::from_value(state_json["last_verdict"].clone())
+                .context("failed to deserialize pipeline_state.last_verdict")?,
+        )
+    };
+    let loop_iterations: std::collections::HashMap<usize, u32> = state_json["loop_iterations"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| {
+                    k.parse::<usize>()
+                        .ok()
+                        .map(|ki| (ki, v.as_u64().unwrap_or(0) as u32))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok((
+        session_id,
+        PipelineState {
+            current_idx,
+            global_counter,
+            fail_counts,
+            last_stage,
+            last_verdict,
+            loop_iterations,
+        },
+    ))
+}
+
+fn build_last_run_json(
+    summary: &RunSummary,
+    workspace_dirty: bool,
+    pipeline_state: Option<&PipelineState>,
+) -> serde_json::Value {
     let terminal_reason = match summary.terminal_reason {
         TerminalReason::Done => "done",
         TerminalReason::Exit => "exit",
@@ -502,6 +650,7 @@ fn build_last_run_json(summary: &RunSummary, workspace_dirty: bool) -> serde_jso
         .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
         .collect();
 
+    let ps = pipeline_state.map(pipeline_state_to_json);
     serde_json::json!({
         "terminal_reason": terminal_reason,
         "cap_hit_counter": cap_hit_counter,
@@ -512,6 +661,7 @@ fn build_last_run_json(summary: &RunSummary, workspace_dirty: bool) -> serde_jso
             "global": summary.iteration_counters.global,
             "loops": loops,
         },
+        "pipeline_state": ps,
         "timestamp": iso8601_now(),
         "workspace_dirty": workspace_dirty,
     })
@@ -713,7 +863,7 @@ mod tests {
     #[test]
     fn json_done_terminal_reason() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["terminal_reason"], "done");
         assert!(v["cap_hit_counter"].is_null());
         assert!(!v["workspace_dirty"].as_bool().unwrap());
@@ -722,14 +872,14 @@ mod tests {
     #[test]
     fn json_fail_exit_terminal_reason() {
         let s = minimal_summary(TerminalReason::FailExit);
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["terminal_reason"], "fail-exit");
     }
 
     #[test]
     fn json_ok_terminal_reason() {
         let s = minimal_summary(TerminalReason::Ok);
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["terminal_reason"], "ok");
     }
 
@@ -737,7 +887,7 @@ mod tests {
     fn json_cap_hit_loop_max_iteration() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.cap_hit = Some(CapHitKind::LoopMaxIteration(0));
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["terminal_reason"], "cap-hit");
         assert_eq!(v["cap_hit_counter"]["type"], "max_iteration");
         assert_eq!(v["cap_hit_counter"]["loop_idx"], 0);
@@ -747,7 +897,7 @@ mod tests {
     fn json_cap_hit_max_pipeline_iterations() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.cap_hit = Some(CapHitKind::MaxPipelineIterations);
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["cap_hit_counter"]["type"], "max_pipeline_iterations");
         assert!(v["cap_hit_counter"]["loop_idx"].is_null());
     }
@@ -755,7 +905,7 @@ mod tests {
     #[test]
     fn json_last_verdict_null_when_none() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert!(v["last_verdict"].is_null());
     }
 
@@ -766,7 +916,7 @@ mod tests {
             status: VerdictStatus::Pass,
             notes: Some("all good".to_string()),
         });
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["last_verdict"]["status"], "pass");
         assert_eq!(v["last_verdict"]["notes"], "all good");
     }
@@ -774,7 +924,7 @@ mod tests {
     #[test]
     fn json_workspace_dirty_flag() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, true);
+        let v = build_last_run_json(&s, true, None);
         assert!(v["workspace_dirty"].as_bool().unwrap());
     }
 
@@ -783,7 +933,7 @@ mod tests {
         let mut s = minimal_summary(TerminalReason::Done);
         s.iteration_counters.global = 5;
         s.iteration_counters.loops.insert(0, 3);
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["iteration_counters"]["global"], 5);
         assert_eq!(v["iteration_counters"]["loops"]["0"], 3);
     }
@@ -792,7 +942,7 @@ mod tests {
     fn write_last_run_creates_valid_json_file() {
         let dir = tempfile::tempdir().unwrap();
         let s = minimal_summary(TerminalReason::Exit);
-        write_last_run(dir.path(), &s).unwrap();
+        write_last_run(dir.path(), &s, None).unwrap();
         let content = std::fs::read_to_string(dir.path().join("last-run.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["terminal_reason"], "exit");
@@ -803,14 +953,14 @@ mod tests {
     fn json_includes_session_id_when_present() {
         let mut s = minimal_summary(TerminalReason::Done);
         s.session_id = Some("sess_abc123".to_string());
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert_eq!(v["session_id"], "sess_abc123");
     }
 
     #[test]
     fn json_session_id_null_when_absent() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false);
+        let v = build_last_run_json(&s, false, None);
         assert!(v["session_id"].is_null());
     }
 
@@ -877,5 +1027,104 @@ mod tests {
         let result = is_workspace_dirty();
         // Just verify the function runs without panic and returns a bool.
         let _ = result;
+    }
+
+    // ── pipeline_state JSON serialization ─────────────────────────────────────
+
+    fn make_pipeline_state() -> PipelineState {
+        use capsule::pipeline::PipelineState;
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("stage-a".to_string(), 2u32);
+        let mut loop_iters = HashMap::new();
+        loop_iters.insert(0usize, 3u32);
+        PipelineState {
+            current_idx: 2,
+            global_counter: 7,
+            fail_counts,
+            last_stage: Some("stage-a".to_string()),
+            last_verdict: Some(capsule::verdict::Verdict {
+                status: capsule::verdict::VerdictStatus::Fail,
+                notes: Some("oops".to_string()),
+            }),
+            loop_iterations: loop_iters,
+        }
+    }
+
+    #[test]
+    fn json_pipeline_state_present_for_fail_exit() {
+        let mut s = minimal_summary(TerminalReason::FailExit);
+        s.session_id = Some("sess_abc".to_string());
+        let state = make_pipeline_state();
+        let v = build_last_run_json(&s, false, Some(&state));
+        assert!(
+            !v["pipeline_state"].is_null(),
+            "pipeline_state must be present for FailExit"
+        );
+        assert_eq!(v["pipeline_state"]["current_idx"], 2);
+        assert_eq!(v["pipeline_state"]["global_counter"], 7);
+        assert_eq!(v["pipeline_state"]["fail_counts"]["stage-a"], 2);
+        assert_eq!(v["pipeline_state"]["last_stage"], "stage-a");
+        assert_eq!(v["pipeline_state"]["last_verdict"]["status"], "fail");
+        assert_eq!(v["pipeline_state"]["loop_iterations"]["0"], 3);
+    }
+
+    #[test]
+    fn json_pipeline_state_null_for_clean_exit() {
+        let s = minimal_summary(TerminalReason::Done);
+        let v = build_last_run_json(&s, false, None);
+        assert!(
+            v["pipeline_state"].is_null(),
+            "pipeline_state must be null for Done"
+        );
+    }
+
+    // ── parse_resume_state round-trip ─────────────────────────────────────────
+
+    #[test]
+    fn parse_resume_state_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = minimal_summary(TerminalReason::FailExit);
+        s.session_id = Some("sess_xyz".to_string());
+        let state = make_pipeline_state();
+        write_last_run(dir.path(), &s, Some(&state)).unwrap();
+
+        let (session_id, restored) = parse_resume_state(dir.path()).unwrap();
+        assert_eq!(session_id, "sess_xyz");
+        assert_eq!(restored.current_idx, 2);
+        assert_eq!(restored.global_counter, 7);
+        assert_eq!(restored.fail_counts.get("stage-a"), Some(&2));
+        assert_eq!(restored.last_stage.as_deref(), Some("stage-a"));
+        assert_eq!(
+            restored.last_verdict.as_ref().map(|v| &v.status),
+            Some(&capsule::verdict::VerdictStatus::Fail)
+        );
+        assert_eq!(restored.loop_iterations.get(&0), Some(&3));
+    }
+
+    #[test]
+    fn parse_resume_state_errors_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(parse_resume_state(dir.path()).is_err());
+    }
+
+    #[test]
+    fn parse_resume_state_errors_when_pipeline_state_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = minimal_summary(TerminalReason::Done);
+        s.session_id = Some("sess_done".to_string());
+        write_last_run(dir.path(), &s, None).unwrap();
+        let err = parse_resume_state(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("no pipeline state"), "err: {err}");
+    }
+
+    #[test]
+    fn parse_resume_state_errors_when_no_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = minimal_summary(TerminalReason::FailExit);
+        s.session_id = None;
+        let state = make_pipeline_state();
+        write_last_run(dir.path(), &s, Some(&state)).unwrap();
+        let err = parse_resume_state(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("no session_id"), "err: {err}");
     }
 }

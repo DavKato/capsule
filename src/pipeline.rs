@@ -50,6 +50,17 @@ pub struct IterationCounters {
     pub loops: HashMap<usize, u32>,
 }
 
+/// Runtime state snapshot used to resume an interrupted pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineState {
+    pub current_idx: usize,
+    pub global_counter: u32,
+    pub fail_counts: HashMap<String, u32>,
+    pub last_stage: Option<String>,
+    pub last_verdict: Option<crate::verdict::Verdict>,
+    pub loop_iterations: HashMap<usize, u32>,
+}
+
 /// Execution summary produced by every `PipelineExecutor::run` call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunSummary {
@@ -68,12 +79,14 @@ pub struct PipelineRunResult {
     pub outcome: PipelineOutcome,
     pub summary: RunSummary,
     pub last_session_id: Option<String>,
+    pub pipeline_state: PipelineState,
 }
 
 pub struct PipelineExecutor<R> {
     config: PipelineConfig,
     runner: R,
     input: Option<String>,
+    initial_state: Option<PipelineState>,
 }
 
 impl<R: StageRunner> PipelineExecutor<R> {
@@ -82,6 +95,16 @@ impl<R: StageRunner> PipelineExecutor<R> {
             config,
             runner,
             input: None,
+            initial_state: None,
+        }
+    }
+
+    pub fn resume(config: PipelineConfig, runner: R, state: PipelineState) -> Self {
+        Self {
+            config,
+            runner,
+            input: None,
+            initial_state: Some(state),
         }
     }
 
@@ -94,13 +117,25 @@ impl<R: StageRunner> PipelineExecutor<R> {
         let name_to_entry = build_name_index(&self.config);
         let max_pipeline = self.config.max_pipeline_iterations;
         let is_flat_form = self.config.is_flat_form;
-        let mut global_counter: u32 = 0;
-        let mut fail_counts: HashMap<String, u32> = HashMap::new();
-        let mut current_idx: usize = 0;
         let mut input = self.input.take();
-        let mut last_stage: Option<String> = None;
-        let mut last_verdict: Option<Verdict> = None;
-        let mut loop_iterations: HashMap<usize, u32> = HashMap::new();
+        let (
+            mut current_idx,
+            mut global_counter,
+            mut fail_counts,
+            mut last_stage,
+            mut last_verdict,
+            mut loop_iterations,
+        ) = match self.initial_state.take() {
+            Some(s) => (
+                s.current_idx,
+                s.global_counter,
+                s.fail_counts,
+                s.last_stage,
+                s.last_verdict,
+                s.loop_iterations,
+            ),
+            None => (0usize, 0u32, HashMap::new(), None, None, HashMap::new()),
+        };
 
         let (outcome, cap_hit) = loop {
             if current_idx >= self.config.entries.len() {
@@ -193,6 +228,15 @@ impl<R: StageRunner> PipelineExecutor<R> {
             (PipelineOutcome::CapHit, false) => TerminalReason::CapHit,
         };
 
+        let pipeline_state = PipelineState {
+            current_idx,
+            global_counter,
+            fail_counts,
+            last_stage: last_stage.clone(),
+            last_verdict: last_verdict.clone(),
+            loop_iterations: loop_iterations.clone(),
+        };
+
         PipelineRunResult {
             outcome,
             summary: RunSummary {
@@ -207,6 +251,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 session_id: None,
             },
             last_session_id: None,
+            pipeline_state,
         }
     }
 }
@@ -1030,5 +1075,121 @@ mod tests {
         };
         let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
         assert_eq!(summary.cap_hit, Some(CapHitKind::MaxPipelineIterations));
+    }
+
+    // ── PipelineState capture and resume ──────────────────────────────────────
+
+    fn run_result(config: PipelineConfig, runner: FakeRunner) -> PipelineRunResult {
+        PipelineExecutor::new(config, runner).run()
+    }
+
+    #[test]
+    fn pipeline_state_captures_current_idx_on_fail_exit() {
+        let config = pipeline(vec![
+            single_stage_entry(stage("a")),
+            single_stage_entry(stage("b")),
+        ]);
+        // a passes, b fails → FailExit; current_idx should point to b (index 1)
+        let result = run_result(config, FakeRunner::new([pass(), fail()]));
+        assert_eq!(result.pipeline_state.current_idx, 1);
+    }
+
+    #[test]
+    fn pipeline_state_captures_fail_counts() {
+        let mut s = stage("a");
+        s.on_fail = OnFail::Retry;
+        s.max_retries = Some(5);
+        let config = pipeline(vec![single_stage_entry(s)]);
+        // Two fails, then pass
+        let result = run_result(config, FakeRunner::new([fail(), fail(), pass()]));
+        assert_eq!(result.pipeline_state.fail_counts.get("a"), None);
+    }
+
+    #[test]
+    fn pipeline_state_captures_fail_counts_on_exit() {
+        let mut s = stage("a");
+        s.on_fail = OnFail::Retry;
+        s.max_retries = Some(1);
+        let config = pipeline(vec![single_stage_entry(s)]);
+        // Two fails exceed max_retries → exit; fail_count for "a" should be 2
+        let result = run_result(config, FakeRunner::new([fail(), fail()]));
+        assert_eq!(result.pipeline_state.fail_counts.get("a"), Some(&2));
+    }
+
+    #[test]
+    fn resume_restores_state_and_continues() {
+        // Pipeline: a, b, c — first run completes a (pass), then b fails → FailExit
+        let config = pipeline(vec![
+            single_stage_entry(stage("a")),
+            single_stage_entry(stage("b")),
+            single_stage_entry(stage("c")),
+        ]);
+        let first_run = run_result(config.clone(), FakeRunner::new([pass(), fail()]));
+        assert_eq!(first_run.pipeline_state.current_idx, 1);
+
+        // Resume from saved state: b should run first (pass), then c (pass) → Done
+        let state = first_run.pipeline_state;
+        let result =
+            PipelineExecutor::resume(config, FakeRunner::new([pass(), pass()]), state).run();
+        assert_eq!(result.outcome, PipelineOutcome::Done);
+    }
+
+    #[test]
+    fn resume_preserves_last_stage_and_verdict_for_note_injection() {
+        let mut a = stage("a");
+        a.prompt = Some("task-a".to_string());
+        let mut b = stage("b");
+        b.prompt = Some("task-b".to_string());
+        let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
+
+        let first_run = PipelineExecutor::new(config.clone(), FakeRunner::new([fail()])).run();
+        let state = first_run.pipeline_state.clone();
+        assert_eq!(state.last_stage, Some("a".to_string()));
+        assert_eq!(state.last_verdict, fail());
+
+        // Resume: a ran, failed; resume should start at a again with last_verdict from first run
+        let state2 = PipelineState {
+            current_idx: 0,
+            last_stage: Some("a".to_string()),
+            last_verdict: Some(crate::verdict::Verdict {
+                status: crate::verdict::VerdictStatus::Fail,
+                notes: Some("needs fix".to_string()),
+            }),
+            ..first_run.pipeline_state
+        };
+        let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
+        PipelineExecutor::resume(config, runner, state2).run();
+        let prompts = prompts.lock().unwrap();
+        // First resumed stage should have note block from previous run
+        assert!(
+            prompts[0].contains("<previous-stage>"),
+            "resumed first stage must have note block"
+        );
+        assert!(prompts[0].contains("needs fix"));
+    }
+
+    #[test]
+    fn resume_global_counter_preserved() {
+        let mut s = stage("a");
+        s.on_fail = OnFail::Retry;
+        let config = PipelineConfig {
+            entries: vec![single_stage_entry(s)],
+            max_pipeline_iterations: 5,
+            is_flat_form: false,
+        };
+        // First run: 3 fails → CapHit at max 3
+        let config3 = PipelineConfig {
+            entries: config.entries.clone(),
+            max_pipeline_iterations: 3,
+            is_flat_form: false,
+        };
+        let first_run = run_result(config3, FakeRunner::new([fail(), fail(), fail()]));
+        assert_eq!(first_run.pipeline_state.global_counter, 3);
+
+        // Resume with higher limit: counter starts at 3, 2 more iterations available
+        let state = first_run.pipeline_state;
+        let result =
+            PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state).run();
+        assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 }

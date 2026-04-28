@@ -157,8 +157,9 @@ impl RunSession {
         let (git_author_name, git_author_email) =
             resolve_git_identity(&cfg.git_identity, &process_env);
 
-        // For flat-form configs, the stage's prompt field holds the path string; replace it
-        // with the resolved, preamble-prepended content so PipelineExecutor sees real content.
+        // Resolve stage prompt paths to file content so PipelineExecutor receives real text.
+        // Flat-form: a single path lives in cfg.prompt; patch it into the lone loop stage.
+        // Multi-stage: each stage carries its own path in stage.prompt; resolve all of them.
         if cfg.pipeline.is_flat_form {
             let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
             let user_prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
@@ -176,6 +177,8 @@ impl RunSession {
                 .first_mut()
                 .ok_or_else(|| anyhow::anyhow!("flat-form pipeline: loop has no stages"))?;
             stage.prompt = Some(resolved);
+        } else {
+            resolve_stage_prompts(&mut cfg.pipeline.entries, &cfg.capsule_dir)?;
         }
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;
@@ -495,6 +498,25 @@ impl DockerStageRunner {
         }
         result.verdict
     }
+}
+
+fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -> Result<()> {
+    for entry in entries {
+        let stages = match entry {
+            PipelineEntry::Stage(s) => std::slice::from_mut(s),
+            PipelineEntry::Loop(l) => l.stages.as_mut_slice(),
+        };
+        for stage in stages {
+            if let Some(ref path_str) = stage.prompt.clone() {
+                let path = capsule_dir.join(path_str);
+                let bytes = std::fs::read(&path)
+                    .with_context(|| format!("prompt file not found: {}", path.display()))?;
+                let content = String::from_utf8_lossy(&bytes).into_owned();
+                stage.prompt = Some(prepend_preamble(&content));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {

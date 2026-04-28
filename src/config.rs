@@ -246,6 +246,16 @@ fn collect_stage_names(entries: &[PipelineEntry]) -> Vec<String> {
     names
 }
 
+fn validate_unique_stage_names(entries: &[PipelineEntry]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for name in collect_stage_names(entries) {
+        if !seen.insert(name.clone()) {
+            anyhow::bail!("config.yml: duplicate stage name `{name}`");
+        }
+    }
+    Ok(())
+}
+
 /// Validate `on_pass`/`on_fail` stage references.
 fn validate_route_targets(entries: &[PipelineEntry]) -> Result<()> {
     let all_names = collect_stage_names(entries);
@@ -303,6 +313,7 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
         }
     }
 
+    validate_unique_stage_names(&entries)?;
     validate_route_targets(&entries)?;
 
     Ok(PipelineConfig {

@@ -165,13 +165,9 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         StageOutcome::AdvanceIntoLoop {
                             entry_idx,
                             stage_idx,
+                            loop_config,
                         } => {
-                            let PipelineEntry::Loop(loop_config) =
-                                self.config.entries[entry_idx].clone()
-                            else {
-                                unreachable!("AdvanceIntoLoop target must be a Loop entry");
-                            };
-                            match run_loop(
+                            let outcome = run_loop(
                                 &mut self.runner,
                                 &loop_config,
                                 &mut fail_counts,
@@ -181,40 +177,10 @@ impl<R: StageRunner> PipelineExecutor<R> {
                                 &mut last_stage,
                                 &mut last_verdict,
                                 stage_idx,
-                            ) {
-                                LoopOutcome::LoopDone { iterations } => {
-                                    loop_iterations.insert(entry_idx, iterations);
-                                    current_idx = entry_idx + 1;
-                                }
-                                LoopOutcome::Exit { kind, iterations } => {
-                                    loop_iterations.insert(entry_idx, iterations);
-                                    break (
-                                        PipelineOutcome::Exit {
-                                            from_fail: matches!(kind, ExitKind::FailRoute),
-                                        },
-                                        None,
-                                    );
-                                }
-                                LoopOutcome::CapHit {
-                                    kind: LoopCapKind::MaxIteration,
-                                    iterations,
-                                } => {
-                                    loop_iterations.insert(entry_idx, iterations);
-                                    break (
-                                        PipelineOutcome::CapHit,
-                                        Some(CapHitKind::LoopMaxIteration(entry_idx)),
-                                    );
-                                }
-                                LoopOutcome::CapHit {
-                                    kind: LoopCapKind::MaxPipelineIterations,
-                                    iterations,
-                                } => {
-                                    loop_iterations.insert(entry_idx, iterations);
-                                    break (
-                                        PipelineOutcome::CapHit,
-                                        Some(CapHitKind::MaxPipelineIterations),
-                                    );
-                                }
+                            );
+                            match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
+                                LoopControl::Advance(next) => current_idx = next,
+                                LoopControl::Break(o, cap) => break (o, cap),
                             }
                         }
                         StageOutcome::Done => break (PipelineOutcome::Done, None),
@@ -227,7 +193,8 @@ impl<R: StageRunner> PipelineExecutor<R> {
                     }
                 }
                 PipelineEntry::Loop(loop_config) => {
-                    match run_loop(
+                    let entry_idx = current_idx;
+                    let outcome = run_loop(
                         &mut self.runner,
                         &loop_config,
                         &mut fail_counts,
@@ -237,40 +204,10 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         &mut last_stage,
                         &mut last_verdict,
                         0,
-                    ) {
-                        LoopOutcome::LoopDone { iterations } => {
-                            loop_iterations.insert(current_idx, iterations);
-                            current_idx += 1;
-                        }
-                        LoopOutcome::Exit { kind, iterations } => {
-                            loop_iterations.insert(current_idx, iterations);
-                            break (
-                                PipelineOutcome::Exit {
-                                    from_fail: matches!(kind, ExitKind::FailRoute),
-                                },
-                                None,
-                            );
-                        }
-                        LoopOutcome::CapHit {
-                            kind: LoopCapKind::MaxIteration,
-                            iterations,
-                        } => {
-                            loop_iterations.insert(current_idx, iterations);
-                            break (
-                                PipelineOutcome::CapHit,
-                                Some(CapHitKind::LoopMaxIteration(current_idx)),
-                            );
-                        }
-                        LoopOutcome::CapHit {
-                            kind: LoopCapKind::MaxPipelineIterations,
-                            iterations,
-                        } => {
-                            loop_iterations.insert(current_idx, iterations);
-                            break (
-                                PipelineOutcome::CapHit,
-                                Some(CapHitKind::MaxPipelineIterations),
-                            );
-                        }
+                    );
+                    match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
+                        LoopControl::Advance(next) => current_idx = next,
+                        LoopControl::Break(o, cap) => break (o, cap),
                     }
                 }
             }
@@ -325,7 +262,11 @@ enum LoopCapKind {
 
 enum StageOutcome {
     Advance(usize),
-    AdvanceIntoLoop { entry_idx: usize, stage_idx: usize },
+    AdvanceIntoLoop {
+        entry_idx: usize,
+        stage_idx: usize,
+        loop_config: LoopConfig,
+    },
     Done,
     Exit(ExitKind),
 }
@@ -333,7 +274,17 @@ enum StageOutcome {
 /// Resolved destination of a named route target.
 enum RouteTarget {
     Entry(usize),
-    LoopStage { entry_idx: usize, stage_idx: usize },
+    LoopStage {
+        entry_idx: usize,
+        stage_idx: usize,
+        loop_config: LoopConfig,
+    },
+}
+
+/// Control-flow result of a completed loop run.
+enum LoopControl {
+    Advance(usize),
+    Break(PipelineOutcome, Option<CapHitKind>),
 }
 
 enum LoopOutcome {
@@ -489,6 +440,7 @@ fn build_name_index(config: &PipelineConfig) -> HashMap<String, RouteTarget> {
                         RouteTarget::LoopStage {
                             entry_idx: i,
                             stage_idx: j,
+                            loop_config: l.clone(),
                         },
                     );
                 }
@@ -496,6 +448,48 @@ fn build_name_index(config: &PipelineConfig) -> HashMap<String, RouteTarget> {
         }
     }
     map
+}
+
+fn handle_loop_outcome(
+    outcome: LoopOutcome,
+    entry_idx: usize,
+    loop_iterations: &mut HashMap<usize, u32>,
+) -> LoopControl {
+    match outcome {
+        LoopOutcome::LoopDone { iterations } => {
+            loop_iterations.insert(entry_idx, iterations);
+            LoopControl::Advance(entry_idx + 1)
+        }
+        LoopOutcome::Exit { kind, iterations } => {
+            loop_iterations.insert(entry_idx, iterations);
+            LoopControl::Break(
+                PipelineOutcome::Exit {
+                    from_fail: matches!(kind, ExitKind::FailRoute),
+                },
+                None,
+            )
+        }
+        LoopOutcome::CapHit {
+            kind: LoopCapKind::MaxIteration,
+            iterations,
+        } => {
+            loop_iterations.insert(entry_idx, iterations);
+            LoopControl::Break(
+                PipelineOutcome::CapHit,
+                Some(CapHitKind::LoopMaxIteration(entry_idx)),
+            )
+        }
+        LoopOutcome::CapHit {
+            kind: LoopCapKind::MaxPipelineIterations,
+            iterations,
+        } => {
+            loop_iterations.insert(entry_idx, iterations);
+            LoopControl::Break(
+                PipelineOutcome::CapHit,
+                Some(CapHitKind::MaxPipelineIterations),
+            )
+        }
+    }
 }
 
 /// Prepends `<capsule:input>` block if `input` is Some, consuming it.
@@ -582,9 +576,11 @@ fn route_pass(stage: &StageConfig, name_to_entry: &HashMap<String, RouteTarget>)
             Some(RouteTarget::LoopStage {
                 entry_idx,
                 stage_idx,
+                loop_config,
             }) => StageOutcome::AdvanceIntoLoop {
                 entry_idx: *entry_idx,
                 stage_idx: *stage_idx,
+                loop_config: loop_config.clone(),
             },
             None => StageOutcome::Exit(ExitKind::PassRoute),
         },
@@ -607,9 +603,11 @@ fn route_fail(stage: &StageConfig, name_to_entry: &HashMap<String, RouteTarget>)
             Some(RouteTarget::LoopStage {
                 entry_idx,
                 stage_idx,
+                loop_config,
             }) => StageOutcome::AdvanceIntoLoop {
                 entry_idx: *entry_idx,
                 stage_idx: *stage_idx,
+                loop_config: loop_config.clone(),
             },
             None => StageOutcome::Exit(ExitKind::FailRoute),
         },

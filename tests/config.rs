@@ -389,3 +389,45 @@ fn min_token_lifetime_cli_overrides_config() {
     let cfg: Config = resolve(dir.path(), cli).unwrap();
     assert_eq!(cfg.min_token_lifetime_minutes, Some(45));
 }
+
+#[test]
+fn duplicate_stage_names_are_rejected() {
+    let yaml = "\
+stages:
+  - name: foo
+  - name: foo
+";
+    let dir = capsule_dir_with_config(yaml);
+    let err = resolve(dir.path(), no_cli()).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("foo"),
+        "error should name the duplicate stage; got: {chain}"
+    );
+}
+
+#[test]
+fn duplicate_name_across_top_level_and_loop_is_rejected() {
+    let yaml = "\
+stages:
+  - name: foo
+  - loop:
+      stages:
+        - name: foo
+";
+    let dir = capsule_dir_with_config(yaml);
+    let err = resolve(dir.path(), no_cli()).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("foo"),
+        "error should name the duplicate stage; got: {chain}"
+    );
+}

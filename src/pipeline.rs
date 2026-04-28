@@ -162,6 +162,61 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         &mut last_verdict,
                     ) {
                         StageOutcome::Advance(next_idx) => current_idx = next_idx,
+                        StageOutcome::AdvanceIntoLoop {
+                            entry_idx,
+                            stage_idx,
+                        } => {
+                            let PipelineEntry::Loop(loop_config) =
+                                self.config.entries[entry_idx].clone()
+                            else {
+                                unreachable!("AdvanceIntoLoop target must be a Loop entry");
+                            };
+                            match run_loop(
+                                &mut self.runner,
+                                &loop_config,
+                                &mut fail_counts,
+                                &mut global_counter,
+                                max_pipeline,
+                                &mut input,
+                                &mut last_stage,
+                                &mut last_verdict,
+                                stage_idx,
+                            ) {
+                                LoopOutcome::LoopDone { iterations } => {
+                                    loop_iterations.insert(entry_idx, iterations);
+                                    current_idx = entry_idx + 1;
+                                }
+                                LoopOutcome::Exit { kind, iterations } => {
+                                    loop_iterations.insert(entry_idx, iterations);
+                                    break (
+                                        PipelineOutcome::Exit {
+                                            from_fail: matches!(kind, ExitKind::FailRoute),
+                                        },
+                                        None,
+                                    );
+                                }
+                                LoopOutcome::CapHit {
+                                    kind: LoopCapKind::MaxIteration,
+                                    iterations,
+                                } => {
+                                    loop_iterations.insert(entry_idx, iterations);
+                                    break (
+                                        PipelineOutcome::CapHit,
+                                        Some(CapHitKind::LoopMaxIteration(entry_idx)),
+                                    );
+                                }
+                                LoopOutcome::CapHit {
+                                    kind: LoopCapKind::MaxPipelineIterations,
+                                    iterations,
+                                } => {
+                                    loop_iterations.insert(entry_idx, iterations);
+                                    break (
+                                        PipelineOutcome::CapHit,
+                                        Some(CapHitKind::MaxPipelineIterations),
+                                    );
+                                }
+                            }
+                        }
                         StageOutcome::Done => break (PipelineOutcome::Done, None),
                         StageOutcome::Exit(ExitKind::PassRoute) => {
                             break (PipelineOutcome::Exit { from_fail: false }, None)
@@ -181,6 +236,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         &mut input,
                         &mut last_stage,
                         &mut last_verdict,
+                        0,
                     ) {
                         LoopOutcome::LoopDone { iterations } => {
                             loop_iterations.insert(current_idx, iterations);
@@ -269,8 +325,15 @@ enum LoopCapKind {
 
 enum StageOutcome {
     Advance(usize),
+    AdvanceIntoLoop { entry_idx: usize, stage_idx: usize },
     Done,
     Exit(ExitKind),
+}
+
+/// Resolved destination of a named route target.
+enum RouteTarget {
+    Entry(usize),
+    LoopStage { entry_idx: usize, stage_idx: usize },
 }
 
 enum LoopOutcome {
@@ -289,6 +352,7 @@ fn run_loop(
     input: &mut Option<String>,
     last_stage: &mut Option<String>,
     last_verdict: &mut Option<Verdict>,
+    start_stage_idx: usize,
 ) -> LoopOutcome {
     let loop_name_to_idx: HashMap<String, usize> = loop_config
         .stages
@@ -298,7 +362,7 @@ fn run_loop(
         .collect();
 
     let mut iteration_count: u32 = 0;
-    let mut stage_idx: usize = 0;
+    let mut stage_idx: usize = start_stage_idx;
     let mut retrying_top = false;
 
     loop {
@@ -409,20 +473,29 @@ fn run_loop(
     }
 }
 
-/// Builds a map from stage name to entry index for all `Stage` entries.
-fn build_name_index(config: &PipelineConfig) -> HashMap<String, usize> {
-    config
-        .entries
-        .iter()
-        .enumerate()
-        .filter_map(|(i, e)| {
-            if let PipelineEntry::Stage(s) = e {
-                Some((s.name.clone(), i))
-            } else {
-                None
+/// Builds a map from stage name to its resolved route target.
+/// Top-level stages map to `Entry(i)`; loop-internal stages map to `LoopStage`.
+fn build_name_index(config: &PipelineConfig) -> HashMap<String, RouteTarget> {
+    let mut map = HashMap::new();
+    for (i, entry) in config.entries.iter().enumerate() {
+        match entry {
+            PipelineEntry::Stage(s) => {
+                map.insert(s.name.clone(), RouteTarget::Entry(i));
             }
-        })
-        .collect()
+            PipelineEntry::Loop(l) => {
+                for (j, s) in l.stages.iter().enumerate() {
+                    map.insert(
+                        s.name.clone(),
+                        RouteTarget::LoopStage {
+                            entry_idx: i,
+                            stage_idx: j,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    map
 }
 
 /// Prepends `<capsule:input>` block if `input` is Some, consuming it.
@@ -453,7 +526,7 @@ fn inject_note_block(
 fn run_stage(
     runner: &mut dyn StageRunner,
     stage: &StageConfig,
-    name_to_entry: &HashMap<String, usize>,
+    name_to_entry: &HashMap<String, RouteTarget>,
     fail_counts: &mut HashMap<String, u32>,
     input: &mut Option<String>,
     last_stage: &mut Option<String>,
@@ -495,29 +568,49 @@ fn run_stage(
     }
 }
 
-fn route_pass(stage: &StageConfig, name_to_entry: &HashMap<String, usize>) -> StageOutcome {
+fn route_pass(stage: &StageConfig, name_to_entry: &HashMap<String, RouteTarget>) -> StageOutcome {
     match &stage.on_pass {
         OnPass::Next => {
-            let idx = name_to_entry.get(&stage.name).copied().unwrap_or(0);
+            let idx = match name_to_entry.get(&stage.name) {
+                Some(RouteTarget::Entry(i)) => *i,
+                _ => 0,
+            };
             StageOutcome::Advance(idx + 1)
         }
         OnPass::Stage(name) => match name_to_entry.get(name.as_str()) {
-            Some(&idx) => StageOutcome::Advance(idx),
+            Some(RouteTarget::Entry(idx)) => StageOutcome::Advance(*idx),
+            Some(RouteTarget::LoopStage {
+                entry_idx,
+                stage_idx,
+            }) => StageOutcome::AdvanceIntoLoop {
+                entry_idx: *entry_idx,
+                stage_idx: *stage_idx,
+            },
             None => StageOutcome::Exit(ExitKind::PassRoute),
         },
         OnPass::Exit => StageOutcome::Exit(ExitKind::PassRoute),
     }
 }
 
-fn route_fail(stage: &StageConfig, name_to_entry: &HashMap<String, usize>) -> StageOutcome {
+fn route_fail(stage: &StageConfig, name_to_entry: &HashMap<String, RouteTarget>) -> StageOutcome {
     match &stage.on_fail {
         OnFail::Exit => StageOutcome::Exit(ExitKind::FailRoute),
         OnFail::Retry => {
-            let idx = name_to_entry.get(&stage.name).copied().unwrap_or(0);
+            let idx = match name_to_entry.get(&stage.name) {
+                Some(RouteTarget::Entry(i)) => *i,
+                _ => 0,
+            };
             StageOutcome::Advance(idx)
         }
         OnFail::Stage(name) => match name_to_entry.get(name.as_str()) {
-            Some(&idx) => StageOutcome::Advance(idx),
+            Some(RouteTarget::Entry(idx)) => StageOutcome::Advance(*idx),
+            Some(RouteTarget::LoopStage {
+                entry_idx,
+                stage_idx,
+            }) => StageOutcome::AdvanceIntoLoop {
+                entry_idx: *entry_idx,
+                stage_idx: *stage_idx,
+            },
             None => StageOutcome::Exit(ExitKind::FailRoute),
         },
     }
@@ -1191,5 +1284,67 @@ mod tests {
         let result =
             PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state).run();
         assert_eq!(result.outcome, PipelineOutcome::Done);
+    }
+
+    // ── Cross-scope routing tests ───────────────────────────────────────────────
+
+    // Top-level on_fail routes into a loop-internal stage (the reported bug).
+    #[test]
+    fn top_level_on_fail_routes_to_loop_internal_stage() {
+        let mut pr_reviewer = stage("pr-reviewer");
+        pr_reviewer.on_fail = OnFail::Stage("implementer".to_string());
+
+        let loop_entry = PipelineEntry::Loop(LoopConfig {
+            max_iteration: None,
+            stages: vec![stage("implementer"), stage("reviewer")],
+        });
+
+        let config = pipeline(vec![single_stage_entry(pr_reviewer), loop_entry]);
+        // pr-reviewer fails → route to implementer (loop stage 0)
+        // loop: implementer pass, reviewer pass → loop end → pipeline Done
+        assert_eq!(
+            run_outcome(config, FakeRunner::new([fail(), pass(), done()])),
+            PipelineOutcome::Done
+        );
+    }
+
+    // Top-level on_pass routes into a non-first loop-internal stage.
+    #[test]
+    fn top_level_on_pass_routes_to_loop_internal_non_first_stage() {
+        let mut dispatcher = stage("dispatcher");
+        dispatcher.on_pass = OnPass::Stage("reviewer".to_string());
+
+        let loop_entry = PipelineEntry::Loop(LoopConfig {
+            max_iteration: None,
+            stages: vec![stage("implementer"), stage("reviewer")],
+        });
+
+        let config = pipeline(vec![single_stage_entry(dispatcher), loop_entry]);
+        // dispatcher passes → route to reviewer (loop stage 1)
+        // loop: reviewer passes → wraps to implementer → implementer done → pipeline Done
+        assert_eq!(
+            run_outcome(config, FakeRunner::new([pass(), pass(), done()])),
+            PipelineOutcome::Done
+        );
+    }
+
+    // Cross-scope routing respects max_iteration — fresh iteration count on entry.
+    #[test]
+    fn cross_scope_routing_respects_max_iteration() {
+        let mut trigger = stage("trigger");
+        trigger.on_pass = OnPass::Stage("implementer".to_string());
+
+        let loop_entry = PipelineEntry::Loop(LoopConfig {
+            max_iteration: Some(1),
+            stages: vec![stage("implementer"), stage("reviewer")],
+        });
+
+        let config = pipeline(vec![single_stage_entry(trigger), loop_entry]);
+        // trigger passes → route to implementer (stage 0, iteration_count → 1)
+        // implementer pass, reviewer pass → wraps → iteration 2 > 1 → CapHit
+        assert_eq!(
+            run_outcome(config, FakeRunner::new([pass(), pass(), pass()])),
+            PipelineOutcome::CapHit
+        );
     }
 }

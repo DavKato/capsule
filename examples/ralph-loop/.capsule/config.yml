@@ -1,0 +1,22 @@
+stages:
+  - loop:
+      max_iteration: 10
+      stages:
+        - name: implementer
+          prompt: prompts/implementer.md
+          on_fail: retry
+          max_retries: 3
+
+        - name: reviewer
+          prompt: prompts/reviewer.md
+          on_fail: implementer
+
+  - name: pr-reviewer
+    prompt: prompts/pr-reviewer.md
+    on_fail: implementer
+
+  - name: documentor
+    prompt: prompts/documentor.md
+
+model: claude-sonnet-4-6
+github: local

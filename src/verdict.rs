@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum VerdictStatus {
     Pass,
     Fail,
+    Done,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,5 +59,18 @@ mod tests {
         let v: Verdict = serde_json::from_str(r#"{"status":"pass","notes":null}"#).unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
         assert!(v.notes.is_none());
+    }
+
+    #[test]
+    fn done_with_notes_round_trips() {
+        let v = Verdict {
+            status: VerdictStatus::Done,
+            notes: Some("scope complete".to_string()),
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        let back: Verdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, back);
+        assert!(json.contains("\"done\""));
+        assert!(json.contains("\"scope complete\""));
     }
 }

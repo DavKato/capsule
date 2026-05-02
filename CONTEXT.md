@@ -123,8 +123,26 @@ Task/work state stored outside capsule (GitHub issues, files on disk); the sourc
 _Avoid_: User state
 
 **Summary artifact**:
-`.capsule/last-run.json` written on every pipeline exit, recording terminal reason, last stage, last verdict, counters, and workspace-dirty flag.
+`.capsule/last-run.json` written on every pipeline exit, recording terminal reason, last stage, last verdict, counters, workspace-dirty flag, and session ID of the last stage invocation. On mid-session exits only, also includes pipeline state for resumption.
 _Avoid_: Exit log, run record
+
+**Pipeline state**:
+The runtime state of the pipeline executor — current stage index, global counter, per-stage fail counts, last stage, last verdict, and per-loop iteration counters. Serialized to the summary artifact only on mid-session exits (auth failure, container crash, signal); omitted on clean pipeline completion. `capsule resume` refuses to run when pipeline state is absent.
+_Avoid_: Checkpoint, executor state
+
+### Credentials and recovery
+
+**Credential copy**:
+The `CredentialsGuard` copies `~/.claude/.credentials.json` to a temp file at `prepare()` time and bind-mounts it over the directory mount, isolating the container's OAuth tokens from the host's concurrent token rotation.
+_Avoid_: Snapshot, credential isolation
+
+**Resume-retry**:
+On `authentication_failed`, capsule re-copies the host's current credentials to the temp file and re-launches the container with `claude --resume <session_id>`, recovering the full conversation context. One attempt; if the host token is also expired, capsule bails.
+_Avoid_: Auth retry, credential refresh
+
+**`min_token_lifetime_minutes`**:
+Optional config.yml field (with CLI override). At `prepare()`, if the access token's `expiresAt` is within this threshold, capsule prompts the user before starting.
+_Avoid_: Token threshold, expiry check
 
 ### Workflow patterns
 
@@ -147,6 +165,44 @@ _Avoid_: Full auto, AFK cycle
 **Fan-out** *(out of scope)*:
 A single stage producing N independent executions in parallel, one per item in an upstream list; not part of the current pipeline grammar.
 _Avoid_: Parallel, shard
+
+### Setup and discovery *(planned — surface not yet implemented)*
+
+**Template**:
+A pre-built `.capsule/` skeleton (e.g., `single-iter`, `ralph-loop`) shipped in the capsule repo's `templates/` directory; `capsule init --template <name>` copies it byte-for-byte into the user's repo. Templates replace the former `examples/` directory and are validated in CI via `capsule check`.
+_Avoid_: Example, scaffold, preset, starter
+
+**`capsule init`**:
+Greenfield bootstrap command. Bare `capsule init` is human-interactive (prompts for template choice); agents take the deterministic path `capsule templates list` → `capsule init --template <name>`. Refuses to overwrite an existing `.capsule/` without `--force`. Non-TTY stdin fails fast with a redirect to the agent path.
+_Avoid_: Setup, scaffold, generate
+
+**`capsule templates list`**:
+Agent-facing enumeration of available templates with one-line descriptions. The deterministic counterpart to interactive `init`.
+_Avoid_: Template index
+
+**`capsule check`**:
+Validates a `.capsule/` setup. Level 2 structural checks (route targets resolve, prompt files exist, hook scripts present, loop nesting rules hold) plus opportunistic Level 3 hints (typo suggestions, missing-env-var warnings). The feedback loop that makes "edit + validate" a viable migration workflow.
+_Avoid_: Validate, lint, verify
+
+**`capsule explain`**:
+Agent-facing documentation surface using progressive disclosure. Bare `capsule explain` prints the **index** (topic names, one-line descriptions, "load when…" guidance, **recipes**); `capsule explain <topic> [<topic>…]` loads one or more **topics** in a single call; `capsule explain --all` dumps everything.
+_Avoid_: Docs, help, manual
+
+**Topic**:
+An atomic unit of `capsule explain` content (e.g., `mental-model`, `setup-files`, `pipeline-shapes`, `prompt-writing`, `common-edits`, `commands`). Topics are loaded on demand by name.
+_Avoid_: Section, chapter, page
+
+**Recipe**:
+A hand-curated entry in the `capsule explain` index that maps a common task (e.g., "rename a stage") to the ordered list of topics an agent should load for that task. Recipes are guidance only, not callable; the agent reads the recipe and invokes `capsule explain <topic1> <topic2> …` itself.
+_Avoid_: Bundle, preset, playbook
+
+**Skill**:
+A two-rule Claude Code routing signpost — "for setup, run `capsule templates list`; for customization/debugging/migration, run `capsule explain`." Contains no embedded content; all content lives in `capsule explain`.
+_Avoid_: Plugin, agent definition
+
+**Base image assets**:
+The compile-time-bundled files in the repo's `base-image/` directory (`Dockerfile`, `entrypoint.sh`, `stream_display.jq`, `system_preamble.md`) — embedded into the `capsule` binary via `include_str!`. Not user-facing; not a **Template**.
+_Avoid_: Templates (the directory was renamed in 2026-04 to free the name for user scaffolds)
 
 ## Relationships
 
@@ -180,3 +236,5 @@ _Avoid_: Parallel, shard
 - **"Feedback"** was renamed: the verdict field is **Notes**; the delivery mechanism is **Note injection** / **Previous-stage block**. Drop "feedback" from new code and docs.
 - **"Exit"** is a route target (config-level, non-zero pipeline termination), not a verdict. Say "the stage emitted `done`" or "the pipeline exited with 0 / non-zero" — not "the stage exited cleanly."
 - **"Fan-out"**: Canonical: **Fan-out** = parallel shard execution, out of scope. Sequential iteration over a list is a **Queue drain** using a **Loop**.
+- **"Templates"**: Canonical: **Template** = user-facing `.capsule/` skeleton under `templates/` (planned). The compile-time-bundled files under `base-image/` are **base image assets**, not templates — the directory was renamed in 2026-04 to remove the overload.
+- **"Examples"**: The former `examples/` directory will be replaced by `templates/` once the new surface ships; "example" should not be used for canonical scaffolds going forward — say **template**.

@@ -31,11 +31,7 @@ Pick the next task. Prioritize tasks in this order:
 
 1. Critical bugfixes
 2. Development infrastructure
-   Getting development infrastructure like tests and types and dev scripts ready is an important precursor to building features.
-
 3. Tracer bullets for new features
-   Build a tiny, end-to-end slice of the feature first, then expand it out.
-
 4. Polish and quick wins
 5. Refactors
 

@@ -75,6 +75,21 @@ enum Commands {
         /// When absent, no token is injected.
         #[arg(long, value_enum)]
         github: Option<CliGithubScope>,
+
+        /// Runtime input injected into the first stage's first invocation only.
+        #[arg(long)]
+        input: Option<String>,
+
+        /// Minimum remaining token lifetime (minutes) before prompting to refresh.
+        #[arg(long)]
+        min_token_lifetime_minutes: Option<u32>,
+    },
+
+    /// Resume pipeline from the last interrupted run (reads last-run.json)
+    Resume {
+        /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
+        #[arg(long, default_value = ".capsule")]
+        capsule_dir: PathBuf,
     },
 
     /// Print shell completion script to stdout
@@ -95,6 +110,18 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Resume { capsule_dir } => {
+            match RunSession::prepare_resume(capsule_dir)?.execute()? {
+                run::ExitDecision::Success => {
+                    println!("Claude submitted a pass verdict.");
+                    Ok(())
+                }
+                run::ExitDecision::Failure(msg) => {
+                    eprintln!("{msg}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::Completion { shell } => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, "capsule", &mut io::stdout());
@@ -129,6 +156,8 @@ fn main() -> Result<()> {
             verbose,
             git_identity,
             github,
+            input,
+            min_token_lifetime_minutes,
         } => {
             let git_identity = match git_identity {
                 CliGitIdentity::User => Some(GitIdentity::User),
@@ -146,6 +175,8 @@ fn main() -> Result<()> {
                 verbose,
                 git_identity,
                 github,
+                input,
+                min_token_lifetime_minutes,
             };
             match RunSession::prepare(capsule_dir, overrides)?.execute()? {
                 run::ExitDecision::Success => {

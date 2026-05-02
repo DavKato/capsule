@@ -1,13 +1,12 @@
 use crate::verdict::{Verdict, VerdictStatus};
 use serde_json::Value;
 
-/// Scans Claude Code stream-json lines for `submit_verdict` tool_use events.
-/// Last-wins: calling `feed` multiple times keeps the latest valid verdict.
 pub struct StreamParser {
     verdict: Option<Verdict>,
     auth_failed: bool,
     init_seen: bool,
     submit_verdict_registered: bool,
+    session_id: Option<String>,
 }
 
 impl StreamParser {
@@ -17,26 +16,28 @@ impl StreamParser {
             auth_failed: false,
             init_seen: false,
             submit_verdict_registered: false,
+            session_id: None,
         }
     }
 
-    /// Feed one line of stream-json. Returns the latest valid verdict seen so
-    /// far (updated when this line contains a valid `submit_verdict` call).
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
-        if line.contains("authentication_failed") {
+        let Ok(msg) = serde_json::from_str::<Value>(line) else {
+            return self.verdict.as_ref();
+        };
+        if is_auth_error(&msg) {
             self.auth_failed = true;
         }
-        if is_init_event(line) {
+        if is_init_event(&msg) {
             self.init_seen = true;
-            if let Some(tools) = extract_init_tools(line) {
+            self.session_id = extract_session_id(&msg);
+            if let Some(tools) = extract_init_tools(&msg) {
                 self.submit_verdict_registered = tools.iter().any(|t| {
-                    // tools array contains plain strings in real Claude Code stream-json
                     let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
                     name.is_some_and(|n| n == "submit_verdict" || n.ends_with("__submit_verdict"))
                 });
             }
         }
-        if let Some(v) = extract_verdict(line) {
+        if let Some(v) = extract_verdict(&msg) {
             if self.verdict.is_some() {
                 eprintln!("[capsule] warning: submit_verdict called more than once; using latest");
             }
@@ -47,6 +48,10 @@ impl StreamParser {
 
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
     }
 
     pub fn auth_failed(&self) -> bool {
@@ -65,21 +70,35 @@ impl Default for StreamParser {
     }
 }
 
-fn is_init_event(line: &str) -> bool {
-    let Ok(msg) = serde_json::from_str::<Value>(line) else {
-        return false;
-    };
+fn is_auth_error(msg: &Value) -> bool {
+    msg.pointer("/error/type").and_then(Value::as_str) == Some("authentication_failed")
+}
+
+fn is_init_event(msg: &Value) -> bool {
     msg.get("type").and_then(Value::as_str) == Some("system")
         && msg.get("subtype").and_then(Value::as_str) == Some("init")
 }
 
-fn extract_init_tools(line: &str) -> Option<Vec<Value>> {
-    let msg: Value = serde_json::from_str(line).ok()?;
+fn extract_session_id(msg: &Value) -> Option<String> {
+    let id = msg.get("session_id")?.as_str()?;
+    is_valid_session_id(id).then(|| id.to_owned())
+}
+
+fn is_valid_session_id(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("sess_") else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+fn extract_init_tools(msg: &Value) -> Option<Vec<Value>> {
     Some(msg.get("tools")?.as_array()?.clone())
 }
 
-fn extract_verdict(line: &str) -> Option<Verdict> {
-    let msg: Value = serde_json::from_str(line).ok()?;
+fn extract_verdict(msg: &Value) -> Option<Verdict> {
     if msg.get("type")?.as_str()? != "assistant" {
         return None;
     }
@@ -93,6 +112,7 @@ fn extract_verdict(line: &str) -> Option<Verdict> {
             let status = match status_str {
                 "pass" => VerdictStatus::Pass,
                 "fail" => VerdictStatus::Fail,
+                "done" => VerdictStatus::Done,
                 _ => continue,
             };
             let notes = input
@@ -193,8 +213,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_status_enum_is_skipped() {
-        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_04","name":"submit_verdict","input":{"status":"done"}}]}}"#;
+    fn done_status_returns_done_verdict() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_04","name":"submit_verdict","input":{"status":"done","notes":"scope complete"}}]}}"#;
+        let mut p = StreamParser::new();
+        let v = p.feed(line).unwrap();
+        assert_eq!(v.status, VerdictStatus::Done);
+        assert_eq!(v.notes.as_deref(), Some("scope complete"));
+    }
+
+    #[test]
+    fn unknown_status_enum_is_skipped() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_05","name":"submit_verdict","input":{"status":"unknown"}}]}}"#;
         let mut p = StreamParser::new();
         assert!(p.feed(line).is_none());
     }
@@ -277,5 +306,59 @@ mod tests {
         let mut p = StreamParser::new();
         p.feed(TEXT_LINE);
         assert!(!p.auth_failed());
+    }
+
+    #[test]
+    fn session_id_captured_from_init_event() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_WITH_VERDICT_TOOL);
+        assert_eq!(p.session_id(), Some("sess_01"));
+    }
+
+    #[test]
+    fn session_id_none_before_init() {
+        let p = StreamParser::new();
+        assert_eq!(p.session_id(), None);
+    }
+
+    #[test]
+    fn session_id_none_when_init_lacks_field() {
+        let line = r#"{"type":"system","subtype":"init","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), None);
+    }
+
+    #[test]
+    fn session_id_rejected_without_sess_prefix() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"abc123","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), None);
+    }
+
+    #[test]
+    fn session_id_rejected_with_special_chars() {
+        let line =
+            r#"{"type":"system","subtype":"init","session_id":"sess_foo$bar","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), None);
+    }
+
+    #[test]
+    fn session_id_rejected_if_only_prefix() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), None);
+    }
+
+    #[test]
+    fn session_id_accepted_with_hyphens_and_underscores() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_foo-bar_baz","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), Some("sess_foo-bar_baz"));
     }
 }

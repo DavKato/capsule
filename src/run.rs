@@ -244,6 +244,9 @@ impl RunSession {
 
     /// Read `last-run.json` from `capsule_dir`, extract saved state, then prepare
     /// the session identically to `prepare`. `execute()` will resume the pipeline.
+    ///
+    /// Uses default CLI overrides — model, verbose, rebuild etc. come from
+    /// `config.yml` only.  The `Resume` subcommand does not accept those flags.
     pub(crate) fn prepare_resume(capsule_dir: PathBuf) -> Result<Self> {
         let resume_data = parse_resume_state(&capsule_dir)?;
         let mut session = Self::prepare(capsule_dir, capsule::config::CliOverrides::default())?;
@@ -368,8 +371,8 @@ impl RunSession {
                 .with_input(self.input)
                 .run()
         };
+        result.summary.session_id = last_session_id.lock().unwrap().take();
         if let Some(e) = last_error.lock().unwrap().take() {
-            result.summary.session_id = last_session_id.lock().unwrap().take();
             let _ = write_last_run(
                 &self.cfg.capsule_dir,
                 &result.summary,
@@ -377,7 +380,6 @@ impl RunSession {
             );
             return Err(e);
         }
-        result.summary.session_id = last_session_id.lock().unwrap().take();
         let state_to_write = match result.summary.terminal_reason {
             TerminalReason::FailExit | TerminalReason::CapHit => Some(&result.pipeline_state),
             _ => None,
@@ -519,6 +521,8 @@ fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -
     Ok(())
 }
 
+/// `Exit` (pass-route, i.e. `on_pass: exit`) is treated as success (exit 0)
+/// because the user deliberately routed a passing stage to terminate.
 pub(crate) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
     match summary.terminal_reason {
         TerminalReason::Done | TerminalReason::Exit | TerminalReason::Ok => ExitDecision::Success,
@@ -757,22 +761,6 @@ mod tests {
     use capsule::verdict::VerdictStatus;
     use std::collections::HashMap;
 
-    fn exit_decision(verdict: Option<&Verdict>) -> ExitDecision {
-        match verdict {
-            Some(v) if matches!(v.status, VerdictStatus::Pass | VerdictStatus::Done) => {
-                ExitDecision::Success
-            }
-            Some(v) => ExitDecision::Failure(
-                v.notes
-                    .clone()
-                    .unwrap_or_else(|| "fail verdict (no notes provided)".to_string()),
-            ),
-            None => {
-                ExitDecision::Failure("capsule exhausted iterations without a verdict".to_string())
-            }
-        }
-    }
-
     #[test]
     fn credentials_written_back_after_reset_baseline() {
         let dir = tempfile::tempdir().unwrap();
@@ -827,59 +815,6 @@ mod tests {
         drop(guard);
 
         assert_eq!(std::fs::read(&creds_path).unwrap(), b"original");
-    }
-
-    fn pass_verdict(notes: Option<&str>) -> Verdict {
-        Verdict {
-            status: VerdictStatus::Pass,
-            notes: notes.map(str::to_owned),
-        }
-    }
-
-    fn fail_verdict(notes: Option<&str>) -> Verdict {
-        Verdict {
-            status: VerdictStatus::Fail,
-            notes: notes.map(str::to_owned),
-        }
-    }
-
-    #[test]
-    fn pass_is_success() {
-        assert!(matches!(
-            exit_decision(Some(&pass_verdict(None))),
-            ExitDecision::Success
-        ));
-    }
-
-    #[test]
-    fn fail_with_notes_is_failure_containing_notes() {
-        let v = fail_verdict(Some("build broke"));
-        let ExitDecision::Failure(msg) = exit_decision(Some(&v)) else {
-            panic!("expected Failure")
-        };
-        assert!(msg.contains("build broke"), "message was: {msg}");
-    }
-
-    #[test]
-    fn fail_without_notes_is_failure() {
-        assert!(matches!(
-            exit_decision(Some(&fail_verdict(None))),
-            ExitDecision::Failure(_)
-        ));
-    }
-
-    #[test]
-    fn no_verdict_is_implicit_fail() {
-        assert!(matches!(exit_decision(None), ExitDecision::Failure(_)));
-    }
-
-    #[test]
-    fn done_is_success() {
-        let v = Verdict {
-            status: VerdictStatus::Done,
-            notes: Some("scope complete".to_string()),
-        };
-        assert!(matches!(exit_decision(Some(&v)), ExitDecision::Success));
     }
 
     fn minimal_summary(reason: TerminalReason) -> RunSummary {

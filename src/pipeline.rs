@@ -61,6 +61,15 @@ pub struct PipelineState {
     pub loop_iterations: HashMap<usize, u32>,
 }
 
+/// Mutable progress tracked across stage invocations during a pipeline run.
+struct PipelineProgress {
+    fail_counts: HashMap<String, u32>,
+    global_counter: u32,
+    input: Option<String>,
+    last_stage: Option<String>,
+    last_verdict: Option<Verdict>,
+}
+
 /// Execution summary produced by every `PipelineExecutor::run` call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunSummary {
@@ -78,7 +87,6 @@ pub struct RunSummary {
 pub struct PipelineRunResult {
     pub outcome: PipelineOutcome,
     pub summary: RunSummary,
-    pub last_session_id: Option<String>,
     pub pipeline_state: PipelineState,
 }
 
@@ -117,24 +125,30 @@ impl<R: StageRunner> PipelineExecutor<R> {
         let name_to_entry = build_name_index(&self.config);
         let max_pipeline = self.config.max_pipeline_iterations;
         let is_flat_form = self.config.is_flat_form;
-        let mut input = self.input.take();
-        let (
-            mut current_idx,
-            mut global_counter,
-            mut fail_counts,
-            mut last_stage,
-            mut last_verdict,
-            mut loop_iterations,
-        ) = match self.initial_state.take() {
+
+        let (mut current_idx, mut loop_iterations, mut progress) = match self.initial_state.take() {
             Some(s) => (
                 s.current_idx,
-                s.global_counter,
-                s.fail_counts,
-                s.last_stage,
-                s.last_verdict,
                 s.loop_iterations,
+                PipelineProgress {
+                    fail_counts: s.fail_counts,
+                    global_counter: s.global_counter,
+                    input: self.input.take(),
+                    last_stage: s.last_stage,
+                    last_verdict: s.last_verdict,
+                },
             ),
-            None => (0usize, 0u32, HashMap::new(), None, None, HashMap::new()),
+            None => (
+                0,
+                HashMap::new(),
+                PipelineProgress {
+                    fail_counts: HashMap::new(),
+                    global_counter: 0,
+                    input: self.input.take(),
+                    last_stage: None,
+                    last_verdict: None,
+                },
+            ),
         };
 
         let (outcome, cap_hit) = loop {
@@ -142,40 +156,30 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 break (PipelineOutcome::Done, None);
             }
 
-            let entry = self.config.entries[current_idx].clone();
-            match entry {
+            match &self.config.entries[current_idx] {
                 PipelineEntry::Stage(stage) => {
-                    if global_counter >= max_pipeline {
+                    if progress.global_counter >= max_pipeline {
                         break (
                             PipelineOutcome::CapHit,
                             Some(CapHitKind::MaxPipelineIterations),
                         );
                     }
-                    global_counter += 1;
-                    match run_stage(
-                        &mut self.runner,
-                        &stage,
-                        &name_to_entry,
-                        &mut fail_counts,
-                        &mut input,
-                        &mut last_stage,
-                        &mut last_verdict,
-                    ) {
+                    progress.global_counter += 1;
+                    match run_stage(&mut self.runner, stage, &name_to_entry, &mut progress) {
                         StageOutcome::Advance(next_idx) => current_idx = next_idx,
                         StageOutcome::AdvanceIntoLoop {
                             entry_idx,
                             stage_idx,
-                            loop_config,
                         } => {
+                            let PipelineEntry::Loop(loop_config) = &self.config.entries[entry_idx]
+                            else {
+                                unreachable!("AdvanceIntoLoop references non-loop entry");
+                            };
                             let outcome = run_loop(
                                 &mut self.runner,
-                                &loop_config,
-                                &mut fail_counts,
-                                &mut global_counter,
+                                loop_config,
+                                &mut progress,
                                 max_pipeline,
-                                &mut input,
-                                &mut last_stage,
-                                &mut last_verdict,
                                 stage_idx,
                             );
                             match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
@@ -196,13 +200,9 @@ impl<R: StageRunner> PipelineExecutor<R> {
                     let entry_idx = current_idx;
                     let outcome = run_loop(
                         &mut self.runner,
-                        &loop_config,
-                        &mut fail_counts,
-                        &mut global_counter,
+                        loop_config,
+                        &mut progress,
                         max_pipeline,
-                        &mut input,
-                        &mut last_stage,
-                        &mut last_verdict,
                         0,
                     );
                     match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
@@ -223,10 +223,10 @@ impl<R: StageRunner> PipelineExecutor<R> {
 
         let pipeline_state = PipelineState {
             current_idx,
-            global_counter,
-            fail_counts,
-            last_stage: last_stage.clone(),
-            last_verdict: last_verdict.clone(),
+            global_counter: progress.global_counter,
+            fail_counts: progress.fail_counts,
+            last_stage: progress.last_stage.clone(),
+            last_verdict: progress.last_verdict.clone(),
             loop_iterations: loop_iterations.clone(),
         };
 
@@ -234,16 +234,15 @@ impl<R: StageRunner> PipelineExecutor<R> {
             outcome,
             summary: RunSummary {
                 terminal_reason,
-                last_stage,
-                last_verdict,
+                last_stage: progress.last_stage,
+                last_verdict: progress.last_verdict,
                 iteration_counters: IterationCounters {
-                    global: global_counter,
+                    global: pipeline_state.global_counter,
                     loops: loop_iterations,
                 },
                 cap_hit,
                 session_id: None,
             },
-            last_session_id: None,
             pipeline_state,
         }
     }
@@ -262,11 +261,7 @@ enum LoopCapKind {
 
 enum StageOutcome {
     Advance(usize),
-    AdvanceIntoLoop {
-        entry_idx: usize,
-        stage_idx: usize,
-        loop_config: LoopConfig,
-    },
+    AdvanceIntoLoop { entry_idx: usize, stage_idx: usize },
     Done,
     Exit(ExitKind),
 }
@@ -274,11 +269,7 @@ enum StageOutcome {
 /// Resolved destination of a named route target.
 enum RouteTarget {
     Entry(usize),
-    LoopStage {
-        entry_idx: usize,
-        stage_idx: usize,
-        loop_config: LoopConfig,
-    },
+    LoopStage { entry_idx: usize, stage_idx: usize },
 }
 
 /// Control-flow result of a completed loop run.
@@ -293,16 +284,11 @@ enum LoopOutcome {
     CapHit { kind: LoopCapKind, iterations: u32 },
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_loop(
     runner: &mut dyn StageRunner,
     loop_config: &LoopConfig,
-    fail_counts: &mut HashMap<String, u32>,
-    global_counter: &mut u32,
+    progress: &mut PipelineProgress,
     max_pipeline: u32,
-    input: &mut Option<String>,
-    last_stage: &mut Option<String>,
-    last_verdict: &mut Option<Verdict>,
     start_stage_idx: usize,
 ) -> LoopOutcome {
     let loop_name_to_idx: HashMap<String, usize> = loop_config
@@ -335,21 +321,25 @@ fn run_loop(
         }
         retrying_top = false;
 
-        if *global_counter >= max_pipeline {
+        if progress.global_counter >= max_pipeline {
             return LoopOutcome::CapHit {
                 kind: LoopCapKind::MaxPipelineIterations,
                 iterations: iteration_count,
             };
         }
-        *global_counter += 1;
+        progress.global_counter += 1;
 
-        let stage = loop_config.stages[stage_idx].clone();
+        let stage = &loop_config.stages[stage_idx];
         let base_prompt = stage.prompt.as_deref().unwrap_or("");
-        let with_input = inject_input(input, base_prompt);
-        let effective_prompt = inject_note_block(last_stage.as_deref(), last_verdict, &with_input);
-        *last_stage = Some(stage.name.clone());
+        let with_input = inject_input(&mut progress.input, base_prompt);
+        let effective_prompt = inject_note_block(
+            progress.last_stage.as_deref(),
+            &progress.last_verdict,
+            &with_input,
+        );
+        progress.last_stage = Some(stage.name.clone());
         let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref());
-        *last_verdict = verdict.clone();
+        progress.last_verdict = verdict.clone();
 
         if matches!(
             verdict.as_ref().map(|v| &v.status),
@@ -366,7 +356,7 @@ fn run_loop(
         );
 
         if is_pass {
-            fail_counts.remove(&stage.name);
+            progress.fail_counts.remove(&stage.name);
             match &stage.on_pass {
                 OnPass::Next => stage_idx += 1,
                 OnPass::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
@@ -386,7 +376,7 @@ fn run_loop(
                 }
             }
         } else {
-            let fail_count = fail_counts.entry(stage.name.clone()).or_insert(0);
+            let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
             *fail_count += 1;
 
             if let Some(max) = stage.max_retries {
@@ -440,7 +430,6 @@ fn build_name_index(config: &PipelineConfig) -> HashMap<String, RouteTarget> {
                         RouteTarget::LoopStage {
                             entry_idx: i,
                             stage_idx: j,
-                            loop_config: l.clone(),
                         },
                     );
                 }
@@ -521,17 +510,18 @@ fn run_stage(
     runner: &mut dyn StageRunner,
     stage: &StageConfig,
     name_to_entry: &HashMap<String, RouteTarget>,
-    fail_counts: &mut HashMap<String, u32>,
-    input: &mut Option<String>,
-    last_stage: &mut Option<String>,
-    last_verdict: &mut Option<Verdict>,
+    progress: &mut PipelineProgress,
 ) -> StageOutcome {
     let base_prompt = stage.prompt.as_deref().unwrap_or("");
-    let with_input = inject_input(input, base_prompt);
-    let effective_prompt = inject_note_block(last_stage.as_deref(), last_verdict, &with_input);
-    *last_stage = Some(stage.name.clone());
+    let with_input = inject_input(&mut progress.input, base_prompt);
+    let effective_prompt = inject_note_block(
+        progress.last_stage.as_deref(),
+        &progress.last_verdict,
+        &with_input,
+    );
+    progress.last_stage = Some(stage.name.clone());
     let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref());
-    *last_verdict = verdict.clone();
+    progress.last_verdict = verdict.clone();
 
     if matches!(
         verdict.as_ref().map(|v| &v.status),
@@ -546,10 +536,10 @@ fn run_stage(
     );
 
     if is_pass {
-        fail_counts.remove(&stage.name);
+        progress.fail_counts.remove(&stage.name);
         route_pass(stage, name_to_entry)
     } else {
-        let fail_count = fail_counts.entry(stage.name.clone()).or_insert(0);
+        let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
         *fail_count += 1;
 
         if let Some(max) = stage.max_retries {
@@ -576,11 +566,9 @@ fn route_pass(stage: &StageConfig, name_to_entry: &HashMap<String, RouteTarget>)
             Some(RouteTarget::LoopStage {
                 entry_idx,
                 stage_idx,
-                loop_config,
             }) => StageOutcome::AdvanceIntoLoop {
                 entry_idx: *entry_idx,
                 stage_idx: *stage_idx,
-                loop_config: loop_config.clone(),
             },
             None => StageOutcome::Exit(ExitKind::PassRoute),
         },
@@ -603,11 +591,9 @@ fn route_fail(stage: &StageConfig, name_to_entry: &HashMap<String, RouteTarget>)
             Some(RouteTarget::LoopStage {
                 entry_idx,
                 stage_idx,
-                loop_config,
             }) => StageOutcome::AdvanceIntoLoop {
                 entry_idx: *entry_idx,
                 stage_idx: *stage_idx,
-                loop_config: loop_config.clone(),
             },
             None => StageOutcome::Exit(ExitKind::FailRoute),
         },

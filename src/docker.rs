@@ -6,13 +6,13 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 /// The base Dockerfile embedded at compile time.
-pub const DOCKERFILE: &str = include_str!("../templates/Dockerfile");
+pub const DOCKERFILE: &str = include_str!("../base-image/Dockerfile");
 
 /// The container entrypoint script embedded at compile time.
-pub const ENTRYPOINT_SH: &str = include_str!("../templates/entrypoint.sh");
+pub const ENTRYPOINT_SH: &str = include_str!("../base-image/entrypoint.sh");
 
 /// The jq stream-display filter embedded at compile time.
-pub const STREAM_DISPLAY_JQ: &str = include_str!("../templates/stream_display.jq");
+pub const STREAM_DISPLAY_JQ: &str = include_str!("../base-image/stream_display.jq");
 
 const BASE_IMAGE: &str = "capsule";
 const DOCKERFILE_HASH_LABEL: &str = "capsule.dockerfile.hash";

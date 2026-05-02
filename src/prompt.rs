@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-pub const SYSTEM_PREAMBLE: &str = include_str!("../templates/system_preamble.md");
+pub const SYSTEM_PREAMBLE: &str = include_str!("../base-image/system_preamble.md");
 
 pub fn prepend_preamble(user_prompt: &str) -> String {
     format!("{SYSTEM_PREAMBLE}\n\n{user_prompt}")

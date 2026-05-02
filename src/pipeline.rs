@@ -266,13 +266,11 @@ enum StageOutcome {
     Exit(ExitKind),
 }
 
-/// Resolved destination of a named route target.
 enum RouteTarget {
     Entry(usize),
     LoopStage { entry_idx: usize, stage_idx: usize },
 }
 
-/// Control-flow result of a completed loop run.
 enum LoopControl {
     Advance(usize),
     Break(PipelineOutcome, Option<CapHitKind>),
@@ -481,7 +479,6 @@ fn handle_loop_outcome(
     }
 }
 
-/// Prepends `<capsule:input>` block if `input` is Some, consuming it.
 fn inject_input(input: &mut Option<String>, base_prompt: &str) -> String {
     if let Some(text) = input.take() {
         format!("<capsule:input>\n{text}\n</capsule:input>\n\n{base_prompt}")
@@ -490,7 +487,6 @@ fn inject_input(input: &mut Option<String>, base_prompt: &str) -> String {
     }
 }
 
-/// Prepends `<previous-stage>` block from the last verdict when notes are present.
 fn inject_note_block(
     last_stage: Option<&str>,
     last_verdict: &Option<Verdict>,
@@ -680,7 +676,6 @@ mod tests {
         PipelineExecutor::new(config, runner).run().outcome
     }
 
-    // Linear three-stage happy path: all pass, pipeline reaches Done.
     #[test]
     fn linear_three_stage_all_pass() {
         let config = pipeline(vec![
@@ -694,7 +689,6 @@ mod tests {
         );
     }
 
-    // on_fail: exit (default) terminates pipeline on first fail.
     #[test]
     fn on_fail_exit_default_terminates_on_first_fail() {
         let config = pipeline(vec![
@@ -707,7 +701,6 @@ mod tests {
         );
     }
 
-    // on_fail: retry — stage retries until pass.
     #[test]
     fn on_fail_retry_retries_until_pass() {
         let mut s = stage("a");
@@ -719,7 +712,6 @@ mod tests {
         );
     }
 
-    // on_fail: retry — max_retries exceeded causes exit.
     #[test]
     fn on_fail_retry_exits_when_max_retries_exceeded() {
         let mut s = stage("a");
@@ -733,7 +725,6 @@ mod tests {
         );
     }
 
-    // on_fail: <stage> — loops back and resumes forward progress.
     #[test]
     fn on_fail_stage_loops_back_and_resumes() {
         let a = stage("a");
@@ -756,7 +747,6 @@ mod tests {
         );
     }
 
-    // max_retries counts stage-specific fails and resets on pass.
     #[test]
     fn max_retries_resets_on_pass() {
         let mut s = stage("a");
@@ -773,7 +763,6 @@ mod tests {
         );
     }
 
-    // max_pipeline_iterations caps total invocations regardless of per-stage counters.
     #[test]
     fn max_pipeline_iterations_caps_total() {
         let mut s = stage("a");
@@ -790,7 +779,6 @@ mod tests {
         );
     }
 
-    // Silent exit (no verdict) is treated as implicit fail and routes via on_fail.
     #[test]
     fn silent_exit_treated_as_implicit_fail() {
         let config = pipeline(vec![single_stage_entry(stage("a"))]);
@@ -801,7 +789,6 @@ mod tests {
         );
     }
 
-    // done inside a loop exits the loop; pipeline continues with post-loop stages.
     #[test]
     fn done_inside_loop_exits_loop_pipeline_continues() {
         let loop_entry = PipelineEntry::Loop(LoopConfig {
@@ -816,7 +803,6 @@ mod tests {
         );
     }
 
-    // max_iteration cap-hit terminates pipeline non-zero.
     #[test]
     fn max_iteration_cap_hit_terminates_nok() {
         let loop_entry = PipelineEntry::Loop(LoopConfig {
@@ -831,7 +817,6 @@ mod tests {
         );
     }
 
-    // max_iteration ticks on top-of-body re-entry via explicit route, not on self-retry.
     #[test]
     fn max_iteration_ticks_on_top_of_body_reentry() {
         let implementer = stage("implementer");
@@ -851,7 +836,6 @@ mod tests {
         );
     }
 
-    // done verdict outside a loop terminates pipeline with Done.
     #[test]
     fn done_verdict_terminates_pipeline_done() {
         let config = pipeline(vec![
@@ -865,8 +849,6 @@ mod tests {
             PipelineOutcome::Done
         );
     }
-
-    // ── Recording runner for input-injection and summary tests ─────────────────
 
     use std::sync::{Arc, Mutex};
 
@@ -902,9 +884,6 @@ mod tests {
         }
     }
 
-    // ── Input injection tests ───────────────────────────────────────────────────
-
-    // Input is prepended to the first invocation only; absent on all subsequent calls.
     #[test]
     fn input_injected_on_first_invocation_only() {
         let config = pipeline(vec![
@@ -930,7 +909,6 @@ mod tests {
         );
     }
 
-    // No input: prompts are passed through unchanged.
     #[test]
     fn no_input_prompts_unchanged() {
         let mut s = stage("a");
@@ -941,8 +919,6 @@ mod tests {
         assert_eq!(prompts.lock().unwrap()[0], "hello");
     }
 
-    // ── Note injection tests ────────────────────────────────────────────────────
-
     fn pass_with_notes(notes: &str) -> Option<Verdict> {
         Some(Verdict {
             status: VerdictStatus::Pass,
@@ -950,7 +926,6 @@ mod tests {
         })
     }
 
-    // First stage never receives a note block.
     #[test]
     fn first_stage_has_no_note_block() {
         let config = pipeline(vec![single_stage_entry(stage("a"))]);
@@ -959,7 +934,6 @@ mod tests {
         assert!(!prompts.lock().unwrap()[0].contains("<previous-stage>"));
     }
 
-    // Second stage receives the note block from the first stage.
     #[test]
     fn second_stage_receives_note_block_from_first() {
         let mut a = stage("a");
@@ -987,7 +961,6 @@ mod tests {
         assert!(prompts[1].contains("prompt-b"), "base prompt still present");
     }
 
-    // No note block when previous verdict has no notes.
     #[test]
     fn no_note_block_when_previous_verdict_has_no_notes() {
         let config = pipeline(vec![
@@ -999,7 +972,6 @@ mod tests {
         assert!(!prompts.lock().unwrap()[1].contains("<previous-stage>"));
     }
 
-    // Inside a loop, the first stage of iteration 2 receives notes from the last stage of iteration 1.
     #[test]
     fn loop_note_block_carried_between_iterations() {
         let mut s = stage("a");
@@ -1024,7 +996,6 @@ mod tests {
         assert!(prompts[1].contains("iter 1 output"));
     }
 
-    // Note block is placed before base prompt (and before any input block).
     #[test]
     fn note_block_ordering_notes_before_input_before_base() {
         let mut a = stage("a");
@@ -1033,15 +1004,12 @@ mod tests {
         b.prompt = Some("task-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("output"), pass()]);
-        // No external input — just verify note block precedes base prompt
         PipelineExecutor::new(config, runner).run();
         let second = &prompts.lock().unwrap()[1].clone();
         let notes_pos = second.find("<previous-stage>").unwrap();
         let base_pos = second.find("task-b").unwrap();
         assert!(notes_pos < base_pos, "note block must precede base prompt");
     }
-
-    // ── Terminal reason tests ───────────────────────────────────────────────────
 
     fn run_summary(config: PipelineConfig, runner: FakeRunner) -> RunSummary {
         PipelineExecutor::new(config, runner).run().summary
@@ -1066,7 +1034,6 @@ mod tests {
     #[test]
     fn terminal_reason_fail_exit_for_fail_route() {
         let config = pipeline(vec![single_stage_entry(stage("a"))]);
-        // default on_fail: Exit — fail verdict triggers fail-route exit
         let summary = run_summary(config, FakeRunner::new([fail()]));
         assert_eq!(summary.terminal_reason, TerminalReason::FailExit);
     }
@@ -1081,7 +1048,6 @@ mod tests {
             max_pipeline_iterations: 1000,
             is_flat_form: true,
         };
-        // After 1 iteration the loop cap hits → TerminalReason::Ok for flat-form
         let summary = run_summary(config, FakeRunner::new([pass()]));
         assert_eq!(summary.terminal_reason, TerminalReason::Ok);
     }
@@ -1095,8 +1061,6 @@ mod tests {
         let summary = run_summary(config, FakeRunner::new([pass()]));
         assert_eq!(summary.terminal_reason, TerminalReason::CapHit);
     }
-
-    // ── last_stage / last_verdict tracking ─────────────────────────────────────
 
     #[test]
     fn last_stage_and_verdict_tracked() {
@@ -1114,8 +1078,6 @@ mod tests {
         assert_eq!(summary.last_verdict, pass_with_notes);
     }
 
-    // ── Iteration counter tracking ─────────────────────────────────────────────
-
     #[test]
     fn loop_iteration_count_captured_in_summary() {
         let loop_entry = PipelineEntry::Loop(LoopConfig {
@@ -1128,8 +1090,6 @@ mod tests {
         assert_eq!(summary.iteration_counters.loops.get(&0), Some(&3));
         assert_eq!(summary.iteration_counters.global, 3);
     }
-
-    // ── cap_hit tracking ──────────────────────────────────────────────────────
 
     #[test]
     fn cap_hit_identifies_loop_when_loop_max_iteration_exceeded() {
@@ -1153,8 +1113,6 @@ mod tests {
         let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
         assert_eq!(summary.cap_hit, Some(CapHitKind::MaxPipelineIterations));
     }
-
-    // ── PipelineState capture and resume ──────────────────────────────────────
 
     fn run_result(config: PipelineConfig, runner: FakeRunner) -> PipelineRunResult {
         PipelineExecutor::new(config, runner).run()
@@ -1270,9 +1228,6 @@ mod tests {
         assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 
-    // ── Cross-scope routing tests ───────────────────────────────────────────────
-
-    // Top-level on_fail routes into a loop-internal stage (the reported bug).
     #[test]
     fn top_level_on_fail_routes_to_loop_internal_stage() {
         let mut pr_reviewer = stage("pr-reviewer");
@@ -1292,7 +1247,6 @@ mod tests {
         );
     }
 
-    // Top-level on_pass routes into a non-first loop-internal stage.
     #[test]
     fn top_level_on_pass_routes_to_loop_internal_non_first_stage() {
         let mut dispatcher = stage("dispatcher");
@@ -1312,7 +1266,6 @@ mod tests {
         );
     }
 
-    // Cross-scope routing respects max_iteration — fresh iteration count on entry.
     #[test]
     fn cross_scope_routing_respects_max_iteration() {
         let mut trigger = stage("trigger");

@@ -102,7 +102,7 @@ _Avoid_: Overflow, timeout
 String passed via `capsule run --input "..."`, injected into the first stage's prompt on its first invocation only.
 _Avoid_: Argument, seed
 
-**Run environment** *(planned — not yet implemented)*:
+**Run environment**:
 User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and hook script for the duration of the run. Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (committed defaults). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
 _Avoid_: Run args, run parameters, heap
 
@@ -127,21 +127,21 @@ Task/work state stored outside capsule (GitHub issues, files on disk); the sourc
 _Avoid_: User state
 
 **Summary artifact**:
-`.capsule/last-run.json` written on every pipeline exit, recording terminal reason, last stage, last verdict, counters, workspace-dirty flag, and session ID of the last stage invocation. On mid-session exits only, also includes pipeline state for resumption.
+`.capsule/last-run.json` written on every pipeline exit, recording terminal reason, last stage, last verdict, counters, and session ID; includes pipeline state only on mid-session exits.
 _Avoid_: Exit log, run record
 
 **Pipeline state**:
-The runtime state of the pipeline executor — current stage index, global counter, per-stage fail counts, last stage, last verdict, and per-loop iteration counters. Serialized to the summary artifact only on mid-session exits (auth failure, container crash, signal); omitted on clean pipeline completion. `capsule resume` refuses to run when pipeline state is absent.
+The runtime executor state (stage index, counters, fail counts, loop positions) serialized to the summary artifact only on mid-session exits to enable `capsule resume`.
 _Avoid_: Checkpoint, executor state
 
 ### Credentials and recovery
 
 **Credential copy**:
-The `CredentialsGuard` copies `~/.claude/.credentials.json` to a temp file at `prepare()` time and bind-mounts it over the directory mount, isolating the container's OAuth tokens from the host's concurrent token rotation.
+An isolated copy of `~/.claude/.credentials.json` held in a temp file for the run's lifetime, preventing concurrent token rotation races between host and container.
 _Avoid_: Snapshot, credential isolation
 
 **Resume-retry**:
-On `authentication_failed`, capsule re-copies the host's current credentials to the temp file and re-launches the container with `claude --resume <session_id>`, recovering the full conversation context. One attempt; if the host token is also expired, capsule bails.
+On `authentication_failed`, capsule re-copies the host's current credentials and re-launches with `claude --resume <session_id>`, recovering conversation context in one attempt.
 _Avoid_: Auth retry, credential refresh
 
 **`min_token_lifetime_minutes`**:
@@ -150,21 +150,21 @@ _Avoid_: Token threshold, expiry check
 
 ### Workflow patterns
 
-**AFK issue**:
-A GitHub issue labeled `AFK`, eligible for capsule to pick up autonomously.
-_Avoid_: Bot issue, capsule issue
+**Ready-for-agent issue**:
+A GitHub issue labeled `ready-for-agent`, eligible for capsule to pick up autonomously.
+_Avoid_: AFK issue, bot issue, capsule issue
 
-**HITL issue**:
-A GitHub issue labeled `HITL`, reserved for the human to work on interactively.
-_Avoid_: Manual issue
+**Ready-for-human issue**:
+A GitHub issue labeled `ready-for-human`, reserved for the human to work on interactively.
+_Avoid_: HITL issue, manual issue
 
 **Queue drain**:
-The workflow pattern in which a loop's implementer repeatedly picks the next AFK issue, emitting `done` when the queue is empty.
+The workflow pattern in which a loop's implementer repeatedly picks the next ready-for-agent issue, emitting `done` when the queue is empty.
 _Avoid_: Worklist, backlog drain
 
 **Dream cycle**:
 The end-to-end autonomous flow: plan → queue drain (implement ↔ review) → document, wrapped in one pipeline.
-_Avoid_: Full auto, AFK cycle
+_Avoid_: Full auto
 
 **Fan-out** *(out of scope)*:
 A single stage producing N independent executions in parallel, one per item in an upstream list; not part of the current pipeline grammar.

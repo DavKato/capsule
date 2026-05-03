@@ -102,6 +102,10 @@ _Avoid_: Overflow, timeout
 String passed via `capsule run --input "..."`, injected into the first stage's prompt on its first invocation only.
 _Avoid_: Argument, seed
 
+**Run environment** *(planned — not yet implemented)*:
+User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and hook script for the duration of the run. Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (committed defaults). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
+_Avoid_: Run args, run parameters, heap
+
 **Note injection**:
 Capsule's prepending of a block containing the previous stage's name, verdict, and notes to every next-stage prompt.
 _Avoid_: Feedback block, context injection

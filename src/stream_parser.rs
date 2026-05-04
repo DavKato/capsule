@@ -33,7 +33,7 @@ impl StreamParser {
             if let Some(tools) = extract_init_tools(&msg) {
                 self.submit_verdict_registered = tools.iter().any(|t| {
                     let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
-                    name.is_some_and(|n| n == "submit_verdict" || n.ends_with("__submit_verdict"))
+                    name.is_some_and(is_submit_verdict)
                 });
             }
         }
@@ -94,6 +94,10 @@ fn is_valid_session_id(id: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
+fn is_submit_verdict(name: &str) -> bool {
+    name == "submit_verdict" || name.ends_with("__submit_verdict")
+}
+
 fn extract_init_tools(msg: &Value) -> Option<Vec<Value>> {
     Some(msg.get("tools")?.as_array()?.clone())
 }
@@ -105,7 +109,7 @@ fn extract_verdict(msg: &Value) -> Option<Verdict> {
     let content = msg.pointer("/message/content")?.as_array()?;
     for block in content {
         if block.get("type")?.as_str()? == "tool_use"
-            && block.get("name")?.as_str()? == "submit_verdict"
+            && block.get("name")?.as_str().is_some_and(is_submit_verdict)
         {
             let input = block.get("input")?;
             let status_str = input.get("status")?.as_str()?;
@@ -226,6 +230,15 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_05","name":"submit_verdict","input":{"status":"unknown"}}]}}"#;
         let mut p = StreamParser::new();
         assert!(p.feed(line).is_none());
+    }
+
+    #[test]
+    fn mcp_prefixed_verdict_is_extracted() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_06","name":"mcp__capsule__submit_verdict","input":{"status":"pass","notes":"done"}}]}}"#;
+        let mut p = StreamParser::new();
+        let v = p.feed(line).unwrap();
+        assert_eq!(v.status, VerdictStatus::Pass);
+        assert_eq!(v.notes.as_deref(), Some("done"));
     }
 
     #[test]

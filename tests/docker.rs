@@ -575,13 +575,13 @@ fn extra_env_file_visible_across_stages() {
         .output();
 }
 
-/// Verify that resume --env merge semantics reach the container.
-/// Simulates: persisted env [MODE=dry, TASK=42] + CLI override [MODE=wet, REGION=us]
-/// → merged [MODE=wet, TASK=42, REGION=us] visible inside the container.
+/// Verify that a pre-merged extra_env_file delivers all three expected values to the container.
+/// Constructs the merged env ([MODE=wet, TASK=42, REGION=us]) inline and confirms the container
+/// sees it via extra_env_file. The merge algorithm itself is tested by unit tests in src/run.rs.
 #[test]
 #[requires_docker]
 #[serial(run_iteration)]
-fn resume_env_merge_visible_in_container() {
+fn extra_env_file_delivers_merged_env_to_container() {
     use capsule::docker::RunConfig;
     use std::io::Write;
 
@@ -614,8 +614,7 @@ fn resume_env_merge_visible_in_container() {
         ("MODE".to_string(), "wet".to_string()),
         ("REGION".to_string(), "us".to_string()),
     ];
-    // Use the same merge function as prepare_resume (tested via unit test).
-    // Here we reproduce the result directly to keep this test self-contained.
+    // Inline the expected merged result; merge logic correctness is covered by unit tests.
     let mut merged = persisted.clone();
     for (k, v) in &cli_overrides {
         if let Some(e) = merged.iter_mut().find(|(ek, _)| ek == k) {

@@ -59,7 +59,7 @@ pub struct PipelineState {
     pub last_stage: Option<String>,
     pub last_verdict: Option<crate::verdict::Verdict>,
     pub loop_iterations: HashMap<usize, u32>,
-    /// Run environment pairs persisted for resume; empty after successful exits.
+    /// Run environment pairs persisted for resume; omitted from disk on successful exits.
     pub env: Vec<(String, String)>,
 }
 

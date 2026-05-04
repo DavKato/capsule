@@ -112,6 +112,17 @@ The following environment variables are available inside `before-each.sh`:
 
 Both hooks receive variables from `.capsule/.env`. Variables passed via `--env KEY=VALUE` on `capsule run` or `capsule resume` are also injected into both hooks, overriding same-named `.env` keys.
 
+## Development
+
+Build from source and install as `capsule-dev` to avoid conflicting with a release install:
+
+```sh
+make install-dev    # build and install as capsule-dev
+make uninstall-dev  # remove capsule-dev
+```
+
+This places the binary at `~/.cargo/bin/capsule-dev`. Use it when testing against a repo that capsule itself manages (e.g. running capsule on its own codebase), since the agent's `cargo build` inside the container would overwrite `target/debug/capsule`.
+
 ## Releasing
 
 Requires [`cargo-release`](https://github.com/crate-ci/cargo-release):

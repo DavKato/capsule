@@ -122,6 +122,7 @@ pub(crate) struct RunSession {
     credentials_guard: Option<CredentialsGuard>,
     active_container: Arc<Mutex<Option<String>>>,
     resume: Option<(String, PipelineState)>,
+    env_pairs: Vec<(String, String)>,
 }
 
 impl RunSession {
@@ -244,6 +245,7 @@ impl RunSession {
             credentials_guard,
             active_container,
             resume: None,
+            env_pairs,
         })
     }
 
@@ -254,7 +256,11 @@ impl RunSession {
     /// `config.yml` only.  The `Resume` subcommand does not accept those flags.
     pub(crate) fn prepare_resume(capsule_dir: PathBuf) -> Result<Self> {
         let resume_data = parse_resume_state(&capsule_dir)?;
-        let mut session = Self::prepare(capsule_dir, capsule::config::CliOverrides::default())?;
+        let overrides = capsule::config::CliOverrides {
+            env: resume_data.1.env.clone(),
+            ..Default::default()
+        };
+        let mut session = Self::prepare(capsule_dir, overrides)?;
         session.resume = Some(resume_data);
         Ok(session)
     }
@@ -381,6 +387,7 @@ impl RunSession {
                 .run()
         };
         result.summary.session_id = last_session_id.lock().unwrap().take();
+        result.pipeline_state.env = self.env_pairs.clone();
         if let Some(e) = last_error.lock().unwrap().take() {
             let _ = write_last_run(
                 &self.cfg.capsule_dir,
@@ -599,6 +606,11 @@ fn pipeline_state_to_json(state: &PipelineState) -> serde_json::Value {
         .last_verdict
         .as_ref()
         .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+    let env: Vec<serde_json::Value> = state
+        .env
+        .iter()
+        .map(|(k, v)| serde_json::json!([k, v]))
+        .collect();
     serde_json::json!({
         "current_idx": state.current_idx,
         "global_counter": state.global_counter,
@@ -606,6 +618,7 @@ fn pipeline_state_to_json(state: &PipelineState) -> serde_json::Value {
         "last_stage": state.last_stage,
         "last_verdict": last_verdict,
         "loop_iterations": loop_iterations,
+        "env": env,
     })
 }
 
@@ -667,6 +680,19 @@ fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
         })
         .unwrap_or_default();
 
+    let env: Vec<(String, String)> = state_json["env"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|pair| {
+                    let k = pair[0].as_str()?.to_owned();
+                    let v = pair[1].as_str()?.to_owned();
+                    Some((k, v))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok((
         session_id,
         PipelineState {
@@ -676,6 +702,7 @@ fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
             last_stage,
             last_verdict,
             loop_iterations,
+            env,
         },
     ))
 }
@@ -1044,6 +1071,7 @@ mod tests {
                 notes: Some("oops".to_string()),
             }),
             loop_iterations: loop_iters,
+            env: vec![],
         }
     }
 
@@ -1150,5 +1178,85 @@ mod tests {
         let tmp = build_extra_env_tempfile(&pairs).unwrap().unwrap();
         let content = std::fs::read_to_string(tmp.path()).unwrap();
         assert_eq!(content, "KEY=value\n");
+    }
+
+    // ── env persistence in pipeline_state ────────────────────────────────────
+
+    #[test]
+    fn parse_resume_state_round_trips_env_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = minimal_summary(TerminalReason::FailExit);
+        s.session_id = Some("sess_env".to_string());
+        let state = PipelineState {
+            current_idx: 0,
+            global_counter: 0,
+            fail_counts: HashMap::new(),
+            last_stage: None,
+            last_verdict: None,
+            loop_iterations: HashMap::new(),
+            env: vec![
+                ("PARENT".to_string(), "42".to_string()),
+                ("MODE".to_string(), "test".to_string()),
+            ],
+        };
+        write_last_run(dir.path(), &s, Some(&state)).unwrap();
+        let (_, restored) = parse_resume_state(dir.path()).unwrap();
+        assert_eq!(restored.env.len(), 2);
+        assert_eq!(restored.env[0], ("PARENT".to_string(), "42".to_string()));
+        assert_eq!(restored.env[1], ("MODE".to_string(), "test".to_string()));
+    }
+
+    #[test]
+    fn parse_resume_state_env_defaults_to_empty_when_field_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write a last-run.json that has no "env" field in pipeline_state (old format).
+        let json = serde_json::json!({
+            "terminal_reason": "fail-exit",
+            "cap_hit_counter": null,
+            "last_stage": null,
+            "last_verdict": null,
+            "session_id": "sess_old",
+            "iteration_counters": { "global": 0, "loops": {} },
+            "pipeline_state": {
+                "current_idx": 1,
+                "global_counter": 2,
+                "fail_counts": {},
+                "last_stage": null,
+                "last_verdict": null,
+                "loop_iterations": {}
+            },
+            "timestamp": "2026-01-01T00:00:00Z",
+            "workspace_dirty": false
+        });
+        std::fs::write(
+            dir.path().join("last-run.json"),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+        let (_, restored) = parse_resume_state(dir.path()).unwrap();
+        assert_eq!(restored.env, vec![], "missing env field must default to []");
+    }
+
+    #[test]
+    fn pipeline_state_json_includes_env_pairs() {
+        let state = PipelineState {
+            current_idx: 0,
+            global_counter: 0,
+            fail_counts: HashMap::new(),
+            last_stage: None,
+            last_verdict: None,
+            loop_iterations: HashMap::new(),
+            env: vec![
+                ("PARENT".to_string(), "79".to_string()),
+                ("MODE".to_string(), "dry".to_string()),
+            ],
+        };
+        let json = pipeline_state_to_json(&state);
+        let env = json["env"].as_array().expect("env must be an array");
+        assert_eq!(env.len(), 2);
+        assert_eq!(env[0][0], "PARENT");
+        assert_eq!(env[0][1], "79");
+        assert_eq!(env[1][0], "MODE");
+        assert_eq!(env[1][1], "dry");
     }
 }

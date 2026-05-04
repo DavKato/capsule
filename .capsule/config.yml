@@ -1,3 +1,23 @@
-model: claude-sonnet-4-6
-git_identity: capsule
+stages:
+    - loop:
+          max_iteration: 15
+          stages:
+              - name: implementer
+                model: claude-sonnet-4-6
+                prompt: prompts/implementer.md
+                on_fail: retry
+                max_retries: 2
+
+              - name: reviewer
+                prompt: prompts/reviewer.md
+                on_fail: implementer
+
+    - name: pr-reviewer
+      prompt: prompts/pr-reviewer.md
+      on_fail: implementer
+
+    - name: documentor
+      prompt: prompts/documentor.md
+
+model: claude-opus-4-6
 github: local

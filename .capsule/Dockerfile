@@ -2,7 +2,7 @@ FROM capsule
 
 # gcc provides the C linker required by rustc to link binaries
 USER root
-RUN pacman -S --noconfirm gcc
+RUN pacman -Syu --noconfirm gcc
 USER claude
 
 # Install rustup and stable toolchain

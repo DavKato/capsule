@@ -103,7 +103,7 @@ String passed via `capsule run --input "..."`, injected into the first stage's p
 _Avoid_: Argument, seed
 
 **Run environment**:
-User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and hook script for the duration of the run. Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (committed defaults). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
+User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and hook script for the duration of the run. Persisted in pipeline state on resumable exits so `capsule resume` restores them; `--env` on resume merges on top (last writer wins per key). Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (committed defaults). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
 _Avoid_: Run args, run parameters, heap
 
 **Note injection**:

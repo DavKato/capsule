@@ -127,6 +127,15 @@ fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
         if k.starts_with("CAPSULE_") {
             anyhow::bail!("--env: key {k:?} is reserved — CAPSULE_* keys are owned by capsule");
         }
+        if !k.bytes().enumerate().all(|(i, b)| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+            b'0'..=b'9' if i > 0 => true,
+            _ => false,
+        }) {
+            anyhow::bail!(
+                "--env: key {k:?} is not a valid POSIX name — must match [A-Za-z_][A-Za-z0-9_]*"
+            );
+        }
         pairs.push((k.to_string(), v.to_string()));
     }
     Ok(pairs)
@@ -294,6 +303,39 @@ mod tests {
             err.to_string().contains("newline"),
             "error should mention newline: {err}"
         );
+    }
+
+    #[test]
+    fn parse_env_key_starting_with_digit_rejected() {
+        let err = parse_env_pairs(vec!["1FOO=bar".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("POSIX"),
+            "error should mention POSIX naming: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_key_with_hash_rejected() {
+        let err = parse_env_pairs(vec!["#COMMENT=bar".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("POSIX"),
+            "error should mention POSIX naming: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_key_with_space_rejected() {
+        let err = parse_env_pairs(vec!["MY KEY=bar".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("POSIX"),
+            "error should mention POSIX naming: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_valid_key_with_underscores_and_digits() {
+        let pairs = parse_env_pairs(vec!["_MY_VAR_2=hello".to_string()]).unwrap();
+        assert_eq!(pairs, vec![("_MY_VAR_2".to_string(), "hello".to_string())]);
     }
 
     #[test]

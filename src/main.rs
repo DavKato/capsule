@@ -118,20 +118,19 @@ fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
         let Some((k, v)) = s.split_once('=') else {
             anyhow::bail!("--env: invalid format {s:?} — expected KEY=VALUE");
         };
-        if k.is_empty() {
-            anyhow::bail!("--env: key must not be empty in {s:?}");
-        }
         if k.contains(['\n', '\r', '\0']) || v.contains(['\n', '\r', '\0']) {
             anyhow::bail!("--env: key or value must not contain newline or null characters");
         }
         if k.starts_with("CAPSULE_") {
             anyhow::bail!("--env: key {k:?} is reserved — CAPSULE_* keys are owned by capsule");
         }
-        if !k.bytes().enumerate().all(|(i, b)| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
-            b'0'..=b'9' if i > 0 => true,
-            _ => false,
-        }) {
+        if k.is_empty()
+            || !k.bytes().enumerate().all(|(i, b)| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+                b'0'..=b'9' if i > 0 => true,
+                _ => false,
+            })
+        {
             anyhow::bail!(
                 "--env: key {k:?} is not a valid POSIX name — must match [A-Za-z_][A-Za-z0-9_]*"
             );
@@ -282,8 +281,8 @@ mod tests {
     fn parse_env_empty_key_rejected() {
         let err = parse_env_pairs(vec!["=value".to_string()]).unwrap_err();
         assert!(
-            err.to_string().contains("must not be empty"),
-            "error should mention empty key: {err}"
+            err.to_string().contains("POSIX"),
+            "error should mention POSIX naming: {err}"
         );
     }
 

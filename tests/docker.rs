@@ -574,3 +574,86 @@ fn extra_env_file_visible_across_stages() {
         .args(["rmi", "-f", "capsule-test-extra-env"])
         .output();
 }
+
+/// Verify that resume --env merge semantics reach the container.
+/// Simulates: persisted env [MODE=dry, TASK=42] + CLI override [MODE=wet, REGION=us]
+/// → merged [MODE=wet, TASK=42, REGION=us] visible inside the container.
+#[test]
+#[requires_docker]
+#[serial(run_iteration)]
+fn resume_env_merge_visible_in_container() {
+    use capsule::docker::RunConfig;
+    use std::io::Write;
+
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let output_file = workdir.path().join("env_check.txt");
+
+    let dockerfile = "FROM busybox\n\
+        ENTRYPOINT [\"sh\", \"-c\", \
+        \"echo MODE=$MODE,TASK=$TASK,REGION=$REGION > \\\"$CAPSULE_WORKSPACE/env_check.txt\\\"; exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-resume-env-merge", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(dockerfile.as_bytes())
+        .unwrap();
+    child.wait().expect("docker build should complete");
+
+    // Simulate what prepare_resume does: merge persisted pairs with CLI overrides,
+    // then write the merged result to a single extra env-file for the container.
+    let persisted = vec![
+        ("MODE".to_string(), "dry".to_string()),
+        ("TASK".to_string(), "42".to_string()),
+    ];
+    let cli_overrides = vec![
+        ("MODE".to_string(), "wet".to_string()),
+        ("REGION".to_string(), "us".to_string()),
+    ];
+    // Use the same merge function as prepare_resume (tested via unit test).
+    // Here we reproduce the result directly to keep this test self-contained.
+    let mut merged = persisted.clone();
+    for (k, v) in &cli_overrides {
+        if let Some(e) = merged.iter_mut().find(|(ek, _)| ek == k) {
+            e.1 = v.clone();
+        } else {
+            merged.push((k.clone(), v.clone()));
+        }
+    }
+    let mut extra_env_tmp = tempfile::Builder::new()
+        .prefix("capsule-env-")
+        .suffix(".env")
+        .tempfile()
+        .unwrap();
+    for (k, v) in &merged {
+        writeln!(extra_env_tmp, "{k}={v}").unwrap();
+    }
+
+    let cfg = RunConfig {
+        image: "capsule-test-resume-env-merge".to_string(),
+        prompt: "ignored".to_string(),
+        pwd: workdir.path().to_path_buf(),
+        extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
+        claude_dir: std::env::temp_dir(),
+        ..RunConfig::default()
+    };
+    let active = Arc::new(Mutex::new(None));
+
+    let result = run_iteration(&cfg, 1, &active);
+    assert!(result.is_ok(), "container run should succeed: {:?}", result);
+
+    let output =
+        std::fs::read_to_string(&output_file).expect("container should have written env_check.txt");
+    assert!(
+        output.trim() == "MODE=wet,TASK=42,REGION=us",
+        "container must see merged env values; got: {output:?}"
+    );
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-resume-env-merge"])
+        .output();
+}

@@ -96,6 +96,11 @@ enum Commands {
         /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
         #[arg(long, default_value = ".capsule")]
         capsule_dir: PathBuf,
+
+        /// Override or add KEY=VALUE pairs on top of persisted run environment.
+        /// Repeatable. CLI values win per key. CAPSULE_* keys are reserved.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
     },
 
     /// Print shell completion script to stdout
@@ -144,8 +149,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Resume { capsule_dir } => {
-            match RunSession::prepare_resume(capsule_dir)?.execute()? {
+        Commands::Resume { capsule_dir, env } => {
+            let env = parse_env_pairs(env)?;
+            match RunSession::prepare_resume(capsule_dir, env)?.execute()? {
                 run::ExitDecision::Success => {
                     println!("Claude submitted a pass verdict.");
                     Ok(())

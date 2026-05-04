@@ -254,10 +254,14 @@ impl RunSession {
     ///
     /// Uses default CLI overrides — model, verbose, rebuild etc. come from
     /// `config.yml` only.  The `Resume` subcommand does not accept those flags.
-    pub(crate) fn prepare_resume(capsule_dir: PathBuf) -> Result<Self> {
+    pub(crate) fn prepare_resume(
+        capsule_dir: PathBuf,
+        cli_env: Vec<(String, String)>,
+    ) -> Result<Self> {
         let resume_data = parse_resume_state(&capsule_dir)?;
+        let merged_env = merge_env(&resume_data.1.env, &cli_env);
         let overrides = capsule::config::CliOverrides {
-            env: resume_data.1.env.clone(),
+            env: merged_env,
             ..Default::default()
         };
         let mut session = Self::prepare(capsule_dir, overrides)?;
@@ -516,6 +520,23 @@ impl DockerStageRunner {
         }
         result.verdict
     }
+}
+
+/// Merge persisted run-environment pairs with CLI overrides. Persisted pairs
+/// form the base; any same-key CLI pair overwrites; new CLI keys are appended.
+fn merge_env(
+    persisted: &[(String, String)],
+    cli_overrides: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = persisted.to_vec();
+    for (k, v) in cli_overrides {
+        if let Some(existing) = result.iter_mut().find(|(ek, _)| ek == k) {
+            existing.1 = v.clone();
+        } else {
+            result.push((k.clone(), v.clone()));
+        }
+    }
+    result
 }
 
 /// Write `--env` pairs to a `NamedTempFile` in dotenv format.
@@ -1235,6 +1256,27 @@ mod tests {
         .unwrap();
         let (_, restored) = parse_resume_state(dir.path()).unwrap();
         assert_eq!(restored.env, vec![], "missing env field must default to []");
+    }
+
+    #[test]
+    fn merge_env_cli_overrides_persisted_per_key() {
+        let persisted = vec![
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+        ];
+        let cli = vec![
+            ("B".to_string(), "3".to_string()),
+            ("C".to_string(), "4".to_string()),
+        ];
+        let merged = merge_env(&persisted, &cli);
+        assert_eq!(
+            merged,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "3".to_string()),
+                ("C".to_string(), "4".to_string()),
+            ]
+        );
     }
 
     #[test]

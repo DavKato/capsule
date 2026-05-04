@@ -80,6 +80,25 @@ fn version_flag_long_prints_version() {
 }
 
 #[test]
+fn resume_env_bad_format_exits_nonzero() {
+    // No capsule_dir needed — parse validation fires before any file I/O.
+    cmd()
+        .args(["resume", "--env", "NOEQUALS"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn resume_help_lists_env_flag() {
+    let output = cmd().args(["resume", "--help"]).assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("--env"),
+        "resume --help should mention --env flag"
+    );
+}
+
+#[test]
 fn bare_capsule_prints_help() {
     let output = cmd().assert().failure();
     let stderr = String::from_utf8(output.get_output().stderr.clone()).unwrap();

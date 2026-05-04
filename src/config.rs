@@ -108,6 +108,8 @@ pub struct CliOverrides {
     pub github: Option<GithubScope>,
     pub input: Option<String>,
     pub min_token_lifetime_minutes: Option<u32>,
+    /// KEY=VALUE pairs injected into every container and hook invocation for this run.
+    pub env: Vec<(String, String)>,
 }
 
 // ── Flat-form serde types ─────────────────────────────────────────────────────

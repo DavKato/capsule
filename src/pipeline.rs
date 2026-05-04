@@ -59,6 +59,8 @@ pub struct PipelineState {
     pub last_stage: Option<String>,
     pub last_verdict: Option<crate::verdict::Verdict>,
     pub loop_iterations: HashMap<usize, u32>,
+    /// Run environment pairs persisted for resume; omitted from disk on successful exits.
+    pub env: Vec<(String, String)>,
 }
 
 /// Mutable progress tracked across stage invocations during a pipeline run.
@@ -228,6 +230,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             last_stage: progress.last_stage.clone(),
             last_verdict: progress.last_verdict.clone(),
             loop_iterations: loop_iterations.clone(),
+            env: vec![],
         };
 
         PipelineRunResult {

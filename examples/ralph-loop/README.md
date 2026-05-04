@@ -36,6 +36,12 @@ capsule run --input "Add a health-check endpoint to the API"
 
 The implementer will pick up any open `AFK` issues. Use `--input` to inject context at the start of the first stage's prompt.
 
+For run-scoped parameters that persist across all stages and hooks (e.g. filtering issues by parent), use `--env`:
+
+```sh
+capsule run --env PARENT=79    # $PARENT is available in every container and hook script
+```
+
 ## Key concepts shown
 
 - **Ralph loop** — implementer iterates until the `AFK` queue is empty, using `done` to signal completion rather than `pass`

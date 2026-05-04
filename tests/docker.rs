@@ -498,3 +498,161 @@ fn entrypoint_uses_resume_when_env_set() {
         .args(["rmi", "-f", "capsule-resume-test"])
         .output();
 }
+
+/// Verify that extra_env_file values are visible in every container invocation.
+/// Two simulated "stages" (consecutive run_iteration calls) must both see the
+/// env var injected via extra_env_file, confirming persistence across stages.
+#[test]
+#[requires_docker]
+#[serial(run_iteration)]
+fn extra_env_file_visible_across_stages() {
+    let workdir = tempfile::tempdir().expect("temp workdir");
+
+    // Build a minimal image whose entrypoint writes the env var value to a file.
+    let dockerfile =
+        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"echo \\\"$MY_RUN_PARAM\\\" >> \\\"$CAPSULE_WORKSPACE/stage_outputs.txt\\\"; exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-extra-env", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    // Write the --env pairs to a temp env-file (as RunSession does).
+    let mut extra_env_tmp = tempfile::Builder::new()
+        .prefix("capsule-env-")
+        .suffix(".env")
+        .tempfile()
+        .unwrap();
+    writeln!(extra_env_tmp, "MY_RUN_PARAM=expected_value").unwrap();
+
+    let cfg = RunConfig {
+        image: "capsule-test-extra-env".to_string(),
+        prompt: "ignored".to_string(),
+        pwd: workdir.path().to_path_buf(),
+        extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
+        claude_dir: std::env::temp_dir(),
+        ..RunConfig::default()
+    };
+    let active = Arc::new(Mutex::new(None));
+
+    // Stage 1
+    let r1 = run_iteration(&cfg, 1, &active);
+    assert!(r1.is_ok(), "stage 1 should not error: {:?}", r1);
+
+    // Stage 2
+    let r2 = run_iteration(&cfg, 2, &active);
+    assert!(r2.is_ok(), "stage 2 should not error: {:?}", r2);
+
+    let outputs = std::fs::read_to_string(workdir.path().join("stage_outputs.txt"))
+        .expect("container should have written stage_outputs.txt");
+
+    let lines: Vec<&str> = outputs.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "both stages must have written output; got: {outputs:?}"
+    );
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(
+            *line,
+            "expected_value",
+            "stage {} must see MY_RUN_PARAM=expected_value; got: {line:?}",
+            i + 1
+        );
+    }
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-extra-env"])
+        .output();
+}
+
+/// Verify that a pre-merged extra_env_file delivers all three expected values to the container.
+/// Constructs the merged env ([MODE=wet, TASK=42, REGION=us]) inline and confirms the container
+/// sees it via extra_env_file. The merge algorithm itself is tested by unit tests in src/run.rs.
+#[test]
+#[requires_docker]
+#[serial(run_iteration)]
+fn extra_env_file_delivers_merged_env_to_container() {
+    use capsule::docker::RunConfig;
+    use std::io::Write;
+
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let output_file = workdir.path().join("env_check.txt");
+
+    let dockerfile = "FROM busybox\n\
+        ENTRYPOINT [\"sh\", \"-c\", \
+        \"echo MODE=$MODE,TASK=$TASK,REGION=$REGION > \\\"$CAPSULE_WORKSPACE/env_check.txt\\\"; exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-resume-env-merge", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(dockerfile.as_bytes())
+        .unwrap();
+    child.wait().expect("docker build should complete");
+
+    // Simulate what prepare_resume does: merge persisted pairs with CLI overrides,
+    // then write the merged result to a single extra env-file for the container.
+    let persisted = vec![
+        ("MODE".to_string(), "dry".to_string()),
+        ("TASK".to_string(), "42".to_string()),
+    ];
+    let cli_overrides = vec![
+        ("MODE".to_string(), "wet".to_string()),
+        ("REGION".to_string(), "us".to_string()),
+    ];
+    // Inline the expected merged result; merge logic correctness is covered by unit tests.
+    let mut merged = persisted.clone();
+    for (k, v) in &cli_overrides {
+        if let Some(e) = merged.iter_mut().find(|(ek, _)| ek == k) {
+            e.1 = v.clone();
+        } else {
+            merged.push((k.clone(), v.clone()));
+        }
+    }
+    let mut extra_env_tmp = tempfile::Builder::new()
+        .prefix("capsule-env-")
+        .suffix(".env")
+        .tempfile()
+        .unwrap();
+    for (k, v) in &merged {
+        writeln!(extra_env_tmp, "{k}={v}").unwrap();
+    }
+
+    let cfg = RunConfig {
+        image: "capsule-test-resume-env-merge".to_string(),
+        prompt: "ignored".to_string(),
+        pwd: workdir.path().to_path_buf(),
+        extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
+        claude_dir: std::env::temp_dir(),
+        ..RunConfig::default()
+    };
+    let active = Arc::new(Mutex::new(None));
+
+    let result = run_iteration(&cfg, 1, &active);
+    assert!(result.is_ok(), "container run should succeed: {:?}", result);
+
+    let output =
+        std::fs::read_to_string(&output_file).expect("container should have written env_check.txt");
+    assert!(
+        output.trim() == "MODE=wet,TASK=42,REGION=us",
+        "container must see merged env values; got: {output:?}"
+    );
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-resume-env-merge"])
+        .output();
+}

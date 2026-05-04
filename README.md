@@ -53,8 +53,14 @@ capsule run --iterations 1 --rebuild          # force-rebuild the Docker image
 capsule run --iterations 3 --verbose          # show unfiltered container output
 capsule run --model claude-opus-4-6 --iterations 2
 capsule run --capsule-dir path/to/.capsule    # use a non-default config directory
+capsule run --env PARENT=79 --iterations 3    # inject run-scoped parameters into containers and hooks
 capsule completion bash | source              # enable tab-completion in the current shell
 capsule update                                # download and install the latest release
+```
+
+```sh
+capsule resume                                # resume from last interrupted run
+capsule resume --env KEY=newvalue             # resume with env override (merges on top of persisted pairs)
 ```
 
 ## Config directory
@@ -104,7 +110,7 @@ The following environment variables are available inside `before-each.sh`:
 |---|---|
 | `CAPSULE_WORKSPACE` | Absolute path to the workspace inside the container (mirrors the host path) |
 
-Both hooks receive variables from `.capsule/.env`.
+Both hooks receive variables from `.capsule/.env`. Variables passed via `--env KEY=VALUE` on `capsule run` or `capsule resume` are also injected into both hooks, overriding same-named `.env` keys.
 
 ## Releasing
 

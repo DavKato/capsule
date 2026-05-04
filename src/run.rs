@@ -628,10 +628,10 @@ fn pipeline_state_to_json(state: &PipelineState) -> serde_json::Value {
         .last_verdict
         .as_ref()
         .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
-    let env: Vec<serde_json::Value> = state
+    let env: serde_json::Map<String, serde_json::Value> = state
         .env
         .iter()
-        .map(|(k, v)| serde_json::json!([k, v]))
+        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
         .collect();
     serde_json::json!({
         "current_idx": state.current_idx,
@@ -703,14 +703,10 @@ fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
         .unwrap_or_default();
 
     let env: Vec<(String, String)> = state_json["env"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|pair| {
-                    let k = pair[0].as_str()?.to_owned();
-                    let v = pair[1].as_str()?.to_owned();
-                    Some((k, v))
-                })
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
                 .collect()
         })
         .unwrap_or_default();
@@ -1224,8 +1220,12 @@ mod tests {
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
         let (_, restored) = parse_resume_state(dir.path()).unwrap();
         assert_eq!(restored.env.len(), 2);
-        assert_eq!(restored.env[0], ("PARENT".to_string(), "42".to_string()));
-        assert_eq!(restored.env[1], ("MODE".to_string(), "test".to_string()));
+        assert!(restored
+            .env
+            .contains(&("PARENT".to_string(), "42".to_string())));
+        assert!(restored
+            .env
+            .contains(&("MODE".to_string(), "test".to_string())));
     }
 
     #[test]
@@ -1318,11 +1318,9 @@ mod tests {
             ],
         };
         let json = pipeline_state_to_json(&state);
-        let env = json["env"].as_array().expect("env must be an array");
+        let env = json["env"].as_object().expect("env must be an object");
         assert_eq!(env.len(), 2);
-        assert_eq!(env[0][0], "PARENT");
-        assert_eq!(env[0][1], "79");
-        assert_eq!(env[1][0], "MODE");
-        assert_eq!(env[1][1], "dry");
+        assert_eq!(env["PARENT"], "79");
+        assert_eq!(env["MODE"], "dry");
     }
 }

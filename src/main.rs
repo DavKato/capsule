@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 mod run;
 use capsule::mcp_server;
+use capsule::templates;
 use run::RunSession;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -112,9 +113,21 @@ enum Commands {
     /// Download and install the latest capsule release
     Update,
 
+    /// Browse and copy pre-built .capsule/ skeletons
+    Templates {
+        #[command(subcommand)]
+        command: TemplatesCommands,
+    },
+
     /// Run the MCP server over stdio (used inside the container by Claude Code)
     #[command(hide = true)]
     McpServe,
+}
+
+#[derive(Debug, Subcommand)]
+enum TemplatesCommands {
+    /// List available templates with descriptions
+    List,
 }
 
 fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
@@ -181,6 +194,23 @@ fn main() -> Result<()> {
             if !status.success() {
                 std::process::exit(status.code().unwrap_or(1));
             }
+            Ok(())
+        }
+        Commands::Templates {
+            command: TemplatesCommands::List,
+        } => {
+            let entries = templates::list();
+            let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
+            for entry in &entries {
+                println!(
+                    "{:<width$}  {}",
+                    entry.name,
+                    entry.description,
+                    width = name_width
+                );
+            }
+            println!();
+            println!("For guidance on choosing a shape: capsule explain pipeline-shapes");
             Ok(())
         }
         Commands::McpServe => {

@@ -9,5 +9,6 @@ pub mod pipeline;
 pub mod preflight;
 pub mod prompt;
 pub mod stream_parser;
+pub mod templates;
 pub mod update_check;
 pub mod verdict;

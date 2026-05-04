@@ -83,6 +83,12 @@ enum Commands {
         /// Minimum remaining token lifetime (minutes) before prompting to refresh.
         #[arg(long)]
         min_token_lifetime_minutes: Option<u32>,
+
+        /// Inject KEY=VALUE into the container environment and hook scripts for this run.
+        /// Repeatable. Values override same-named keys in .capsule/.env.
+        /// CAPSULE_* keys are reserved and rejected.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
     },
 
     /// Resume pipeline from the last interrupted run (reads last-run.json)
@@ -104,6 +110,26 @@ enum Commands {
     /// Run the MCP server over stdio (used inside the container by Claude Code)
     #[command(hide = true)]
     McpServe,
+}
+
+fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
+    let mut pairs = Vec::new();
+    for s in raw {
+        let Some((k, v)) = s.split_once('=') else {
+            anyhow::bail!("--env: invalid format {s:?} — expected KEY=VALUE");
+        };
+        if k.is_empty() {
+            anyhow::bail!("--env: key must not be empty in {s:?}");
+        }
+        if k.contains(['\n', '\r', '\0']) || v.contains(['\n', '\r', '\0']) {
+            anyhow::bail!("--env: key or value must not contain newline or null characters");
+        }
+        if k.starts_with("CAPSULE_") {
+            anyhow::bail!("--env: key {k:?} is reserved — CAPSULE_* keys are owned by capsule");
+        }
+        pairs.push((k.to_string(), v.to_string()));
+    }
+    Ok(pairs)
 }
 
 fn main() -> Result<()> {
@@ -158,6 +184,7 @@ fn main() -> Result<()> {
             github,
             input,
             min_token_lifetime_minutes,
+            env,
         } => {
             let git_identity = match git_identity {
                 CliGitIdentity::User => Some(GitIdentity::User),
@@ -167,6 +194,7 @@ fn main() -> Result<()> {
                 CliGithubScope::Local => GithubScope::Local,
                 CliGithubScope::Global => GithubScope::Global,
             });
+            let env = parse_env_pairs(env)?;
             let overrides = CliOverrides {
                 iterations,
                 prompt,
@@ -177,6 +205,7 @@ fn main() -> Result<()> {
                 github,
                 input,
                 min_token_lifetime_minutes,
+                env,
             };
             match RunSession::prepare(capsule_dir, overrides)?.execute()? {
                 run::ExitDecision::Success => {
@@ -189,5 +218,91 @@ fn main() -> Result<()> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_env_valid_key_value() {
+        let pairs = parse_env_pairs(vec!["FOO=bar".to_string()]).unwrap();
+        assert_eq!(pairs, vec![("FOO".to_string(), "bar".to_string())]);
+    }
+
+    #[test]
+    fn parse_env_value_with_equals() {
+        let pairs = parse_env_pairs(vec!["FOO=a=b".to_string()]).unwrap();
+        assert_eq!(pairs, vec![("FOO".to_string(), "a=b".to_string())]);
+    }
+
+    #[test]
+    fn parse_env_multiple_pairs() {
+        let pairs = parse_env_pairs(vec!["A=1".to_string(), "B=2".to_string()]).unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("A".to_string(), "1".to_string()));
+        assert_eq!(pairs[1], ("B".to_string(), "2".to_string()));
+    }
+
+    #[test]
+    fn parse_env_missing_equals_is_error() {
+        let err = parse_env_pairs(vec!["NOEQUALS".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("KEY=VALUE"),
+            "error should mention KEY=VALUE format: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_capsule_prefix_rejected() {
+        let err = parse_env_pairs(vec!["CAPSULE_FOO=x".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("reserved"),
+            "error should mention reserved: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_empty_vec_ok() {
+        let pairs = parse_env_pairs(vec![]).unwrap();
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn parse_env_empty_key_rejected() {
+        let err = parse_env_pairs(vec!["=value".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "error should mention empty key: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_newline_in_value_rejected() {
+        let err = parse_env_pairs(vec!["KEY=val\nINJECT=bad".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("newline"),
+            "error should mention newline: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_newline_in_key_rejected() {
+        let err = parse_env_pairs(vec!["KEY\nINJECT=val".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("newline"),
+            "error should mention newline: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_env_capsule_bypass_via_newline_rejected() {
+        // Regression: newline in value must not let CAPSULE_* slip through.
+        let err = parse_env_pairs(vec!["TASK=foo\nCAPSULE_MODEL=evil".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("newline"),
+            "newline bypass of CAPSULE_* guard must be caught: {err}"
+        );
     }
 }

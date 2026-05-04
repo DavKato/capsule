@@ -116,8 +116,9 @@ pub(crate) struct RunSession {
     env_file: Option<PathBuf>,
     before_each_path: Option<PathBuf>,
     compose_network: Option<String>,
-    // Held here so the temp file stays alive through execute().
+    // Held here so the temp files stay alive through execute().
     gh_token_tempfile: Option<tempfile::NamedTempFile>,
+    extra_env_tempfile: Option<tempfile::NamedTempFile>,
     credentials_guard: Option<CredentialsGuard>,
     active_container: Arc<Mutex<Option<String>>>,
     resume: Option<(String, PipelineState)>,
@@ -128,6 +129,7 @@ impl RunSession {
     /// detect infrastructure, register Ctrl-C handler.
     pub(crate) fn prepare(capsule_dir: PathBuf, mut overrides: CliOverrides) -> Result<Self> {
         let input = overrides.input.take();
+        let env_pairs: Vec<(String, String)> = std::mem::take(&mut overrides.env);
         let mut cfg = resolve(&capsule_dir, overrides)?;
 
         check_docker()?;
@@ -191,7 +193,9 @@ impl RunSession {
         let image = build_derived_image(&cfg.capsule_dir, &pwd, cfg.rebuild)?
             .unwrap_or_else(|| "capsule".to_string());
 
-        run_before_all(&cfg.capsule_dir)?;
+        run_before_all(&cfg.capsule_dir, &env_pairs)?;
+
+        let extra_env_tempfile = build_extra_env_tempfile(&env_pairs)?;
 
         let env_file_path = cfg.capsule_dir.join(".env");
         let env_file = if env_file_path.exists() {
@@ -236,6 +240,7 @@ impl RunSession {
             before_each_path,
             compose_network,
             gh_token_tempfile,
+            extra_env_tempfile,
             credentials_guard,
             active_container,
             resume: None,
@@ -340,6 +345,10 @@ impl RunSession {
             model: self.cfg.model.clone(),
             verbose: self.cfg.verbose,
             env_file: self.env_file.clone(),
+            extra_env_file: self
+                .extra_env_tempfile
+                .as_ref()
+                .map(|f| f.path().to_path_buf()),
             gh_token_env_file: self
                 .gh_token_tempfile
                 .as_ref()
@@ -500,6 +509,23 @@ impl DockerStageRunner {
         }
         result.verdict
     }
+}
+
+/// Write `--env` pairs to a `NamedTempFile` in dotenv format.
+/// Returns `None` when `pairs` is empty so no temp file is created.
+fn build_extra_env_tempfile(pairs: &[(String, String)]) -> Result<Option<tempfile::NamedTempFile>> {
+    if pairs.is_empty() {
+        return Ok(None);
+    }
+    let mut tmp = tempfile::Builder::new()
+        .prefix("capsule-env-")
+        .suffix(".env")
+        .tempfile()
+        .context("failed to create --env temp file")?;
+    for (k, v) in pairs {
+        writeln!(tmp, "{k}={v}").context("failed to write --env temp file")?;
+    }
+    Ok(Some(tmp))
 }
 
 fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -> Result<()> {
@@ -1097,5 +1123,32 @@ mod tests {
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
         let err = parse_resume_state(dir.path()).unwrap_err();
         assert!(err.to_string().contains("no session_id"), "err: {err}");
+    }
+
+    // ── build_extra_env_tempfile ──────────────────────────────────────────────
+
+    #[test]
+    fn extra_env_tempfile_empty_pairs_returns_none() {
+        let result = build_extra_env_tempfile(&[]).unwrap();
+        assert!(result.is_none(), "empty pairs must produce no tempfile");
+    }
+
+    #[test]
+    fn extra_env_tempfile_content_is_dotenv_format() {
+        let pairs = vec![
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "qux".to_string()),
+        ];
+        let tmp = build_extra_env_tempfile(&pairs).unwrap().unwrap();
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(content, "FOO=bar\nBAZ=qux\n");
+    }
+
+    #[test]
+    fn extra_env_tempfile_single_pair() {
+        let pairs = vec![("KEY".to_string(), "value".to_string())];
+        let tmp = build_extra_env_tempfile(&pairs).unwrap().unwrap();
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(content, "KEY=value\n");
     }
 }

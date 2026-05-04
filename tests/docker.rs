@@ -498,3 +498,79 @@ fn entrypoint_uses_resume_when_env_set() {
         .args(["rmi", "-f", "capsule-resume-test"])
         .output();
 }
+
+/// Verify that extra_env_file values are visible in every container invocation.
+/// Two simulated "stages" (consecutive run_iteration calls) must both see the
+/// env var injected via extra_env_file, confirming persistence across stages.
+#[test]
+#[requires_docker]
+#[serial(run_iteration)]
+fn extra_env_file_visible_across_stages() {
+    let workdir = tempfile::tempdir().expect("temp workdir");
+
+    // Build a minimal image whose entrypoint writes the env var value to a file.
+    let dockerfile =
+        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"echo \\\"$MY_RUN_PARAM\\\" >> \\\"$CAPSULE_WORKSPACE/stage_outputs.txt\\\"; exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-extra-env", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    {
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+    }
+    child.wait().expect("docker build should complete");
+
+    // Write the --env pairs to a temp env-file (as RunSession does).
+    let mut extra_env_tmp = tempfile::Builder::new()
+        .prefix("capsule-env-")
+        .suffix(".env")
+        .tempfile()
+        .unwrap();
+    writeln!(extra_env_tmp, "MY_RUN_PARAM=expected_value").unwrap();
+
+    let cfg = RunConfig {
+        image: "capsule-test-extra-env".to_string(),
+        prompt: "ignored".to_string(),
+        pwd: workdir.path().to_path_buf(),
+        extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
+        claude_dir: std::env::temp_dir(),
+        ..RunConfig::default()
+    };
+    let active = Arc::new(Mutex::new(None));
+
+    // Stage 1
+    let r1 = run_iteration(&cfg, 1, &active);
+    assert!(r1.is_ok(), "stage 1 should not error: {:?}", r1);
+
+    // Stage 2
+    let r2 = run_iteration(&cfg, 2, &active);
+    assert!(r2.is_ok(), "stage 2 should not error: {:?}", r2);
+
+    let outputs = std::fs::read_to_string(workdir.path().join("stage_outputs.txt"))
+        .expect("container should have written stage_outputs.txt");
+
+    let lines: Vec<&str> = outputs.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "both stages must have written output; got: {outputs:?}"
+    );
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(
+            *line,
+            "expected_value",
+            "stage {} must see MY_RUN_PARAM=expected_value; got: {line:?}",
+            i + 1
+        );
+    }
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-extra-env"])
+        .output();
+}

@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 #[test]
 fn before_all_absent_is_ok() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let result = run_before_all(dir.path());
+    let result = run_before_all(dir.path(), &[]);
     assert!(
         result.is_ok(),
         "absent before-all.sh must return Ok: {result:?}"
@@ -19,7 +19,7 @@ fn before_all_success_is_ok() {
     fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let result = run_before_all(dir.path());
+    let result = run_before_all(dir.path(), &[]);
     assert!(
         result.is_ok(),
         "before-all.sh exit 0 must return Ok: {result:?}"
@@ -33,7 +33,7 @@ fn before_all_failure_is_err() {
     fs::write(&script, "#!/bin/sh\nexit 42\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let result = run_before_all(dir.path());
+    let result = run_before_all(dir.path(), &[]);
     assert!(result.is_err(), "before-all.sh exit 42 must return Err");
     let msg = format!("{:?}", result.unwrap_err());
     assert!(
@@ -52,9 +52,29 @@ fn before_all_runs_on_host() {
     fs::write(&script, script_body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-    run_before_all(dir.path()).expect("should succeed");
+    run_before_all(dir.path(), &[]).expect("should succeed");
     assert!(
         sentinel.exists(),
         "before-all.sh should have created sentinel file"
+    );
+}
+
+#[test]
+fn before_all_env_pairs_injected() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let script = dir.path().join("before-all.sh");
+    let out_file = dir.path().join("env_value.txt");
+    let out_str = out_file.to_string_lossy();
+    let script_body = format!("#!/bin/sh\necho \"$MY_TEST_VAR\" > {out_str}\n");
+    fs::write(&script, script_body).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let pairs = vec![("MY_TEST_VAR".to_string(), "hello_env".to_string())];
+    run_before_all(dir.path(), &pairs).expect("should succeed");
+
+    let content = fs::read_to_string(&out_file).expect("output file should exist");
+    assert!(
+        content.trim() == "hello_env",
+        "env var should be injected into hook: got {content:?}"
     );
 }

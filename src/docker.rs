@@ -192,8 +192,11 @@ pub struct RunConfig {
     pub verbose: bool,
     /// Path to the `.env` file to pass via `--env-file` (None → omitted).
     pub env_file: Option<PathBuf>,
+    /// Path to a temp env-file written from `--env KEY=VALUE` pairs.
+    /// Emitted after `env_file` so user overrides take precedence over `.capsule/.env`.
+    pub extra_env_file: Option<PathBuf>,
     /// Path to a temp env-file containing `GH_TOKEN=<token>` (None → no token injected).
-    /// Passed as a second `--env-file` so the token never appears in the process arg list.
+    /// Passed as a final `--env-file` so the token never appears in the process arg list.
     pub gh_token_env_file: Option<PathBuf>,
     /// Git author/committer name passed as `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME`.
     pub git_author_name: String,
@@ -285,6 +288,10 @@ pub fn build_docker_args(
 
     if let Some(env_file) = &cfg.env_file {
         args.push(format!("--env-file={}", env_file.display()));
+    }
+
+    if let Some(extra_file) = &cfg.extra_env_file {
+        args.push(format!("--env-file={}", extra_file.display()));
     }
 
     if let Some(token_file) = &cfg.gh_token_env_file {
@@ -842,6 +849,53 @@ mod tests {
         assert!(
             joined.contains("gh-token.env"),
             "expected token file path in args: {joined}"
+        );
+    }
+
+    #[test]
+    fn extra_env_file_emitted_after_primary_env_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let primary = dir.path().join(".env");
+        let extra = dir.path().join("extra.env");
+        std::fs::write(&primary, "FOO=default\n").unwrap();
+        std::fs::write(&extra, "FOO=override\n").unwrap();
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = RunConfig {
+            pwd: dir.path().to_path_buf(),
+            env_file: Some(primary.clone()),
+            extra_env_file: Some(extra.clone()),
+            ..RunConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let primary_pos = args
+            .iter()
+            .position(|a| a.contains(".env") && !a.contains("extra"))
+            .expect("primary env-file not found");
+        let extra_pos = args
+            .iter()
+            .position(|a| a.contains("extra.env"))
+            .expect("extra env-file not found");
+        assert!(
+            primary_pos < extra_pos,
+            "primary .env must appear before extra.env (override ordering)"
+        );
+    }
+
+    #[test]
+    fn extra_env_file_absent_when_none() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = RunConfig {
+            pwd: dir.path().to_path_buf(),
+            ..RunConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        // Without extra_env_file only the primary --env-file (if any) may appear.
+        // Since env_file is also None here, no --env-file at all.
+        let joined = args.join(" ");
+        assert!(
+            !joined.contains("extra"),
+            "extra env-file must not appear when None: {joined}"
         );
     }
 

@@ -252,8 +252,9 @@ impl RunSession {
     /// Read `last-run.json` from `capsule_dir`, extract saved state, then prepare
     /// the session identically to `prepare`. `execute()` will resume the pipeline.
     ///
-    /// Uses default CLI overrides — model, verbose, rebuild etc. come from
-    /// `config.yml` only.  The `Resume` subcommand does not accept those flags.
+    /// `cli_env` pairs are merged on top of the persisted run environment (CLI
+    /// wins per key). Model, verbose, rebuild, and other flags come from
+    /// `config.yml` only — `capsule resume` does not accept those overrides.
     pub(crate) fn prepare_resume(
         capsule_dir: PathBuf,
         cli_env: Vec<(String, String)>,
@@ -1256,6 +1257,29 @@ mod tests {
         .unwrap();
         let (_, restored) = parse_resume_state(dir.path()).unwrap();
         assert_eq!(restored.env, vec![], "missing env field must default to []");
+    }
+
+    #[test]
+    fn merge_env_both_empty_returns_empty() {
+        assert_eq!(merge_env(&[], &[]), vec![]);
+    }
+
+    #[test]
+    fn merge_env_no_persisted_returns_cli_pairs() {
+        let cli = vec![
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+        ];
+        assert_eq!(merge_env(&[], &cli), cli);
+    }
+
+    #[test]
+    fn merge_env_no_cli_returns_persisted_unchanged() {
+        let persisted = vec![
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+        ];
+        assert_eq!(merge_env(&persisted, &[]), persisted);
     }
 
     #[test]

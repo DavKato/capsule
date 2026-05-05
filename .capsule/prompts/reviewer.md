@@ -11,7 +11,8 @@ If the note is missing, use `git log -1 --format=%H` to get the latest commit.
    Verify that the implementation satisfies the sub-issue requirements.
 5. If there are findings, fix them in place using /auto-apply skill,
    then commit with a message like `review: address findings from #<sub-issue>`.
-6. Call `submit_verdict` with status `pass`.
+6. Close the sub-issue.
+7. Call `submit_verdict` with status `pass`.
 
 If the implementation is fundamentally wrong (not fixable with minor edits),
 call `submit_verdict` with status `fail` and a note explaining why.

@@ -2,6 +2,7 @@ pub mod check;
 pub mod config;
 pub mod docker;
 pub mod env;
+pub mod explain;
 pub mod git;
 pub mod hooks;
 pub mod mcp_server;

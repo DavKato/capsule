@@ -7,6 +7,7 @@ use std::io;
 use std::path::PathBuf;
 
 mod run;
+use capsule::explain;
 use capsule::mcp_server;
 use capsule::templates;
 use run::RunSession;
@@ -125,6 +126,16 @@ enum Commands {
     Templates {
         #[command(subcommand)]
         command: TemplatesCommands,
+    },
+
+    /// Show agent-targeted documentation topics
+    Explain {
+        /// Topics to load (e.g. mental-model setup-files)
+        topics: Vec<String>,
+
+        /// Load all topics
+        #[arg(long)]
+        all: bool,
     },
 
     /// Run the MCP server over stdio (used inside the container by Claude Code)
@@ -302,6 +313,23 @@ fn main() -> Result<()> {
             print_report(&report);
             if report.iter().any(|i| i.severity == Severity::Error) {
                 std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::Explain { topics, all } => {
+            if all {
+                print!("{}", explain::load_all());
+            } else if topics.is_empty() {
+                print!("{}", explain::index());
+            } else {
+                let refs: Vec<&str> = topics.iter().map(String::as_str).collect();
+                match explain::load(&refs) {
+                    Ok(content) => print!("{content}"),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
             }
             Ok(())
         }

@@ -6,7 +6,7 @@ Load when authoring a stage prompt — to understand the verdict contract, note-
 
 Every stage must call `submit_verdict(status, notes)` exactly once before ending its turn. Capsule reads this call as the stage's output; everything else is invisible to the pipeline.
 
-```python
+```
 # Emit at the end of every execution path — including early exits
 submit_verdict(status="pass", notes="Implemented feature X. Committed as abc1234.")
 submit_verdict(status="fail", notes="Could not reproduce the build error after 3 attempts.")

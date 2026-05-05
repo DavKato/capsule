@@ -5,7 +5,7 @@ Load when making structural changes to `config.yml` — renaming stages, adding 
 ## Rename a stage
 
 1. Change `name:` in `config.yml`.
-2. Rename the prompt file: `prompts/<old>.md` → `prompts/<new>.md`.
+2. Rename the prompt file: `.capsule/prompts/<old>.md` → `.capsule/prompts/<new>.md`.
 3. Update `prompt:` in `config.yml` to the new path.
 4. Update any `on_fail:` or `on_pass:` references to the old name.
 5. Run `capsule check`.
@@ -54,8 +54,10 @@ Run `capsule check` after adding a hook.
 
 ## Change routing
 
-Edit `on_fail:` or `on_pass:` on the relevant stage. Valid targets: a stage name, `retry`, `exit`, or `next`.
+Edit `on_fail:` or `on_pass:` on the relevant stage.
 
+- `on_fail:` accepts: stage name, `retry`, `exit` (default: `exit`)
+- `on_pass:` accepts: stage name, `exit` (default: advance to next stage)
 ```yaml
 # Send reviewer failures back to implementer instead of exiting
 - name: reviewer

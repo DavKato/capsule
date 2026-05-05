@@ -89,4 +89,16 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn index_lists_all_canonical_topics_with_load_when_guidance() {
+        let idx = index();
+        for &(name, _) in TOPICS {
+            assert!(idx.contains(name), "index missing topic: {name}");
+        }
+        assert!(idx.contains("Load before") || idx.contains("Load when"),
+            "index must contain load-when guidance");
+        assert!(idx.contains("capsule explain --all"), "index must contain --all pointer");
+        assert!(idx.contains("Common task recipes"), "index must contain recipes section");
+    }
 }

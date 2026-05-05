@@ -304,9 +304,6 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
     for raw_entry in cfg.stages {
         match raw_entry {
             PipelineEntryRaw::Loop(l) => {
-                // Reject nested loops: loop body stages must not themselves be loops.
-                // (The raw type only allows StageConfigRaw inside loops, so nested loops
-                // are structurally impossible from the YAML layer. No extra check needed.)
                 entries.push(PipelineEntry::Loop(convert_loop(l.loop_block)));
             }
             PipelineEntryRaw::Stage(s) => {
@@ -486,8 +483,6 @@ pub fn raw_stage_names_from_yaml(yaml: &str) -> Vec<String> {
 fn collect_names_from_value(val: &serde_yaml::Value, names: &mut Vec<String>) {
     match val {
         serde_yaml::Value::Mapping(m) => {
-            // Collect "name" fields that are siblings to "prompt" or "on_pass"/"on_fail"
-            // (stage-like objects)
             let has_stage_keys = m.contains_key("name")
                 && (m.contains_key("prompt")
                     || m.contains_key("on_pass")
@@ -498,7 +493,6 @@ fn collect_names_from_value(val: &serde_yaml::Value, names: &mut Vec<String>) {
                     names.push(n.clone());
                 }
             } else if let Some(serde_yaml::Value::String(n)) = m.get("name") {
-                // Plain name field without other stage keys — still collect it
                 names.push(n.clone());
             }
             for (_, v) in m {

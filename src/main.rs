@@ -180,7 +180,6 @@ fn build_check_report(capsule_dir: &std::path::Path) -> CheckReport {
 }
 
 fn try_typo_hint(error_msg: &str, capsule_dir: &std::path::Path) -> Option<String> {
-    // Look for "unknown stage `X`" in the error and suggest the closest known stage name.
     let prefix = "unknown stage `";
     let start = error_msg.find(prefix)?;
     let after = &error_msg[start + prefix.len()..];

@@ -69,6 +69,13 @@ capsule resume                                # resume from last interrupted run
 capsule resume --env KEY=newvalue             # resume with env override (merges on top of persisted pairs)
 ```
 
+```sh
+capsule check                                 # validate .capsule/ directory structure
+capsule init ralph-loop                       # bootstrap .capsule/ from a template
+capsule templates list                        # browse available templates
+capsule explain mental-model                  # show agent-targeted documentation topics
+```
+
 ## Config directory
 
 Place a `.capsule/` directory in your repo to configure behaviour:

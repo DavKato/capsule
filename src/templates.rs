@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
 use include_dir::{include_dir, Dir};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
@@ -52,6 +54,14 @@ fn copy_dir(dir: &Dir, dest: &Path) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&target, file.contents())?;
+        #[cfg(unix)]
+        if relative.extension().is_none()
+            || relative
+                .extension()
+                .is_some_and(|ext| ext == "sh" || ext == "bash")
+        {
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+        }
     }
 
     for subdir in dir.dirs() {
@@ -109,6 +119,20 @@ mod tests {
             .contents();
         let written = std::fs::read(dir.path().join("config.yml")).unwrap();
         assert_eq!(embedded, written.as_slice());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_to_sets_executable_on_shell_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        copy_to("single-iter", dir.path()).unwrap();
+        for name in ["before-all.sh", "before-each.sh"] {
+            let path = dir.path().join(name);
+            if path.exists() {
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert!(mode & 0o111 != 0, "{name} should be executable");
+            }
+        }
     }
 
     #[test]

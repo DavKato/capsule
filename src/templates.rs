@@ -55,10 +55,9 @@ fn copy_dir(dir: &Dir, dest: &Path) -> Result<()> {
         }
         std::fs::write(&target, file.contents())?;
         #[cfg(unix)]
-        if relative.extension().is_none()
-            || relative
-                .extension()
-                .is_some_and(|ext| ext == "sh" || ext == "bash")
+        if relative
+            .extension()
+            .is_some_and(|ext| ext == "sh" || ext == "bash")
         {
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
         }
@@ -131,6 +130,20 @@ mod tests {
             if path.exists() {
                 let mode = std::fs::metadata(&path).unwrap().permissions().mode();
                 assert!(mode & 0o111 != 0, "{name} should be executable");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_to_does_not_set_executable_on_non_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        copy_to("single-iter", dir.path()).unwrap();
+        for name in ["Dockerfile", "config.yml", ".env"] {
+            let path = dir.path().join(name);
+            if path.exists() {
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert!(mode & 0o111 == 0, "{name} should not be executable");
             }
         }
     }

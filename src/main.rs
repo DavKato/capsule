@@ -265,18 +265,34 @@ fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
     Ok(pairs)
 }
 
+fn format_template_line(
+    entry: &templates::TemplateEntry,
+    name_width: usize,
+    numbered: Option<usize>,
+) -> String {
+    match numbered {
+        Some(i) => format!(
+            "  [{}] {:<width$}  {}",
+            i,
+            entry.name,
+            entry.description,
+            width = name_width
+        ),
+        None => format!(
+            "{:<width$}  {}",
+            entry.name,
+            entry.description,
+            width = name_width
+        ),
+    }
+}
+
 fn pick_template_interactive() -> Result<String> {
     let entries = templates::list();
     let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
     println!("Available templates:");
     for (i, entry) in entries.iter().enumerate() {
-        println!(
-            "  [{}] {:<width$}  {}",
-            i + 1,
-            entry.name,
-            entry.description,
-            width = name_width
-        );
+        println!("{}", format_template_line(entry, name_width, Some(i + 1)));
     }
     print!("Select template (1-{}): ", entries.len());
     io::Write::flush(&mut io::stdout())?;
@@ -336,12 +352,7 @@ fn main() -> Result<()> {
             let entries = templates::list();
             let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
             for entry in &entries {
-                println!(
-                    "{:<width$}  {}",
-                    entry.name,
-                    entry.description,
-                    width = name_width
-                );
+                println!("{}", format_template_line(entry, name_width, None));
             }
             println!();
             println!("For guidance on choosing a shape: capsule explain pipeline-shapes");

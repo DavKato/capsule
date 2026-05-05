@@ -71,7 +71,7 @@ capsule resume --env KEY=newvalue             # resume with env override (merges
 
 ```sh
 capsule check                                 # validate .capsule/ directory structure
-capsule init ralph-loop                       # bootstrap .capsule/ from a template
+capsule init --template ralph-loop              # bootstrap .capsule/ from a template
 capsule templates list                        # browse available templates
 capsule explain mental-model                  # show agent-targeted documentation topics
 ```

@@ -1,12 +1,17 @@
 use anyhow::Result;
+use capsule::check::{CheckIssue, CheckReport, Severity};
 use capsule::config::{CliOverrides, GitIdentity, GithubScope};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use std::io;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 mod run;
+use capsule::explain;
+use capsule::init;
 use capsule::mcp_server;
+use capsule::templates;
 use run::RunSession;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -112,9 +117,124 @@ enum Commands {
     /// Download and install the latest capsule release
     Update,
 
+    /// Validate the .capsule/ directory structure
+    Check {
+        /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
+        #[arg(long, default_value = ".capsule")]
+        capsule_dir: PathBuf,
+    },
+
+    /// Browse and copy pre-built .capsule/ skeletons
+    Templates {
+        #[command(subcommand)]
+        command: TemplatesCommands,
+    },
+
+    /// Show agent-targeted documentation topics
+    Explain {
+        /// Topics to load (e.g. mental-model setup-files)
+        topics: Vec<String>,
+
+        /// Load all topics
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Bootstrap a new .capsule/ from a template
+    Init {
+        /// Template name to copy (use `capsule templates list` to see options)
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Overwrite an existing .capsule/ directory
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Run the MCP server over stdio (used inside the container by Claude Code)
     #[command(hide = true)]
     McpServe,
+}
+
+#[derive(Debug, Subcommand)]
+enum TemplatesCommands {
+    /// List available templates with descriptions
+    List,
+}
+
+fn build_check_report(capsule_dir: &std::path::Path) -> CheckReport {
+    match capsule::config::load_pipeline_for_check(capsule_dir) {
+        Ok(pipeline) => capsule::check::check(&pipeline, capsule_dir),
+        Err(e) => {
+            // Use the full error chain so callers see all context (e.g., "unknown stage `X`").
+            let msg = format!("{e:#}");
+            let fix_hint = try_typo_hint(&msg, capsule_dir);
+            vec![CheckIssue {
+                severity: Severity::Error,
+                location: "config.yml".to_string(),
+                message: msg,
+                fix_hint,
+            }]
+        }
+    }
+}
+
+fn try_typo_hint(error_msg: &str, capsule_dir: &std::path::Path) -> Option<String> {
+    let prefix = "unknown stage `";
+    let start = error_msg.find(prefix)?;
+    let after = &error_msg[start + prefix.len()..];
+    let end = after.find('`')?;
+    let unknown = &after[..end];
+
+    let config_path = capsule_dir.join("config.yml");
+    let yaml = std::fs::read_to_string(config_path).ok()?;
+    let known = capsule::config::raw_stage_names_from_yaml(&yaml);
+
+    let closest = known
+        .iter()
+        .map(|n| (n, levenshtein(unknown, n)))
+        .filter(|(_, d)| *d <= 3)
+        .min_by_key(|(_, d)| *d);
+
+    closest.map(|(name, _)| format!("did you mean `{name}`?"))
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for (j, cell) in dp[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = if a[i - 1] == b[j - 1] {
+                dp[i - 1][j - 1]
+            } else {
+                1 + dp[i - 1][j - 1].min(dp[i - 1][j]).min(dp[i][j - 1])
+            };
+        }
+    }
+    dp[m][n]
+}
+
+fn print_report(report: &CheckReport) {
+    for issue in report {
+        let tag = match issue.severity {
+            Severity::Error => "[ERROR]",
+            Severity::Hint => "[HINT]",
+        };
+        println!("{tag} {}: {}", issue.location, issue.message);
+        if let Some(ref hint) = issue.fix_hint {
+            println!("  hint: {hint}");
+        }
+    }
 }
 
 fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
@@ -143,6 +263,49 @@ fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
         pairs.push((k.to_string(), v.to_string()));
     }
     Ok(pairs)
+}
+
+fn format_template_line(
+    entry: &templates::TemplateEntry,
+    name_width: usize,
+    numbered: Option<usize>,
+) -> String {
+    match numbered {
+        Some(i) => format!(
+            "  [{}] {:<width$}  {}",
+            i,
+            entry.name,
+            entry.description,
+            width = name_width
+        ),
+        None => format!(
+            "{:<width$}  {}",
+            entry.name,
+            entry.description,
+            width = name_width
+        ),
+    }
+}
+
+fn pick_template_interactive() -> Result<String> {
+    let entries = templates::list();
+    let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
+    println!("Available templates:");
+    for (i, entry) in entries.iter().enumerate() {
+        println!("{}", format_template_line(entry, name_width, Some(i + 1)));
+    }
+    print!("Select template (1-{}): ", entries.len());
+    io::Write::flush(&mut io::stdout())?;
+    let mut line = String::new();
+    io::BufRead::read_line(&mut io::stdin().lock(), &mut line)?;
+    let n: usize = line
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid selection"))?;
+    if n < 1 || n > entries.len() {
+        anyhow::bail!("selection out of range");
+    }
+    Ok(entries[n - 1].name.clone())
 }
 
 fn main() -> Result<()> {
@@ -181,6 +344,61 @@ fn main() -> Result<()> {
             if !status.success() {
                 std::process::exit(status.code().unwrap_or(1));
             }
+            Ok(())
+        }
+        Commands::Templates {
+            command: TemplatesCommands::List,
+        } => {
+            let entries = templates::list();
+            let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
+            for entry in &entries {
+                println!("{}", format_template_line(entry, name_width, None));
+            }
+            println!();
+            println!("For guidance on choosing a shape: capsule explain pipeline-shapes");
+            Ok(())
+        }
+        Commands::Check { capsule_dir } => {
+            let report = build_check_report(&capsule_dir);
+            print_report(&report);
+            if report.iter().any(|i| i.severity == Severity::Error) {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::Explain { topics, all } => {
+            if all {
+                print!("{}", explain::load_all());
+            } else if topics.is_empty() {
+                print!("{}", explain::index());
+            } else {
+                let refs: Vec<&str> = topics.iter().map(String::as_str).collect();
+                match explain::load(&refs) {
+                    Ok(content) => print!("{content}"),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Commands::Init { template, force } => {
+            let capsule_dir = std::path::Path::new(".capsule");
+            let template_name = match template {
+                Some(t) => t,
+                None => {
+                    if !io::stdin().is_terminal() {
+                        eprintln!("capsule init: interactive mode requires a TTY.");
+                        eprintln!("For non-interactive use (e.g., from scripts or AI agents):");
+                        eprintln!("  capsule templates list");
+                        eprintln!("  capsule init --template <name>");
+                        std::process::exit(1);
+                    }
+                    pick_template_interactive()?
+                }
+            };
+            init::init(&template_name, capsule_dir, force)?;
             Ok(())
         }
         Commands::McpServe => {

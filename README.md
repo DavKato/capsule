@@ -42,6 +42,12 @@ capsule completion fish > ~/.config/fish/completions/capsule.fish              #
 
 </details>
 
+### Claude Code skill
+
+```sh
+npx skills@latest add davkat/capsule/capsule
+```
+
 ## Usage
 
 ```sh
@@ -63,6 +69,13 @@ capsule resume                                # resume from last interrupted run
 capsule resume --env KEY=newvalue             # resume with env override (merges on top of persisted pairs)
 ```
 
+```sh
+capsule check                                 # validate .capsule/ directory structure
+capsule init ralph-loop                       # bootstrap .capsule/ from a template
+capsule templates list                        # browse available templates
+capsule explain mental-model                  # show agent-targeted documentation topics
+```
+
 ## Config directory
 
 Place a `.capsule/` directory in your repo to configure behaviour:
@@ -76,13 +89,13 @@ Place a `.capsule/` directory in your repo to configure behaviour:
 | `before-all.sh` | Runs once on the host before any container starts |
 | `before-each.sh` | Runs inside the container before Claude starts each iteration |
 
-See [`examples/single-iter/.capsule/`](examples/single-iter/.capsule/) for a flat-form setup and [`examples/ralph-loop/.capsule/`](examples/ralph-loop/.capsule/) for a multi-stage pipeline.
+See [`templates/single-iter/.capsule/`](templates/single-iter/.capsule/) for a flat-form setup and [`templates/ralph-loop/.capsule/`](templates/ralph-loop/.capsule/) for a multi-stage pipeline.
 
 ## Prompt
 
 `capsule` is prompt-agnostic — it injects no context on its own. Place your prompt at `.capsule/prompt.md` (or pass `--prompt path/to/other.md`).
 
-Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See [`examples/single-iter/.capsule/before-each.sh`](examples/single-iter/.capsule/before-each.sh) for a working example.
+Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See [`templates/single-iter/.capsule/before-each.sh`](templates/single-iter/.capsule/before-each.sh) for a working example.
 
 ## Config file
 
@@ -96,7 +109,7 @@ git_identity: user  # or: capsule
 
 Precedence: **CLI flag → config.yml → default**.
 
-See [`examples/ralph-loop/.capsule/config.yml`](examples/ralph-loop/.capsule/config.yml) for a multi-stage example.
+See [`templates/ralph-loop/.capsule/config.yml`](templates/ralph-loop/.capsule/config.yml) for a multi-stage example.
 
 ## Hooks
 

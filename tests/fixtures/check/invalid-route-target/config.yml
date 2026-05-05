@@ -1,0 +1,11 @@
+stages:
+  - loop:
+      max_iteration: 10
+      stages:
+        - name: implementer
+          prompt: prompts/implementer.md
+          on_fail: retry
+
+        - name: reviewer
+          prompt: prompts/reviewer.md
+          on_fail: implementors

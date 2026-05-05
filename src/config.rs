@@ -304,9 +304,6 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
     for raw_entry in cfg.stages {
         match raw_entry {
             PipelineEntryRaw::Loop(l) => {
-                // Reject nested loops: loop body stages must not themselves be loops.
-                // (The raw type only allows StageConfigRaw inside loops, so nested loops
-                // are structurally impossible from the YAML layer. No extra check needed.)
                 entries.push(PipelineEntry::Loop(convert_loop(l.loop_block)));
             }
             PipelineEntryRaw::Stage(s) => {
@@ -449,4 +446,55 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
         pipeline,
         min_token_lifetime_minutes,
     })
+}
+
+/// Parse a pipeline from the given capsule dir for use in `capsule check`.
+/// For flat-form configs, `iterations` is not required (uses 1 as a placeholder).
+pub fn load_pipeline_for_check(capsule_dir: &Path) -> Result<PipelineConfig> {
+    let config_path = capsule_dir.join("config.yml");
+    if !config_path.exists() {
+        anyhow::bail!("config.yml not found in {}", capsule_dir.display());
+    }
+    let content = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("reading {}", config_path.display()))?;
+    let raw = parse_config_file(&content)
+        .with_context(|| format!("parsing {}", config_path.display()))?;
+    match raw {
+        RawConfig::MultiStage(m) => build_pipeline_from_multi_stage(m)
+            .with_context(|| format!("validating {}", config_path.display())),
+        RawConfig::Flat(f) => {
+            let iterations = f.iterations.unwrap_or(1);
+            Ok(desugar_flat_form(iterations, f.prompt.as_deref()))
+        }
+    }
+}
+
+/// Extract all stage names from a raw YAML string without strict validation.
+/// Used to compute typo suggestions when route-target validation fails.
+pub fn raw_stage_names_from_yaml(yaml: &str) -> Vec<String> {
+    let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    collect_names_from_value(&val, &mut names);
+    names
+}
+
+fn collect_names_from_value(val: &serde_yaml::Value, names: &mut Vec<String>) {
+    match val {
+        serde_yaml::Value::Mapping(m) => {
+            if let Some(serde_yaml::Value::String(n)) = m.get("name") {
+                names.push(n.clone());
+            }
+            for (_, v) in m {
+                collect_names_from_value(v, names);
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq {
+                collect_names_from_value(item, names);
+            }
+        }
+        _ => {}
+    }
 }

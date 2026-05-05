@@ -1,0 +1,16 @@
+stages:
+  - loop:
+      max_iteration: 10
+      stages:
+        - name: implementer
+          prompt: prompts/implementer.md
+          on_fail: retry
+
+        - name: reviewer
+          prompt: prompts/reviewer.md
+          on_fail: implementer
+
+  - name: finalizer
+    prompt: prompts/finalizer.md
+
+model: claude-sonnet-4-6

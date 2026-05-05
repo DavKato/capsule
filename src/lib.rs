@@ -1,13 +1,17 @@
+pub mod check;
 pub mod config;
 pub mod docker;
 pub mod env;
+pub mod explain;
 pub mod git;
 pub mod hooks;
+pub mod init;
 pub mod mcp_server;
 pub mod note_block;
 pub mod pipeline;
 pub mod preflight;
 pub mod prompt;
 pub mod stream_parser;
+pub mod templates;
 pub mod update_check;
 pub mod verdict;

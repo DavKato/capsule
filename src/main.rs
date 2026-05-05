@@ -1,4 +1,5 @@
 use anyhow::Result;
+use capsule::check::{CheckIssue, CheckReport, Severity};
 use capsule::config::{CliOverrides, GitIdentity, GithubScope};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
@@ -113,6 +114,13 @@ enum Commands {
     /// Download and install the latest capsule release
     Update,
 
+    /// Validate the .capsule/ directory structure
+    Check {
+        /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
+        #[arg(long, default_value = ".capsule")]
+        capsule_dir: PathBuf,
+    },
+
     /// Browse and copy pre-built .capsule/ skeletons
     Templates {
         #[command(subcommand)]
@@ -128,6 +136,82 @@ enum Commands {
 enum TemplatesCommands {
     /// List available templates with descriptions
     List,
+}
+
+fn build_check_report(capsule_dir: &std::path::Path) -> CheckReport {
+    match capsule::config::load_pipeline_for_check(capsule_dir) {
+        Ok(pipeline) => capsule::check::check(&pipeline, capsule_dir),
+        Err(e) => {
+            // Use the full error chain so callers see all context (e.g., "unknown stage `X`").
+            let msg = format!("{e:#}");
+            let fix_hint = try_typo_hint(&msg, capsule_dir);
+            vec![CheckIssue {
+                severity: Severity::Error,
+                location: "config.yml".to_string(),
+                message: msg,
+                fix_hint,
+            }]
+        }
+    }
+}
+
+fn try_typo_hint(error_msg: &str, capsule_dir: &std::path::Path) -> Option<String> {
+    // Look for "unknown stage `X`" in the error and suggest the closest known stage name.
+    let prefix = "unknown stage `";
+    let start = error_msg.find(prefix)?;
+    let after = &error_msg[start + prefix.len()..];
+    let end = after.find('`')?;
+    let unknown = &after[..end];
+
+    let config_path = capsule_dir.join("config.yml");
+    let yaml = std::fs::read_to_string(config_path).ok()?;
+    let known = capsule::config::raw_stage_names_from_yaml(&yaml);
+
+    let closest = known
+        .iter()
+        .map(|n| (n, levenshtein(unknown, n)))
+        .filter(|(_, d)| *d <= 3)
+        .min_by_key(|(_, d)| *d);
+
+    closest.map(|(name, _)| format!("did you mean `{name}`?"))
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..=m {
+        dp[i][0] = i;
+    }
+    for (j, cell) in dp[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = if a[i - 1] == b[j - 1] {
+                dp[i - 1][j - 1]
+            } else {
+                1 + dp[i - 1][j - 1].min(dp[i - 1][j]).min(dp[i][j - 1])
+            };
+        }
+    }
+    dp[m][n]
+}
+
+fn print_report(report: &CheckReport) {
+    for issue in report {
+        let tag = match issue.severity {
+            Severity::Error => "[ERROR]",
+            Severity::Hint => "[HINT]",
+        };
+        println!("{tag} {}: {}", issue.location, issue.message);
+        if let Some(ref hint) = issue.fix_hint {
+            println!("  hint: {hint}");
+        }
+    }
 }
 
 fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
@@ -211,6 +295,14 @@ fn main() -> Result<()> {
             }
             println!();
             println!("For guidance on choosing a shape: capsule explain pipeline-shapes");
+            Ok(())
+        }
+        Commands::Check { capsule_dir } => {
+            let report = build_check_report(&capsule_dir);
+            print_report(&report);
+            if report.iter().any(|i| i.severity == Severity::Error) {
+                std::process::exit(1);
+            }
             Ok(())
         }
         Commands::McpServe => {

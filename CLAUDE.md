@@ -23,7 +23,7 @@ Unit tests (no subprocesses) live inline in `src/` via `#[cfg(test)]`; integrati
 
 ## Feedback loops
 
-Before committing, always run:
+Before committing after the code change, always run:
 
 ```sh
 cargo fmt

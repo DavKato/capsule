@@ -483,16 +483,7 @@ pub fn raw_stage_names_from_yaml(yaml: &str) -> Vec<String> {
 fn collect_names_from_value(val: &serde_yaml::Value, names: &mut Vec<String>) {
     match val {
         serde_yaml::Value::Mapping(m) => {
-            let has_stage_keys = m.contains_key("name")
-                && (m.contains_key("prompt")
-                    || m.contains_key("on_pass")
-                    || m.contains_key("on_fail")
-                    || m.contains_key("max_retries"));
-            if has_stage_keys {
-                if let Some(serde_yaml::Value::String(n)) = m.get("name") {
-                    names.push(n.clone());
-                }
-            } else if let Some(serde_yaml::Value::String(n)) = m.get("name") {
+            if let Some(serde_yaml::Value::String(n)) = m.get("name") {
                 names.push(n.clone());
             }
             for (_, v) in m {

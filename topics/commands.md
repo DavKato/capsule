@@ -20,11 +20,15 @@ capsule run --verbose                          # show unfiltered container outpu
 |------|---------|---------|
 | `--iterations` | config | Flat-form iteration cap |
 | `--input` | — | Pipeline input; first stage, first invocation only |
-| `--env KEY=VALUE` | — | Run environment; injected into all containers and hook scripts |
+| `--env KEY=VALUE` | — | Run environment; injected into all containers and hooks. Repeatable |
 | `--model` | config | Claude model override |
+| `--prompt` | `<capsule-dir>/prompt.md` | Path to the prompt file |
 | `--rebuild` | false | Bypass Docker layer cache |
+| `--verbose` | false | Print verbose diagnostic output |
 | `--capsule-dir` | `.capsule` | Config directory path |
+| `--git-identity` | `user` | Git commit identity: `user` (host config) or `capsule` (generic) |
 | `--github local\|global` | — | Inject `GH_TOKEN` into containers |
+| `--min-token-lifetime-minutes` | — | Prompt before starting if access token expires within threshold |
 
 ## capsule resume
 

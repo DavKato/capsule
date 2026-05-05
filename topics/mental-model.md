@@ -22,7 +22,7 @@ If a stage exits without calling `submit_verdict`, capsule treats it as an impli
 
 ## Routing
 
-- **`on_pass`**: `next` (default, fall-through), a stage name, or `exit`.
+- **`on_pass`**: a stage name, `exit`, or omit (default: fall-through to next entry).
 - **`on_fail`**: `exit` (default), `retry` (re-run same stage), or a stage name.
 - **Fall-through**: when `on_pass` is unset, advance to the next entry in the surrounding `stages:` list. At end of a loop body → next iteration. At end of pipeline → pipeline success.
 - **Loopback**: routing backward to a prior stage (e.g., `on_fail: implementer` on a reviewer). The target re-runs in a fresh context with the previous verdict injected.

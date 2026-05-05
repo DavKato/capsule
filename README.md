@@ -18,12 +18,6 @@ Each iteration runs Claude Code in an isolated container. You control what Claud
 curl -fsSL https://raw.githubusercontent.com/DavKato/capsule/main/install.sh | bash
 ```
 
-### Claude Code skill
-
-```sh
-npx skills@latest add davkat/capsule/capsule
-```
-
 Installs the binary to `~/.local/bin` and sets up shell completions (bash, zsh, fish). No Rust toolchain required.
 
 <details>
@@ -47,6 +41,12 @@ capsule completion fish > ~/.config/fish/completions/capsule.fish              #
 ```
 
 </details>
+
+### Claude Code skill
+
+```sh
+npx skills@latest add davkat/capsule/capsule
+```
 
 ## Usage
 

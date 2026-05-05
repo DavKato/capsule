@@ -91,14 +91,69 @@ mod tests {
     }
 
     #[test]
+    fn setup_files_h1_matches_filename() {
+        let content = load(&["setup-files"]).unwrap();
+        assert!(
+            content.trim_start().starts_with("# setup-files"),
+            "setup-files topic must start with '# setup-files'"
+        );
+    }
+
+    #[test]
+    fn setup_files_has_load_when_opener() {
+        let content = load(&["setup-files"]).unwrap();
+        let lower = content.to_lowercase();
+        assert!(
+            lower.contains("load when") || lower.contains("load before"),
+            "setup-files topic must contain 'load when' or 'load before' guidance"
+        );
+    }
+
+    #[test]
+    fn setup_files_covers_all_files() {
+        let content = load(&["setup-files"]).unwrap();
+        for file in &[
+            "config.yml",
+            "Dockerfile",
+            "before-all.sh",
+            "before-each.sh",
+            ".env",
+            "prompt",
+        ] {
+            assert!(
+                content.contains(file),
+                "setup-files topic must mention: {file}"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_files_within_line_budget() {
+        let content = load(&["setup-files"]).unwrap();
+        let lines = content.lines().count();
+        assert!(
+            lines <= 80,
+            "setup-files topic exceeds 80-line budget: {lines} lines"
+        );
+    }
+
+    #[test]
     fn index_lists_all_canonical_topics_with_load_when_guidance() {
         let idx = index();
         for &(name, _) in TOPICS {
             assert!(idx.contains(name), "index missing topic: {name}");
         }
-        assert!(idx.contains("Load before") || idx.contains("Load when"),
-            "index must contain load-when guidance");
-        assert!(idx.contains("capsule explain --all"), "index must contain --all pointer");
-        assert!(idx.contains("Common task recipes"), "index must contain recipes section");
+        assert!(
+            idx.contains("Load before") || idx.contains("Load when"),
+            "index must contain load-when guidance"
+        );
+        assert!(
+            idx.contains("capsule explain --all"),
+            "index must contain --all pointer"
+        );
+        assert!(
+            idx.contains("Common task recipes"),
+            "index must contain recipes section"
+        );
     }
 }

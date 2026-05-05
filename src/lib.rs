@@ -5,6 +5,7 @@ pub mod env;
 pub mod explain;
 pub mod git;
 pub mod hooks;
+pub mod init;
 pub mod mcp_server;
 pub mod note_block;
 pub mod pipeline;

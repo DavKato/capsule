@@ -4,10 +4,12 @@ use capsule::config::{CliOverrides, GitIdentity, GithubScope};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use std::io;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 mod run;
 use capsule::explain;
+use capsule::init;
 use capsule::mcp_server;
 use capsule::templates;
 use run::RunSession;
@@ -138,6 +140,17 @@ enum Commands {
         all: bool,
     },
 
+    /// Bootstrap a new .capsule/ from a template
+    Init {
+        /// Template name to copy (use `capsule templates list` to see options)
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Overwrite an existing .capsule/ directory
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Run the MCP server over stdio (used inside the container by Claude Code)
     #[command(hide = true)]
     McpServe,
@@ -253,6 +266,33 @@ fn parse_env_pairs(raw: Vec<String>) -> Result<Vec<(String, String)>> {
     Ok(pairs)
 }
 
+fn pick_template_interactive() -> Result<String> {
+    let entries = templates::list();
+    let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
+    println!("Available templates:");
+    for (i, entry) in entries.iter().enumerate() {
+        println!(
+            "  [{}] {:<width$}  {}",
+            i + 1,
+            entry.name,
+            entry.description,
+            width = name_width
+        );
+    }
+    print!("Select template (1-{}): ", entries.len());
+    io::Write::flush(&mut io::stdout())?;
+    let mut line = String::new();
+    io::BufRead::read_line(&mut io::stdin().lock(), &mut line)?;
+    let n: usize = line
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid selection"))?;
+    if n < 1 || n > entries.len() {
+        anyhow::bail!("selection out of range");
+    }
+    Ok(entries[n - 1].name.clone())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -331,6 +371,24 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            Ok(())
+        }
+        Commands::Init { template, force } => {
+            let capsule_dir = std::path::Path::new(".capsule");
+            let template_name = match template {
+                Some(t) => t,
+                None => {
+                    if !io::stdin().is_terminal() {
+                        eprintln!("capsule init: interactive mode requires a TTY.");
+                        eprintln!("For non-interactive use (e.g., from scripts or AI agents):");
+                        eprintln!("  capsule templates list");
+                        eprintln!("  capsule init --template <name>");
+                        std::process::exit(1);
+                    }
+                    pick_template_interactive()?
+                }
+            };
+            init::init(&template_name, capsule_dir, force)?;
             Ok(())
         }
         Commands::McpServe => {

@@ -11,12 +11,13 @@ your most recent commit, address the reviewer's feedback, and continue from
 step 5.
 
 1. Invoke /list-sub-issues skill to get sub-issues of $PARENT.
-2. Pick an open sub-issue that has the `ready-for-agent` label and no
-   unresolved blockers (issues linked with "blocked by" that are still open).
-   If there is no applicable sub-issue, call `submit_verdict` with status
-   `done` and end the session.
-3. Read the parent issue and the chosen sub-issue to understand the full context.
-4. Check out the working branch specified in the sub-issue under "Working branch".
+2. Pick an open sub-issue that has the `ready-for-agent` label and
+   `dependencies.blocked_by == 0`. If there is no applicable sub-issue,
+   call `submit_verdict` with status `done` and end the session.
+3. Read the parent issue including comments (`gh issue view $PARENT --comments`)
+   and the chosen sub-issue including comments to understand the full context.
+4. Check out the working branch named in the parent issue's comments.
+   Create it if it doesn't exist yet.
 5. Implement the sub-issue using /tdd skill.
 6. Commit with a clear message referencing the sub-issue number
    (e.g. `fix: handle empty input (#42)`).

@@ -9,7 +9,8 @@ use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
 use capsule::pipeline::{
-    CapHitKind, PipelineExecutor, PipelineState, RunSummary, StageRunner, TerminalReason,
+    build_summary_artifact, PipelineExecutor, PipelineState, RunSummary, StageRunner,
+    TerminalReason,
 };
 use capsule::preflight::{check_docker, env_gitignore_warning};
 use capsule::prompt::{prepend_preamble, resolve_prompt};
@@ -598,7 +599,7 @@ fn write_last_run(
     pipeline_state: Option<&PipelineState>,
 ) -> Result<()> {
     let dirty = is_workspace_dirty();
-    let json = build_last_run_json(summary, dirty, pipeline_state);
+    let json = build_summary_artifact(summary, dirty, pipeline_state);
     let path = capsule_dir.join("last-run.json");
     std::fs::write(&path, serde_json::to_string_pretty(&json)?)
         .with_context(|| format!("writing summary artifact {}", path.display()))?;
@@ -611,37 +612,6 @@ fn is_workspace_dirty() -> bool {
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
-}
-
-fn pipeline_state_to_json(state: &PipelineState) -> serde_json::Value {
-    let fail_counts: serde_json::Map<String, serde_json::Value> = state
-        .fail_counts
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-        .collect();
-    let loop_iterations: serde_json::Map<String, serde_json::Value> = state
-        .loop_iterations
-        .iter()
-        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
-        .collect();
-    let last_verdict = state
-        .last_verdict
-        .as_ref()
-        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
-    let env: serde_json::Map<String, serde_json::Value> = state
-        .env
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-        .collect();
-    serde_json::json!({
-        "current_idx": state.current_idx,
-        "global_counter": state.global_counter,
-        "fail_counts": fail_counts,
-        "last_stage": state.last_stage,
-        "last_verdict": last_verdict,
-        "loop_iterations": loop_iterations,
-        "env": env,
-    })
 }
 
 fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
@@ -664,118 +634,9 @@ fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
         );
     }
 
-    let current_idx = state_json["current_idx"]
-        .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("pipeline_state.current_idx missing"))?
-        as usize;
-    let global_counter = state_json["global_counter"]
-        .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("pipeline_state.global_counter missing"))?
-        as u32;
-    let fail_counts: std::collections::HashMap<String, u32> = state_json["fail_counts"]
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
-                .collect()
-        })
-        .unwrap_or_default();
-    let last_stage = state_json["last_stage"].as_str().map(str::to_owned);
-    let last_verdict: Option<capsule::verdict::Verdict> = if state_json["last_verdict"].is_null() {
-        None
-    } else {
-        Some(
-            serde_json::from_value(state_json["last_verdict"].clone())
-                .context("failed to deserialize pipeline_state.last_verdict")?,
-        )
-    };
-    let loop_iterations: std::collections::HashMap<usize, u32> = state_json["loop_iterations"]
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| {
-                    k.parse::<usize>()
-                        .ok()
-                        .map(|ki| (ki, v.as_u64().unwrap_or(0) as u32))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let env: Vec<(String, String)> = state_json["env"]
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Ok((
-        session_id,
-        PipelineState {
-            current_idx,
-            global_counter,
-            fail_counts,
-            last_stage,
-            last_verdict,
-            loop_iterations,
-            env,
-        },
-    ))
-}
-
-fn build_last_run_json(
-    summary: &RunSummary,
-    workspace_dirty: bool,
-    pipeline_state: Option<&PipelineState>,
-) -> serde_json::Value {
-    let terminal_reason = match summary.terminal_reason {
-        TerminalReason::Done => "done",
-        TerminalReason::Exit => "exit",
-        TerminalReason::FailExit => "fail-exit",
-        TerminalReason::CapHit => "cap-hit",
-        TerminalReason::Ok => "ok",
-    };
-
-    let cap_hit_counter = match &summary.cap_hit {
-        None => serde_json::Value::Null,
-        Some(CapHitKind::LoopMaxIteration(idx)) => serde_json::json!({
-            "type": "max_iteration",
-            "loop_idx": idx,
-        }),
-        Some(CapHitKind::MaxPipelineIterations) => serde_json::json!({
-            "type": "max_pipeline_iterations",
-        }),
-    };
-
-    let last_verdict = summary
-        .last_verdict
-        .as_ref()
-        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
-
-    let loops: serde_json::Map<String, serde_json::Value> = summary
-        .iteration_counters
-        .loops
-        .iter()
-        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
-        .collect();
-
-    let ps = pipeline_state.map(pipeline_state_to_json);
-    serde_json::json!({
-        "terminal_reason": terminal_reason,
-        "cap_hit_counter": cap_hit_counter,
-        "last_stage": summary.last_stage,
-        "last_verdict": last_verdict,
-        "session_id": summary.session_id,
-        "iteration_counters": {
-            "global": summary.iteration_counters.global,
-            "loops": loops,
-        },
-        "pipeline_state": ps,
-        "timestamp": iso8601_now(),
-        "workspace_dirty": workspace_dirty,
-    })
+    let state = PipelineState::from_json(state_json)
+        .context("failed to deserialize pipeline_state from last-run.json")?;
+    Ok((session_id, state))
 }
 
 fn token_lifetime_warning(
@@ -803,32 +664,10 @@ fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> Option<Stri
     }
 }
 
-fn iso8601_now() -> String {
-    let secs = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    // Howard Hinnant's algorithm: days-from-civil
-    let z = secs as i64 / 86400 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    let h = (secs / 3600) % 24;
-    let min = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}Z")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capsule::pipeline::{IterationCounters, RunSummary};
+    use capsule::pipeline::{build_summary_artifact, CapHitKind, IterationCounters, RunSummary};
     use capsule::verdict::VerdictStatus;
     use std::collections::HashMap;
 
@@ -905,7 +744,7 @@ mod tests {
     #[test]
     fn json_done_terminal_reason() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "done");
         assert!(v["cap_hit_counter"].is_null());
         assert!(!v["workspace_dirty"].as_bool().unwrap());
@@ -914,14 +753,14 @@ mod tests {
     #[test]
     fn json_fail_exit_terminal_reason() {
         let s = minimal_summary(TerminalReason::FailExit);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "fail-exit");
     }
 
     #[test]
     fn json_ok_terminal_reason() {
         let s = minimal_summary(TerminalReason::Ok);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "ok");
     }
 
@@ -929,7 +768,7 @@ mod tests {
     fn json_cap_hit_loop_max_iteration() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.cap_hit = Some(CapHitKind::LoopMaxIteration(0));
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "cap-hit");
         assert_eq!(v["cap_hit_counter"]["type"], "max_iteration");
         assert_eq!(v["cap_hit_counter"]["loop_idx"], 0);
@@ -939,7 +778,7 @@ mod tests {
     fn json_cap_hit_max_pipeline_iterations() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.cap_hit = Some(CapHitKind::MaxPipelineIterations);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["cap_hit_counter"]["type"], "max_pipeline_iterations");
         assert!(v["cap_hit_counter"]["loop_idx"].is_null());
     }
@@ -947,7 +786,7 @@ mod tests {
     #[test]
     fn json_last_verdict_null_when_none() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert!(v["last_verdict"].is_null());
     }
 
@@ -958,7 +797,7 @@ mod tests {
             status: VerdictStatus::Pass,
             notes: Some("all good".to_string()),
         });
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["last_verdict"]["status"], "pass");
         assert_eq!(v["last_verdict"]["notes"], "all good");
     }
@@ -966,7 +805,7 @@ mod tests {
     #[test]
     fn json_workspace_dirty_flag() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, true, None);
+        let v = build_summary_artifact(&s, true, None);
         assert!(v["workspace_dirty"].as_bool().unwrap());
     }
 
@@ -975,7 +814,7 @@ mod tests {
         let mut s = minimal_summary(TerminalReason::Done);
         s.iteration_counters.global = 5;
         s.iteration_counters.loops.insert(0, 3);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["iteration_counters"]["global"], 5);
         assert_eq!(v["iteration_counters"]["loops"]["0"], 3);
     }
@@ -995,14 +834,14 @@ mod tests {
     fn json_includes_session_id_when_present() {
         let mut s = minimal_summary(TerminalReason::Done);
         s.session_id = Some("sess_abc123".to_string());
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["session_id"], "sess_abc123");
     }
 
     #[test]
     fn json_session_id_null_when_absent() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert!(v["session_id"].is_null());
     }
 
@@ -1098,7 +937,7 @@ mod tests {
         let mut s = minimal_summary(TerminalReason::FailExit);
         s.session_id = Some("sess_abc".to_string());
         let state = make_pipeline_state();
-        let v = build_last_run_json(&s, false, Some(&state));
+        let v = build_summary_artifact(&s, false, Some(&state));
         assert!(
             !v["pipeline_state"].is_null(),
             "pipeline_state must be present for FailExit"
@@ -1114,7 +953,7 @@ mod tests {
     #[test]
     fn json_pipeline_state_null_for_clean_exit() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert!(
             v["pipeline_state"].is_null(),
             "pipeline_state must be null for Done"
@@ -1317,7 +1156,7 @@ mod tests {
                 ("MODE".to_string(), "dry".to_string()),
             ],
         };
-        let json = pipeline_state_to_json(&state);
+        let json = state.to_json();
         let env = json["env"].as_object().expect("env must be an object");
         assert_eq!(env.len(), 2);
         assert_eq!(env["PARENT"], "79");

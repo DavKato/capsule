@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::config::{LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
+use anyhow::{anyhow, Context};
 
 pub trait StageRunner {
     fn run(&mut self, stage_name: &str, prompt: &str, model: Option<&str>) -> Option<Verdict>;
@@ -61,6 +62,176 @@ pub struct PipelineState {
     pub loop_iterations: HashMap<usize, u32>,
     /// Run environment pairs persisted for resume; omitted from disk on successful exits.
     pub env: Vec<(String, String)>,
+}
+
+impl PipelineState {
+    pub fn to_json(&self) -> serde_json::Value {
+        let fail_counts: serde_json::Map<String, serde_json::Value> = self
+            .fail_counts
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect();
+        let loop_iterations: serde_json::Map<String, serde_json::Value> = self
+            .loop_iterations
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .collect();
+        let last_verdict = self
+            .last_verdict
+            .as_ref()
+            .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+        let env: serde_json::Map<String, serde_json::Value> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect();
+        serde_json::json!({
+            "current_idx": self.current_idx,
+            "global_counter": self.global_counter,
+            "fail_counts": fail_counts,
+            "last_stage": self.last_stage,
+            "last_verdict": last_verdict,
+            "loop_iterations": loop_iterations,
+            "env": env,
+        })
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> anyhow::Result<Self> {
+        let current_idx = v["current_idx"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("pipeline_state.current_idx missing or invalid"))?
+            as usize;
+        let global_counter = v["global_counter"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("pipeline_state.global_counter missing or invalid"))?
+            as u32;
+        let fail_counts: HashMap<String, u32> = v["fail_counts"]
+            .as_object()
+            .ok_or_else(|| anyhow!("pipeline_state.fail_counts missing or not an object"))?
+            .iter()
+            .map(|(k, val)| {
+                val.as_u64()
+                    .ok_or_else(|| anyhow!("pipeline_state.fail_counts[{}] is not a number", k))
+                    .map(|n| (k.clone(), n as u32))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        let last_stage = v["last_stage"].as_str().map(str::to_owned);
+        let last_verdict: Option<crate::verdict::Verdict> = if v["last_verdict"].is_null() {
+            None
+        } else {
+            Some(
+                serde_json::from_value(v["last_verdict"].clone())
+                    .context("pipeline_state.last_verdict is malformed")?,
+            )
+        };
+        let loop_iterations: HashMap<usize, u32> = v["loop_iterations"]
+            .as_object()
+            .ok_or_else(|| anyhow!("pipeline_state.loop_iterations missing or not an object"))?
+            .iter()
+            .map(|(k, val)| {
+                let ki = k.parse::<usize>().map_err(|_| {
+                    anyhow!(
+                        "pipeline_state.loop_iterations key {:?} is not a valid index",
+                        k
+                    )
+                })?;
+                let vi = val.as_u64().ok_or_else(|| {
+                    anyhow!("pipeline_state.loop_iterations[{}] is not a number", k)
+                })? as u32;
+                Ok((ki, vi))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        // env defaults to empty for backward compat (pre-ADR-0006 files lack this field)
+        let env: Vec<(String, String)> = v["env"]
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            current_idx,
+            global_counter,
+            fail_counts,
+            last_stage,
+            last_verdict,
+            loop_iterations,
+            env,
+        })
+    }
+}
+
+/// Build the summary artifact JSON written to `last-run.json`.
+pub fn build_summary_artifact(
+    summary: &RunSummary,
+    workspace_dirty: bool,
+    pipeline_state: Option<&PipelineState>,
+) -> serde_json::Value {
+    let terminal_reason = match summary.terminal_reason {
+        TerminalReason::Done => "done",
+        TerminalReason::Exit => "exit",
+        TerminalReason::FailExit => "fail-exit",
+        TerminalReason::CapHit => "cap-hit",
+        TerminalReason::Ok => "ok",
+    };
+    let cap_hit_counter = match &summary.cap_hit {
+        None => serde_json::Value::Null,
+        Some(CapHitKind::LoopMaxIteration(idx)) => serde_json::json!({
+            "type": "max_iteration",
+            "loop_idx": idx,
+        }),
+        Some(CapHitKind::MaxPipelineIterations) => serde_json::json!({
+            "type": "max_pipeline_iterations",
+        }),
+    };
+    let last_verdict = summary
+        .last_verdict
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+    let loops: serde_json::Map<String, serde_json::Value> = summary
+        .iteration_counters
+        .loops
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    let ps = pipeline_state.map(|s| s.to_json());
+    serde_json::json!({
+        "terminal_reason": terminal_reason,
+        "cap_hit_counter": cap_hit_counter,
+        "last_stage": summary.last_stage,
+        "last_verdict": last_verdict,
+        "session_id": summary.session_id,
+        "iteration_counters": {
+            "global": summary.iteration_counters.global,
+            "loops": loops,
+        },
+        "pipeline_state": ps,
+        "timestamp": iso8601_now(),
+        "workspace_dirty": workspace_dirty,
+    })
+}
+
+fn iso8601_now() -> String {
+    use std::time::SystemTime;
+    let secs = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let z = secs as i64 / 86400 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let h = (secs / 3600) % 24;
+    let min = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}Z")
 }
 
 /// Mutable progress tracked across stage invocations during a pipeline run.
@@ -1286,5 +1457,111 @@ mod tests {
             run_outcome(config, FakeRunner::new([pass(), pass(), pass()])),
             PipelineOutcome::CapHit
         );
+    }
+
+    // ── PipelineState serialization ────────────────────────────────────────────
+
+    fn full_state() -> PipelineState {
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("stage-a".to_string(), 2u32);
+        let mut loop_iters = HashMap::new();
+        loop_iters.insert(0usize, 3u32);
+        PipelineState {
+            current_idx: 2,
+            global_counter: 7,
+            fail_counts,
+            last_stage: Some("stage-a".to_string()),
+            last_verdict: Some(Verdict {
+                status: VerdictStatus::Fail,
+                notes: Some("oops".to_string()),
+            }),
+            loop_iterations: loop_iters,
+            env: vec![("KEY".to_string(), "val".to_string())],
+        }
+    }
+
+    #[test]
+    fn pipeline_state_to_json_produces_expected_shape() {
+        let state = full_state();
+        let v = state.to_json();
+        assert_eq!(v["current_idx"], 2);
+        assert_eq!(v["global_counter"], 7);
+        assert_eq!(v["fail_counts"]["stage-a"], 2);
+        assert_eq!(v["last_stage"], "stage-a");
+        assert_eq!(v["last_verdict"]["status"], "fail");
+        assert_eq!(v["last_verdict"]["notes"], "oops");
+        assert_eq!(v["loop_iterations"]["0"], 3);
+        assert_eq!(v["env"]["KEY"], "val");
+    }
+
+    #[test]
+    fn pipeline_state_round_trips_via_json() {
+        let original = full_state();
+        let json = original.to_json();
+        let restored = PipelineState::from_json(&json).unwrap();
+        assert_eq!(restored.current_idx, original.current_idx);
+        assert_eq!(restored.global_counter, original.global_counter);
+        assert_eq!(restored.fail_counts, original.fail_counts);
+        assert_eq!(restored.last_stage, original.last_stage);
+        assert_eq!(restored.last_verdict, original.last_verdict);
+        assert_eq!(restored.loop_iterations, original.loop_iterations);
+        assert_eq!(restored.env, original.env);
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_current_idx() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("current_idx");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_global_counter() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("global_counter");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_fail_counts() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("fail_counts");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_non_number_in_fail_counts() {
+        let mut v = full_state().to_json();
+        v["fail_counts"]["stage-a"] = serde_json::json!("not-a-number");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_loop_iterations() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("loop_iterations");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_non_number_in_loop_iterations() {
+        let mut v = full_state().to_json();
+        v["loop_iterations"]["0"] = serde_json::json!("not-a-number");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_malformed_last_verdict() {
+        let mut v = full_state().to_json();
+        v["last_verdict"] = serde_json::json!({"status": 42});
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_env_defaults_to_empty_when_absent() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("env");
+        let restored = PipelineState::from_json(&v).unwrap();
+        assert_eq!(restored.env, vec![]);
     }
 }

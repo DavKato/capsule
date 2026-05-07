@@ -146,9 +146,15 @@ impl PipelineState {
             .as_object()
             .map(|obj| {
                 obj.iter()
-                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
-                    .collect()
+                    .map(|(k, val)| {
+                        let s = val
+                            .as_str()
+                            .ok_or_else(|| anyhow!("pipeline_state.env[{}] is not a string", k))?;
+                        Ok((k.clone(), s.to_owned()))
+                    })
+                    .collect::<anyhow::Result<_>>()
             })
+            .transpose()?
             .unwrap_or_default();
         Ok(Self {
             current_idx,
@@ -1563,5 +1569,12 @@ mod tests {
         v.as_object_mut().unwrap().remove("env");
         let restored = PipelineState::from_json(&v).unwrap();
         assert_eq!(restored.env, vec![]);
+    }
+
+    #[test]
+    fn from_json_errors_on_non_string_in_env() {
+        let mut v = full_state().to_json();
+        v["env"]["KEY"] = serde_json::json!(42);
+        assert!(PipelineState::from_json(&v).is_err());
     }
 }

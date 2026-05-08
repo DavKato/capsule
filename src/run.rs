@@ -165,13 +165,13 @@ impl RunSession {
         let claude_dir = PathBuf::from(home).join(".claude");
         let credentials_guard = CredentialsGuard::new(&claude_dir)?;
 
+        build_base_image(cfg.rebuild)?;
+
         let build_cfg = BuildConfig {
             rebuild: cfg.rebuild,
             capsule_dir: cfg.capsule_dir.clone(),
             pwd: pwd.clone(),
         };
-        build_base_image(&build_cfg)?;
-
         let image = build_derived_image(&build_cfg)?.unwrap_or_else(|| "capsule".to_string());
 
         run_before_all(&cfg.capsule_dir, &env_pairs)?;

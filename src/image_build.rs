@@ -68,13 +68,8 @@ pub fn derived_image_name(pwd: &std::path::Path) -> String {
 /// Configuration for Docker image building operations.
 #[derive(Clone)]
 pub struct BuildConfig {
-    /// Whether to force a rebuild, ignoring cached layers.
     pub rebuild: bool,
-    /// The capsule directory — contains an optional `Dockerfile` and is used as
-    /// the build context for derived images.
     pub capsule_dir: PathBuf,
-    /// The current working directory — used to derive the image name for derived
-    /// images (`capsule-<basename(pwd)>`).
     pub pwd: PathBuf,
 }
 
@@ -83,10 +78,10 @@ pub struct BuildConfig {
 /// Skips the build when the image exists and its stored hash matches the
 /// embedded Dockerfile. Auto-rebuilds (with layer cache) when the hash
 /// differs. With `rebuild: true`, always rebuilds using `--no-cache`.
-pub fn build_base_image(cfg: &BuildConfig) -> Result<()> {
+pub fn build_base_image(rebuild: bool) -> Result<()> {
     let hash = fnv1a_hash(&format!("{DOCKERFILE}{ENTRYPOINT_SH}"));
 
-    if !cfg.rebuild && image_exists(BASE_IMAGE) {
+    if !rebuild && image_exists(BASE_IMAGE) {
         if image_label(BASE_IMAGE, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
             return Ok(());
         }
@@ -104,7 +99,7 @@ pub fn build_base_image(cfg: &BuildConfig) -> Result<()> {
     let ctx_path = ctx.path().to_string_lossy().into_owned();
     let label = format!("{DOCKERFILE_HASH_LABEL}={hash}");
     let mut build_args = vec!["build", "-t", BASE_IMAGE, "--label", &label];
-    if cfg.rebuild {
+    if rebuild {
         build_args.push("--no-cache");
     }
     build_args.push(&ctx_path);

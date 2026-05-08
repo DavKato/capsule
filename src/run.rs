@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, Config, GithubScope, ResolveMode};
 use capsule::docker::{
-    build_base_image, build_derived_image, container_name_for, detect_compose_network,
-    post_stream_error, run_container, run_iteration, token_remaining_minutes, IterationOutcome,
-    RunConfig,
+    container_name_for, detect_compose_network, post_stream_error, run_container, run_iteration,
+    token_remaining_minutes, IterationOutcome, RunConfig,
 };
 use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
 use capsule::hooks::run_before_all;
+use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use capsule::pipeline::{
     build_summary_artifact, PipelineExecutor, PipelineState, RunSummary, StageRunner,
     TerminalReason,
@@ -165,10 +165,14 @@ impl RunSession {
         let claude_dir = PathBuf::from(home).join(".claude");
         let credentials_guard = CredentialsGuard::new(&claude_dir)?;
 
-        build_base_image(cfg.rebuild)?;
+        let build_cfg = BuildConfig {
+            rebuild: cfg.rebuild,
+            capsule_dir: cfg.capsule_dir.clone(),
+            pwd: pwd.clone(),
+        };
+        build_base_image(&build_cfg)?;
 
-        let image = build_derived_image(&cfg.capsule_dir, &pwd, cfg.rebuild)?
-            .unwrap_or_else(|| "capsule".to_string());
+        let image = build_derived_image(&build_cfg)?.unwrap_or_else(|| "capsule".to_string());
 
         run_before_all(&cfg.capsule_dir, &env_pairs)?;
 

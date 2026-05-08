@@ -1,8 +1,7 @@
 mod common;
 
-use capsule::docker::{
-    build_base_image, build_derived_image, detect_compose_network, run_iteration, RunConfig,
-};
+use capsule::docker::{detect_compose_network, run_iteration, RunConfig};
+use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use common::requires_docker;
 use serial_test::serial;
 use std::io::Write;
@@ -114,9 +113,13 @@ fn build_derived_image_builds_and_returns_image_name() {
     )
     .unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .expect("build_derived_image should succeed")
-        .expect("expected Some(name) when Dockerfile present");
+    let name = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .expect("build_derived_image should succeed")
+    .expect("expected Some(name) when Dockerfile present");
 
     assert!(
         name.starts_with("capsule-"),
@@ -142,12 +145,13 @@ fn build_derived_image_skips_build_when_image_exists_and_no_rebuild() {
     )
     .unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
-    let name2 = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let build_cfg = BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    };
+    let name = build_derived_image(&build_cfg).unwrap().unwrap();
+    let name2 = build_derived_image(&build_cfg).unwrap().unwrap();
     assert_eq!(name, name2);
 
     let _ = std::process::Command::new("docker")
@@ -163,7 +167,12 @@ fn build_base_image_stores_hash_label() {
         .args(["rmi", "-f", "capsule"])
         .output();
 
-    build_base_image(false).expect("build_base_image should succeed");
+    build_base_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: std::path::PathBuf::new(),
+        pwd: std::path::PathBuf::new(),
+    })
+    .expect("build_base_image should succeed");
 
     let out = std::process::Command::new("docker")
         .args([
@@ -197,7 +206,12 @@ fn build_base_image_skips_rebuild_when_hash_matches() {
         .args(["rmi", "-f", "capsule"])
         .output();
 
-    build_base_image(false).expect("first build should succeed");
+    let base_cfg = BuildConfig {
+        rebuild: false,
+        capsule_dir: std::path::PathBuf::new(),
+        pwd: std::path::PathBuf::new(),
+    };
+    build_base_image(&base_cfg).expect("first build should succeed");
 
     let id1 = std::process::Command::new("docker")
         .args(["image", "inspect", "--format", "{{.Id}}", "capsule"])
@@ -205,7 +219,7 @@ fn build_base_image_skips_rebuild_when_hash_matches() {
         .expect("docker inspect should run");
     let id1 = String::from_utf8(id1.stdout).unwrap().trim().to_owned();
 
-    build_base_image(false).expect("second build should succeed");
+    build_base_image(&base_cfg).expect("second build should succeed");
 
     let id2 = std::process::Command::new("docker")
         .args(["image", "inspect", "--format", "{{.Id}}", "capsule"])
@@ -234,9 +248,13 @@ fn build_derived_image_stores_hash_label() {
     )
     .unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let name = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .unwrap()
+    .unwrap();
 
     let out = std::process::Command::new("docker")
         .args([
@@ -273,9 +291,13 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
     let dockerfile_path = capsule_dir.path().join("Dockerfile");
     std::fs::write(&dockerfile_path, "FROM busybox\nRUN echo version1\n").unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let name = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .unwrap()
+    .unwrap();
 
     let id1_out = std::process::Command::new("docker")
         .args(["image", "inspect", "--format", "{{.Id}}", &name])
@@ -285,9 +307,13 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
 
     std::fs::write(&dockerfile_path, "FROM busybox\nRUN echo version2\n").unwrap();
 
-    let name2 = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let name2 = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .unwrap()
+    .unwrap();
     assert_eq!(name, name2, "image name should be unchanged");
 
     let id2_out = std::process::Command::new("docker")
@@ -366,7 +392,12 @@ fn mcp_serve_handles_initialize_and_submit_verdict_in_container() {
 #[requires_docker]
 #[serial(base_image)]
 fn entrypoint_runs_before_each_without_executable_bit() {
-    build_base_image(false).expect("base image should be available");
+    build_base_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: std::path::PathBuf::new(),
+        pwd: std::path::PathBuf::new(),
+    })
+    .expect("base image should be available");
 
     // Thin test image: real capsule entrypoint, stub claude that exits immediately.
     let dockerfile =
@@ -442,7 +473,12 @@ fn entrypoint_runs_before_each_without_executable_bit() {
 #[requires_docker]
 #[serial(base_image)]
 fn entrypoint_uses_resume_when_env_set() {
-    build_base_image(false).expect("base image should be available");
+    build_base_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: std::path::PathBuf::new(),
+        pwd: std::path::PathBuf::new(),
+    })
+    .expect("base image should be available");
 
     // Stub claude that logs its args to /tmp/claude-args.
     let dockerfile = "FROM capsule\n\

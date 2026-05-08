@@ -1,8 +1,7 @@
 mod common;
 
-use capsule::docker::{
-    build_base_image, build_derived_image, detect_compose_network, run_iteration, RunConfig,
-};
+use capsule::container_execution::{detect_compose_network, run_iteration, ExecutionConfig};
+use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use common::requires_docker;
 use serial_test::serial;
 use std::io::Write;
@@ -75,13 +74,13 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
     child.wait().expect("docker build should complete");
 
     let result = run_iteration(
-        &RunConfig {
+        &ExecutionConfig {
             image: "capsule-test-model".to_string(),
             prompt: "hello".to_string(),
             pwd: workdir.path().to_path_buf(),
             model: Some("claude-opus-4-6".to_string()),
             claude_dir: std::env::temp_dir(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -114,9 +113,13 @@ fn build_derived_image_builds_and_returns_image_name() {
     )
     .unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .expect("build_derived_image should succeed")
-        .expect("expected Some(name) when Dockerfile present");
+    let name = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .expect("build_derived_image should succeed")
+    .expect("expected Some(name) when Dockerfile present");
 
     assert!(
         name.starts_with("capsule-"),
@@ -142,12 +145,13 @@ fn build_derived_image_skips_build_when_image_exists_and_no_rebuild() {
     )
     .unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
-    let name2 = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let build_cfg = BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    };
+    let name = build_derived_image(&build_cfg).unwrap().unwrap();
+    let name2 = build_derived_image(&build_cfg).unwrap().unwrap();
     assert_eq!(name, name2);
 
     let _ = std::process::Command::new("docker")
@@ -234,9 +238,13 @@ fn build_derived_image_stores_hash_label() {
     )
     .unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let name = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .unwrap()
+    .unwrap();
 
     let out = std::process::Command::new("docker")
         .args([
@@ -273,9 +281,13 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
     let dockerfile_path = capsule_dir.path().join("Dockerfile");
     std::fs::write(&dockerfile_path, "FROM busybox\nRUN echo version1\n").unwrap();
 
-    let name = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let name = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .unwrap()
+    .unwrap();
 
     let id1_out = std::process::Command::new("docker")
         .args(["image", "inspect", "--format", "{{.Id}}", &name])
@@ -285,9 +297,13 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
 
     std::fs::write(&dockerfile_path, "FROM busybox\nRUN echo version2\n").unwrap();
 
-    let name2 = build_derived_image(capsule_dir.path(), &pwd, false)
-        .unwrap()
-        .unwrap();
+    let name2 = build_derived_image(&BuildConfig {
+        rebuild: false,
+        capsule_dir: capsule_dir.path().to_path_buf(),
+        pwd: pwd.clone(),
+    })
+    .unwrap()
+    .unwrap();
     assert_eq!(name, name2, "image name should be unchanged");
 
     let id2_out = std::process::Command::new("docker")
@@ -534,13 +550,13 @@ fn extra_env_file_visible_across_stages() {
         .unwrap();
     writeln!(extra_env_tmp, "MY_RUN_PARAM=expected_value").unwrap();
 
-    let cfg = RunConfig {
+    let cfg = ExecutionConfig {
         image: "capsule-test-extra-env".to_string(),
         prompt: "ignored".to_string(),
         pwd: workdir.path().to_path_buf(),
         extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
         claude_dir: std::env::temp_dir(),
-        ..RunConfig::default()
+        ..ExecutionConfig::default()
     };
     let active = Arc::new(Mutex::new(None));
 
@@ -582,7 +598,7 @@ fn extra_env_file_visible_across_stages() {
 #[requires_docker]
 #[serial(run_iteration)]
 fn extra_env_file_delivers_merged_env_to_container() {
-    use capsule::docker::RunConfig;
+    use capsule::container_execution::ExecutionConfig;
     use std::io::Write;
 
     let workdir = tempfile::tempdir().expect("temp workdir");
@@ -632,13 +648,13 @@ fn extra_env_file_delivers_merged_env_to_container() {
         writeln!(extra_env_tmp, "{k}={v}").unwrap();
     }
 
-    let cfg = RunConfig {
+    let cfg = ExecutionConfig {
         image: "capsule-test-resume-env-merge".to_string(),
         prompt: "ignored".to_string(),
         pwd: workdir.path().to_path_buf(),
         extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
         claude_dir: std::env::temp_dir(),
-        ..RunConfig::default()
+        ..ExecutionConfig::default()
     };
     let active = Arc::new(Mutex::new(None));
 

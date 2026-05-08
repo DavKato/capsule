@@ -1,23 +1,20 @@
-use anyhow::{Context, Result};
-use capsule::config::{resolve, CliOverrides, Config, GithubScope, PipelineEntry};
-use capsule::docker::{
-    build_base_image, build_derived_image, container_name_for, detect_compose_network,
-    post_stream_error, run_container, run_iteration, token_remaining_minutes, IterationOutcome,
-    RunConfig,
+use anyhow::{bail, Context, Result};
+use capsule::config::{resolve, CliOverrides, Config, GitIdentity, GithubScope, ResolveMode};
+use capsule::container_execution::{
+    container_name_for, detect_compose_network, post_stream_error, run_container, run_iteration,
+    token_remaining_minutes, ExecutionConfig, IterationOutcome,
 };
-use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
-use capsule::git::resolve_git_identity;
-use capsule::hooks::run_before_all;
+use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use capsule::pipeline::{
-    CapHitKind, PipelineExecutor, PipelineState, RunSummary, StageRunner, TerminalReason,
+    build_summary_artifact, PipelineExecutor, PipelineState, RunSummary, StageRunner,
+    TerminalReason,
 };
-use capsule::preflight::{check_docker, env_gitignore_warning};
-use capsule::prompt::{prepend_preamble, resolve_prompt};
 use capsule::update_check;
 use capsule::verdict::Verdict;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -131,7 +128,7 @@ impl RunSession {
     pub(crate) fn prepare(capsule_dir: PathBuf, mut overrides: CliOverrides) -> Result<Self> {
         let input = overrides.input.take();
         let env_pairs: Vec<(String, String)> = std::mem::take(&mut overrides.env);
-        let mut cfg = resolve(&capsule_dir, overrides)?;
+        let cfg = resolve(&capsule_dir, overrides, ResolveMode::Run)?;
 
         check_docker()?;
 
@@ -160,30 +157,6 @@ impl RunSession {
         let (git_author_name, git_author_email) =
             resolve_git_identity(&cfg.git_identity, &process_env);
 
-        // Resolve stage prompt paths to file content so PipelineExecutor receives real text.
-        // Flat-form: a single path lives in cfg.prompt; patch it into the lone loop stage.
-        // Multi-stage: each stage carries its own path in stage.prompt; resolve all of them.
-        if cfg.pipeline.is_flat_form {
-            let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
-            let user_prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
-            let resolved = prepend_preamble(&user_prompt);
-            let first = cfg
-                .pipeline
-                .entries
-                .first_mut()
-                .ok_or_else(|| anyhow::anyhow!("flat-form pipeline has no entries"))?;
-            let PipelineEntry::Loop(loop_cfg) = first else {
-                anyhow::bail!("flat-form pipeline: first entry is not a loop");
-            };
-            let stage = loop_cfg
-                .stages
-                .first_mut()
-                .ok_or_else(|| anyhow::anyhow!("flat-form pipeline: loop has no stages"))?;
-            stage.prompt = Some(resolved);
-        } else {
-            resolve_stage_prompts(&mut cfg.pipeline.entries, &cfg.capsule_dir)?;
-        }
-
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;
         let claude_dir = PathBuf::from(home).join(".claude");
@@ -191,8 +164,12 @@ impl RunSession {
 
         build_base_image(cfg.rebuild)?;
 
-        let image = build_derived_image(&cfg.capsule_dir, &pwd, cfg.rebuild)?
-            .unwrap_or_else(|| "capsule".to_string());
+        let build_cfg = BuildConfig {
+            rebuild: cfg.rebuild,
+            capsule_dir: cfg.capsule_dir.clone(),
+            pwd: pwd.clone(),
+        };
+        let image = build_derived_image(&build_cfg)?.unwrap_or_else(|| "capsule".to_string());
 
         run_before_all(&cfg.capsule_dir, &env_pairs)?;
 
@@ -220,9 +197,7 @@ impl RunSession {
         ctrlc::set_handler(move || {
             if let Ok(slot) = handler_container.lock() {
                 if let Some(name) = slot.as_ref() {
-                    let _ = std::process::Command::new("docker")
-                        .args(["stop", name])
-                        .output();
+                    let _ = Command::new("docker").args(["stop", name]).output();
                 }
             }
             std::process::exit(1);
@@ -296,9 +271,7 @@ impl RunSession {
                     eprintln!(
                         "GH_TOKEN not found in process environment — falling back to gh auth token"
                     );
-                    let _ = std::process::Command::new("gh")
-                        .args(["auth", "status"])
-                        .status();
+                    let _ = Command::new("gh").args(["auth", "status"]).status();
                     eprint!("Inject into container? [y/N] ");
                     let _ = std::io::stderr().flush();
                     let mut answer = String::new();
@@ -348,11 +321,10 @@ impl RunSession {
         // resume-retry re-copies host credentials.
         let credentials_guard = self.credentials_guard.take();
         let credentials_file = credentials_guard.as_ref().map(|g| g.path().to_path_buf());
-        let base_cfg = RunConfig {
+        let base_cfg = ExecutionConfig {
             image: self.image.clone(),
             prompt: String::new(),
             pwd: self.pwd.clone(),
-            capsule_dir: self.cfg.capsule_dir.clone(),
             model: self.cfg.model.clone(),
             verbose: self.cfg.verbose,
             env_file: self.env_file.clone(),
@@ -385,11 +357,14 @@ impl RunSession {
             resume_session_id,
         };
         let mut result = if let Some((_, state)) = resume {
-            PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state).run()
+            PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state)
+                .with_capsule_dir(self.cfg.capsule_dir.clone())
+                .run()?
         } else {
             PipelineExecutor::new(self.cfg.pipeline.clone(), runner)
+                .with_capsule_dir(self.cfg.capsule_dir.clone())
                 .with_input(self.input)
-                .run()
+                .run()?
         };
         result.summary.session_id = last_session_id.lock().unwrap().take();
         result.pipeline_state.env = self.env_pairs.clone();
@@ -418,7 +393,7 @@ impl RunSession {
 }
 
 struct DockerStageRunner {
-    base_cfg: RunConfig,
+    base_cfg: ExecutionConfig,
     active_container: Arc<Mutex<Option<String>>>,
     iteration: u32,
     last_error: Arc<Mutex<Option<anyhow::Error>>>,
@@ -485,7 +460,7 @@ impl StageRunner for DockerStageRunner {
 impl DockerStageRunner {
     /// Re-copy host credentials, reset the guard baseline, and launch a resume container.
     /// Returns the verdict if the resumed session submits one.
-    fn run_resume(&mut self, cfg: &RunConfig, session_id: &str) -> Option<Verdict> {
+    fn run_resume(&mut self, cfg: &ExecutionConfig, session_id: &str) -> Option<Verdict> {
         eprintln!(
             "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
             session_id
@@ -557,25 +532,6 @@ fn build_extra_env_tempfile(pairs: &[(String, String)]) -> Result<Option<tempfil
     Ok(Some(tmp))
 }
 
-fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -> Result<()> {
-    for entry in entries {
-        let stages = match entry {
-            PipelineEntry::Stage(s) => std::slice::from_mut(s),
-            PipelineEntry::Loop(l) => l.stages.as_mut_slice(),
-        };
-        for stage in stages {
-            if let Some(ref path_str) = stage.prompt.clone() {
-                let path = capsule_dir.join(path_str);
-                let bytes = std::fs::read(&path)
-                    .with_context(|| format!("prompt file not found: {}", path.display()))?;
-                let content = String::from_utf8_lossy(&bytes).into_owned();
-                stage.prompt = Some(prepend_preamble(&content));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// `Exit` (pass-route, i.e. `on_pass: exit`) is treated as success (exit 0)
 /// because the user deliberately routed a passing stage to terminate.
 pub(crate) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
@@ -598,7 +554,7 @@ fn write_last_run(
     pipeline_state: Option<&PipelineState>,
 ) -> Result<()> {
     let dirty = is_workspace_dirty();
-    let json = build_last_run_json(summary, dirty, pipeline_state);
+    let json = build_summary_artifact(summary, dirty, pipeline_state);
     let path = capsule_dir.join("last-run.json");
     std::fs::write(&path, serde_json::to_string_pretty(&json)?)
         .with_context(|| format!("writing summary artifact {}", path.display()))?;
@@ -606,42 +562,11 @@ fn write_last_run(
 }
 
 fn is_workspace_dirty() -> bool {
-    std::process::Command::new("git")
+    Command::new("git")
         .args(["status", "--porcelain"])
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
-}
-
-fn pipeline_state_to_json(state: &PipelineState) -> serde_json::Value {
-    let fail_counts: serde_json::Map<String, serde_json::Value> = state
-        .fail_counts
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-        .collect();
-    let loop_iterations: serde_json::Map<String, serde_json::Value> = state
-        .loop_iterations
-        .iter()
-        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
-        .collect();
-    let last_verdict = state
-        .last_verdict
-        .as_ref()
-        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
-    let env: serde_json::Map<String, serde_json::Value> = state
-        .env
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-        .collect();
-    serde_json::json!({
-        "current_idx": state.current_idx,
-        "global_counter": state.global_counter,
-        "fail_counts": fail_counts,
-        "last_stage": state.last_stage,
-        "last_verdict": last_verdict,
-        "loop_iterations": loop_iterations,
-        "env": env,
-    })
 }
 
 fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
@@ -664,118 +589,9 @@ fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
         );
     }
 
-    let current_idx = state_json["current_idx"]
-        .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("pipeline_state.current_idx missing"))?
-        as usize;
-    let global_counter = state_json["global_counter"]
-        .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("pipeline_state.global_counter missing"))?
-        as u32;
-    let fail_counts: std::collections::HashMap<String, u32> = state_json["fail_counts"]
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32))
-                .collect()
-        })
-        .unwrap_or_default();
-    let last_stage = state_json["last_stage"].as_str().map(str::to_owned);
-    let last_verdict: Option<capsule::verdict::Verdict> = if state_json["last_verdict"].is_null() {
-        None
-    } else {
-        Some(
-            serde_json::from_value(state_json["last_verdict"].clone())
-                .context("failed to deserialize pipeline_state.last_verdict")?,
-        )
-    };
-    let loop_iterations: std::collections::HashMap<usize, u32> = state_json["loop_iterations"]
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| {
-                    k.parse::<usize>()
-                        .ok()
-                        .map(|ki| (ki, v.as_u64().unwrap_or(0) as u32))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let env: Vec<(String, String)> = state_json["env"]
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Ok((
-        session_id,
-        PipelineState {
-            current_idx,
-            global_counter,
-            fail_counts,
-            last_stage,
-            last_verdict,
-            loop_iterations,
-            env,
-        },
-    ))
-}
-
-fn build_last_run_json(
-    summary: &RunSummary,
-    workspace_dirty: bool,
-    pipeline_state: Option<&PipelineState>,
-) -> serde_json::Value {
-    let terminal_reason = match summary.terminal_reason {
-        TerminalReason::Done => "done",
-        TerminalReason::Exit => "exit",
-        TerminalReason::FailExit => "fail-exit",
-        TerminalReason::CapHit => "cap-hit",
-        TerminalReason::Ok => "ok",
-    };
-
-    let cap_hit_counter = match &summary.cap_hit {
-        None => serde_json::Value::Null,
-        Some(CapHitKind::LoopMaxIteration(idx)) => serde_json::json!({
-            "type": "max_iteration",
-            "loop_idx": idx,
-        }),
-        Some(CapHitKind::MaxPipelineIterations) => serde_json::json!({
-            "type": "max_pipeline_iterations",
-        }),
-    };
-
-    let last_verdict = summary
-        .last_verdict
-        .as_ref()
-        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
-
-    let loops: serde_json::Map<String, serde_json::Value> = summary
-        .iteration_counters
-        .loops
-        .iter()
-        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
-        .collect();
-
-    let ps = pipeline_state.map(pipeline_state_to_json);
-    serde_json::json!({
-        "terminal_reason": terminal_reason,
-        "cap_hit_counter": cap_hit_counter,
-        "last_stage": summary.last_stage,
-        "last_verdict": last_verdict,
-        "session_id": summary.session_id,
-        "iteration_counters": {
-            "global": summary.iteration_counters.global,
-            "loops": loops,
-        },
-        "pipeline_state": ps,
-        "timestamp": iso8601_now(),
-        "workspace_dirty": workspace_dirty,
-    })
+    let state = PipelineState::from_json(state_json)
+        .context("failed to deserialize pipeline_state from last-run.json")?;
+    Ok((session_id, state))
 }
 
 fn token_lifetime_warning(
@@ -803,32 +619,197 @@ fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> Option<Stri
     }
 }
 
-fn iso8601_now() -> String {
-    let secs = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+// ── env ──────────────────────────────────────────────────────────────────────
+
+fn parse_dotenv(content: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(eq_pos) = line.find('=') {
+            let key = line[..eq_pos].trim().to_string();
+            let raw_val = line[eq_pos + 1..].trim();
+            let value = strip_quotes(raw_val).to_string();
+            if !key.is_empty() {
+                map.insert(key, value);
+            }
+        }
+    }
+    map
+}
+
+fn strip_quotes(s: &str) -> &str {
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// Loads `.env` from capsule_dir into process env. Process env takes precedence (no overwrite).
+fn load_dotenv(capsule_dir: &Path) -> Result<()> {
+    let path = capsule_dir.join(".env");
+    if !path.exists() {
+        return Ok(());
+    }
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    for (key, value) in parse_dotenv(&content) {
+        if std::env::var(&key).is_err() {
+            // SAFETY: called before any threads are spawned (ctrlc handler registered later in main).
+            unsafe { std::env::set_var(&key, &value) };
+        }
+    }
+    Ok(())
+}
+
+/// Resolves GH_TOKEN: local reads from dotenv only; global checks process env then `gh auth token`.
+fn resolve_gh_token(
+    scope: &GithubScope,
+    pre_dotenv_env: &HashMap<String, String>,
+    dotenv_map: &HashMap<String, String>,
+) -> Result<String> {
+    match scope {
+        GithubScope::Local => dotenv_map
+            .get("GH_TOKEN")
+            .filter(|t| !t.is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "github is set to 'local' but GH_TOKEN not found in .capsule/.env \
+                     — add GH_TOKEN=<token> to .capsule/.env"
+                )
+            }),
+        GithubScope::Global => {
+            if let Some(token) = pre_dotenv_env.get("GH_TOKEN").filter(|t| !t.is_empty()) {
+                return Ok(token.clone());
+            }
+            let output = Command::new("gh").args(["auth", "token"]).output();
+            if let Ok(out) = output {
+                if out.status.success() {
+                    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !token.is_empty() {
+                        return Ok(token);
+                    }
+                }
+            }
+            bail!(
+                "github is set to 'global' but GH_TOKEN not found in process environment \
+                 — in CI, ensure GH_TOKEN is set by your platform \
+                 — locally, consider using 'local' instead: add GH_TOKEN to .capsule/.env"
+            )
+        }
+    }
+}
+
+// ── hooks ─────────────────────────────────────────────────────────────────────
+
+/// Runs `before-all.sh` if present. Absent script is Ok; non-zero exit is Err.
+fn run_before_all(capsule_dir: &Path, env_pairs: &[(String, String)]) -> Result<()> {
+    let script = capsule_dir.join("before-all.sh");
+    if !script.exists() {
+        return Ok(());
+    }
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(&script);
+    for (k, v) in env_pairs {
+        cmd.env(k, v);
+    }
+
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to run before-all.sh at {}", script.display()))?;
+
+    if !status.success() {
+        bail!(
+            "before-all.sh exited with code {}",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    Ok(())
+}
+
+// ── git ───────────────────────────────────────────────────────────────────────
+
+fn resolve_git_identity(identity: &GitIdentity, env: &HashMap<String, String>) -> (String, String) {
+    match identity {
+        GitIdentity::Capsule => ("Capsule".to_string(), "capsule@localhost".to_string()),
+        GitIdentity::User => {
+            let name = git_config_get("user.name", env);
+            let email = git_config_get("user.email", env);
+            (name, email)
+        }
+    }
+}
+
+fn git_config_get(key: &str, env: &HashMap<String, String>) -> String {
+    Command::new("git")
+        .args(["config", key])
+        .env_clear()
+        .envs(env)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
         .unwrap_or_default()
-        .as_secs();
-    // Howard Hinnant's algorithm: days-from-civil
-    let z = secs as i64 / 86400 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    let h = (secs / 3600) % 24;
-    let min = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}Z")
+}
+
+// ── preflight ─────────────────────────────────────────────────────────────────
+
+fn check_docker() -> Result<()> {
+    let status = Command::new("docker")
+        .arg("info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context(
+            "Docker is not installed or not in PATH — ensure Docker is installed and running",
+        )?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "Docker daemon is not reachable — ensure Docker is running (`docker info` failed)"
+        );
+    }
+    Ok(())
+}
+
+fn env_gitignore_warning(capsule_dir: &Path) -> Option<String> {
+    let env_path = capsule_dir.join(".env");
+    if !env_path.exists() {
+        return None;
+    }
+
+    // Canonicalize env_path so git resolves it correctly regardless of current_dir.
+    // Without this, if capsule_dir is relative (e.g. ".capsule"), git would interpret
+    // ".capsule/.env" relative to its new CWD and look for ".capsule/.capsule/.env".
+    let abs_env_path = env_path.canonicalize().unwrap_or_else(|_| env_path.clone());
+    let result = Command::new("git")
+        .args(["check-ignore", "-q"])
+        .arg(&abs_env_path)
+        .current_dir(capsule_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    match result {
+        Ok(s) if s.success() => None,
+        _ => Some(format!(
+            "warning: {} is not gitignored — add it to .gitignore to avoid committing secrets",
+            env_path.display()
+        )),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capsule::pipeline::{IterationCounters, RunSummary};
+    use capsule::pipeline::{build_summary_artifact, CapHitKind, IterationCounters, RunSummary};
     use capsule::verdict::VerdictStatus;
     use std::collections::HashMap;
 
@@ -905,7 +886,7 @@ mod tests {
     #[test]
     fn json_done_terminal_reason() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "done");
         assert!(v["cap_hit_counter"].is_null());
         assert!(!v["workspace_dirty"].as_bool().unwrap());
@@ -914,14 +895,14 @@ mod tests {
     #[test]
     fn json_fail_exit_terminal_reason() {
         let s = minimal_summary(TerminalReason::FailExit);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "fail-exit");
     }
 
     #[test]
     fn json_ok_terminal_reason() {
         let s = minimal_summary(TerminalReason::Ok);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "ok");
     }
 
@@ -929,7 +910,7 @@ mod tests {
     fn json_cap_hit_loop_max_iteration() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.cap_hit = Some(CapHitKind::LoopMaxIteration(0));
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "cap-hit");
         assert_eq!(v["cap_hit_counter"]["type"], "max_iteration");
         assert_eq!(v["cap_hit_counter"]["loop_idx"], 0);
@@ -939,7 +920,7 @@ mod tests {
     fn json_cap_hit_max_pipeline_iterations() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.cap_hit = Some(CapHitKind::MaxPipelineIterations);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["cap_hit_counter"]["type"], "max_pipeline_iterations");
         assert!(v["cap_hit_counter"]["loop_idx"].is_null());
     }
@@ -947,7 +928,7 @@ mod tests {
     #[test]
     fn json_last_verdict_null_when_none() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert!(v["last_verdict"].is_null());
     }
 
@@ -958,7 +939,7 @@ mod tests {
             status: VerdictStatus::Pass,
             notes: Some("all good".to_string()),
         });
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["last_verdict"]["status"], "pass");
         assert_eq!(v["last_verdict"]["notes"], "all good");
     }
@@ -966,7 +947,7 @@ mod tests {
     #[test]
     fn json_workspace_dirty_flag() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, true, None);
+        let v = build_summary_artifact(&s, true, None);
         assert!(v["workspace_dirty"].as_bool().unwrap());
     }
 
@@ -975,7 +956,7 @@ mod tests {
         let mut s = minimal_summary(TerminalReason::Done);
         s.iteration_counters.global = 5;
         s.iteration_counters.loops.insert(0, 3);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["iteration_counters"]["global"], 5);
         assert_eq!(v["iteration_counters"]["loops"]["0"], 3);
     }
@@ -995,14 +976,14 @@ mod tests {
     fn json_includes_session_id_when_present() {
         let mut s = minimal_summary(TerminalReason::Done);
         s.session_id = Some("sess_abc123".to_string());
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["session_id"], "sess_abc123");
     }
 
     #[test]
     fn json_session_id_null_when_absent() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert!(v["session_id"].is_null());
     }
 
@@ -1098,7 +1079,7 @@ mod tests {
         let mut s = minimal_summary(TerminalReason::FailExit);
         s.session_id = Some("sess_abc".to_string());
         let state = make_pipeline_state();
-        let v = build_last_run_json(&s, false, Some(&state));
+        let v = build_summary_artifact(&s, false, Some(&state));
         assert!(
             !v["pipeline_state"].is_null(),
             "pipeline_state must be present for FailExit"
@@ -1114,7 +1095,7 @@ mod tests {
     #[test]
     fn json_pipeline_state_null_for_clean_exit() {
         let s = minimal_summary(TerminalReason::Done);
-        let v = build_last_run_json(&s, false, None);
+        let v = build_summary_artifact(&s, false, None);
         assert!(
             v["pipeline_state"].is_null(),
             "pipeline_state must be null for Done"
@@ -1317,10 +1298,391 @@ mod tests {
                 ("MODE".to_string(), "dry".to_string()),
             ],
         };
-        let json = pipeline_state_to_json(&state);
+        let json = state.to_json();
         let env = json["env"].as_object().expect("env must be an object");
         assert_eq!(env.len(), 2);
         assert_eq!(env["PARENT"], "79");
         assert_eq!(env["MODE"], "dry");
+    }
+
+    // ── env tests ─────────────────────────────────────────────────────────────
+
+    mod env_tests {
+        use super::super::{load_dotenv, parse_dotenv, resolve_gh_token, strip_quotes};
+        use capsule::config::GithubScope;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+
+        fn make_capsule_dir(env_content: Option<&str>) -> TempDir {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(content) = env_content {
+                std::fs::write(dir.path().join(".env"), content).unwrap();
+            }
+            dir
+        }
+
+        #[test]
+        fn parse_dotenv_basic_key_value() {
+            let env = parse_dotenv("FOO=bar\nBAZ=qux\n");
+            assert_eq!(env.get("FOO").map(|s| s.as_str()), Some("bar"));
+            assert_eq!(env.get("BAZ").map(|s| s.as_str()), Some("qux"));
+        }
+
+        #[test]
+        fn parse_dotenv_empty_content_is_empty_map() {
+            let env = parse_dotenv("");
+            assert!(env.is_empty());
+        }
+
+        #[test]
+        fn parse_dotenv_ignores_comments_and_blank_lines() {
+            let content = "# this is a comment\n\nFOO=hello\n\n# another comment\nBAR=world\n";
+            let env = parse_dotenv(content);
+            assert_eq!(env.len(), 2);
+            assert_eq!(env.get("FOO").map(|s| s.as_str()), Some("hello"));
+            assert_eq!(env.get("BAR").map(|s| s.as_str()), Some("world"));
+        }
+
+        #[test]
+        fn parse_dotenv_strips_double_quotes() {
+            let env = parse_dotenv("SECRET=\"my secret value\"\n");
+            assert_eq!(
+                env.get("SECRET").map(|s| s.as_str()),
+                Some("my secret value")
+            );
+        }
+
+        #[test]
+        fn parse_dotenv_strips_single_quotes() {
+            let env = parse_dotenv("TOKEN='abc123'\n");
+            assert_eq!(env.get("TOKEN").map(|s| s.as_str()), Some("abc123"));
+        }
+
+        #[test]
+        fn parse_dotenv_value_with_equals() {
+            let env = parse_dotenv("URL=https://example.com/path?a=1&b=2\n");
+            assert_eq!(
+                env.get("URL").map(|s| s.as_str()),
+                Some("https://example.com/path?a=1&b=2")
+            );
+        }
+
+        #[test]
+        fn strip_quotes_no_quotes_unchanged() {
+            assert_eq!(strip_quotes("hello"), "hello");
+        }
+
+        #[test]
+        fn strip_quotes_double_quotes_stripped() {
+            assert_eq!(strip_quotes("\"hello\""), "hello");
+        }
+
+        #[test]
+        fn strip_quotes_single_quotes_stripped() {
+            assert_eq!(strip_quotes("'hello'"), "hello");
+        }
+
+        #[test]
+        fn load_dotenv_absent_file_is_ok() {
+            let dir = make_capsule_dir(None);
+            assert!(load_dotenv(dir.path()).is_ok());
+        }
+
+        #[test]
+        fn resolve_gh_token_local_reads_from_dotenv_map() {
+            let pre_env: HashMap<String, String> = HashMap::new();
+            let mut dotenv: HashMap<String, String> = HashMap::new();
+            dotenv.insert("GH_TOKEN".to_string(), "ghs_localtoken".to_string());
+            let token = resolve_gh_token(&GithubScope::Local, &pre_env, &dotenv).unwrap();
+            assert_eq!(token, "ghs_localtoken");
+        }
+
+        #[test]
+        fn resolve_gh_token_local_ignores_process_env() {
+            let mut pre_env: HashMap<String, String> = HashMap::new();
+            pre_env.insert("GH_TOKEN".to_string(), "ghs_processtoken".to_string());
+            let mut dotenv: HashMap<String, String> = HashMap::new();
+            dotenv.insert("GH_TOKEN".to_string(), "ghs_dotenvtoken".to_string());
+            let token = resolve_gh_token(&GithubScope::Local, &pre_env, &dotenv).unwrap();
+            assert_eq!(token, "ghs_dotenvtoken");
+        }
+
+        #[test]
+        fn resolve_gh_token_local_missing_returns_error() {
+            let pre_env: HashMap<String, String> = HashMap::new();
+            let dotenv: HashMap<String, String> = HashMap::new();
+            let result = resolve_gh_token(&GithubScope::Local, &pre_env, &dotenv);
+            assert!(result.is_err());
+            let msg = format!("{}", result.unwrap_err());
+            assert!(msg.contains("local"), "error should mention 'local': {msg}");
+            assert!(
+                msg.contains(".capsule/.env"),
+                "error should name the file: {msg}"
+            );
+        }
+
+        #[test]
+        fn resolve_gh_token_global_reads_from_pre_dotenv_env() {
+            let mut pre_env: HashMap<String, String> = HashMap::new();
+            pre_env.insert("GH_TOKEN".to_string(), "ghs_globaltoken".to_string());
+            let dotenv: HashMap<String, String> = HashMap::new();
+            let token = resolve_gh_token(&GithubScope::Global, &pre_env, &dotenv).unwrap();
+            assert_eq!(token, "ghs_globaltoken");
+        }
+
+        #[test]
+        fn resolve_gh_token_global_missing_returns_error_or_token() {
+            let pre_env: HashMap<String, String> = HashMap::new();
+            let dotenv: HashMap<String, String> = HashMap::new();
+            match resolve_gh_token(&GithubScope::Global, &pre_env, &dotenv) {
+                Ok(_token) => {}
+                Err(e) => {
+                    let msg = format!("{e}");
+                    assert!(
+                        msg.contains("global"),
+                        "error should mention 'global': {msg}"
+                    );
+                }
+            }
+        }
+    }
+
+    // ── hooks tests ───────────────────────────────────────────────────────────
+
+    mod hooks_tests {
+        use super::super::run_before_all;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        #[test]
+        fn before_all_absent_is_ok() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let result = run_before_all(dir.path(), &[]);
+            assert!(
+                result.is_ok(),
+                "absent before-all.sh must return Ok: {result:?}"
+            );
+        }
+
+        #[test]
+        fn before_all_success_is_ok() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let script = dir.path().join("before-all.sh");
+            fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+            let result = run_before_all(dir.path(), &[]);
+            assert!(
+                result.is_ok(),
+                "before-all.sh exit 0 must return Ok: {result:?}"
+            );
+        }
+
+        #[test]
+        fn before_all_failure_is_err() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let script = dir.path().join("before-all.sh");
+            fs::write(&script, "#!/bin/sh\nexit 42\n").unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+            let result = run_before_all(dir.path(), &[]);
+            assert!(result.is_err(), "before-all.sh exit 42 must return Err");
+            let msg = format!("{:?}", result.unwrap_err());
+            assert!(
+                msg.contains("42") || msg.contains("before-all"),
+                "error must mention exit code or script name, got: {msg}"
+            );
+        }
+
+        #[test]
+        fn before_all_runs_on_host() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let script = dir.path().join("before-all.sh");
+            let sentinel = dir.path().join("ran");
+            let sentinel_str = sentinel.to_string_lossy();
+            let script_body = format!("#!/bin/sh\ntouch {sentinel_str}\nexit 0\n");
+            fs::write(&script, script_body).unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+            run_before_all(dir.path(), &[]).expect("should succeed");
+            assert!(
+                sentinel.exists(),
+                "before-all.sh should have created sentinel file"
+            );
+        }
+
+        #[test]
+        fn before_all_env_pairs_injected() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let script = dir.path().join("before-all.sh");
+            let out_file = dir.path().join("env_value.txt");
+            let out_str = out_file.to_string_lossy();
+            let script_body = format!("#!/bin/sh\necho \"$MY_TEST_VAR\" > {out_str}\n");
+            fs::write(&script, script_body).unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+            let pairs = vec![("MY_TEST_VAR".to_string(), "hello_env".to_string())];
+            run_before_all(dir.path(), &pairs).expect("should succeed");
+
+            let content = fs::read_to_string(&out_file).expect("output file should exist");
+            assert!(
+                content.trim() == "hello_env",
+                "env var should be injected into hook: got {content:?}"
+            );
+        }
+    }
+
+    // ── git tests ─────────────────────────────────────────────────────────────
+
+    mod git_tests {
+        use super::super::resolve_git_identity;
+        use capsule::config::GitIdentity;
+        use std::collections::HashMap;
+
+        fn env_with_git_config(config_path: &str) -> HashMap<String, String> {
+            let mut env = HashMap::new();
+            env.insert("GIT_CONFIG_GLOBAL".to_string(), config_path.to_string());
+            env.insert("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string());
+            env
+        }
+
+        #[test]
+        fn capsule_identity_returns_fixed_name_and_email() {
+            let env = HashMap::new();
+            let (name, email) = resolve_git_identity(&GitIdentity::Capsule, &env);
+            assert_eq!(name, "Capsule");
+            assert_eq!(email, "capsule@localhost");
+        }
+
+        #[test]
+        fn user_identity_reads_from_git_config() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let config_path = dir.path().join("gitconfig");
+            std::fs::write(
+                &config_path,
+                "[user]\n\tname = Alice Dev\n\temail = alice@example.com\n",
+            )
+            .unwrap();
+
+            let env = env_with_git_config(config_path.to_str().unwrap());
+            let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
+
+            assert_eq!(name, "Alice Dev");
+            assert_eq!(email, "alice@example.com");
+        }
+
+        #[test]
+        fn user_identity_returns_empty_strings_when_git_config_missing() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let nonexistent = dir.path().join("does_not_exist");
+
+            let env = env_with_git_config(nonexistent.to_str().unwrap());
+            let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
+
+            assert_eq!(name, "");
+            assert_eq!(email, "");
+        }
+
+        #[test]
+        fn user_identity_returns_empty_when_user_section_absent() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let config_path = dir.path().join("gitconfig");
+            std::fs::write(&config_path, "[core]\n\tpager = \n").unwrap();
+
+            let env = env_with_git_config(config_path.to_str().unwrap());
+            let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
+
+            assert_eq!(name, "");
+            assert_eq!(email, "");
+        }
+    }
+
+    // ── preflight tests ───────────────────────────────────────────────────────
+
+    mod preflight_tests {
+        use super::super::{check_docker, env_gitignore_warning};
+        use serial_test::serial;
+        use std::fs;
+        use std::path::Path;
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        fn git_init(dir: &TempDir) {
+            Command::new("git")
+                .args(["init"])
+                .current_dir(dir.path())
+                .output()
+                .expect("git init failed");
+        }
+
+        #[test]
+        fn env_absent_returns_none() {
+            let dir = TempDir::new().unwrap();
+            assert!(env_gitignore_warning(dir.path()).is_none());
+        }
+
+        #[test]
+        fn env_present_not_gitignored_returns_warning_with_path() {
+            let dir = TempDir::new().unwrap();
+            git_init(&dir);
+            fs::write(dir.path().join(".env"), "SECRET=value").unwrap();
+            let warning = env_gitignore_warning(dir.path());
+            assert!(warning.is_some(), "expected a warning but got None");
+            let msg = warning.unwrap();
+            assert!(
+                msg.contains(".env"),
+                "warning should mention the .env path; got: {msg}"
+            );
+        }
+
+        #[test]
+        fn env_present_and_gitignored_returns_none() {
+            let dir = TempDir::new().unwrap();
+            git_init(&dir);
+            fs::write(dir.path().join(".env"), "SECRET=value").unwrap();
+            fs::write(dir.path().join(".gitignore"), ".env\n").unwrap();
+            assert!(env_gitignore_warning(dir.path()).is_none());
+        }
+
+        #[test]
+        #[serial]
+        fn env_relative_capsule_dir_gitignored_returns_none() {
+            let root = TempDir::new().unwrap();
+            git_init(&root);
+            let capsule_dir = root.path().join(".capsule");
+            fs::create_dir(&capsule_dir).unwrap();
+            fs::write(capsule_dir.join(".env"), "SECRET=value").unwrap();
+            fs::write(root.path().join(".gitignore"), ".capsule/.env\n").unwrap();
+
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(root.path()).unwrap();
+            let result = env_gitignore_warning(Path::new(".capsule"));
+            std::env::set_current_dir(original).unwrap();
+
+            assert!(result.is_none(), "expected no warning but got: {result:?}");
+        }
+
+        #[test]
+        #[serial]
+        fn env_relative_capsule_dir_not_gitignored_returns_warning() {
+            let root = TempDir::new().unwrap();
+            git_init(&root);
+            let capsule_dir = root.path().join(".capsule");
+            fs::create_dir(&capsule_dir).unwrap();
+            fs::write(capsule_dir.join(".env"), "SECRET=value").unwrap();
+
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(root.path()).unwrap();
+            let result = env_gitignore_warning(Path::new(".capsule"));
+            std::env::set_current_dir(original).unwrap();
+
+            assert!(result.is_some(), "expected a warning but got None");
+        }
+
+        #[test]
+        #[capsule_macros::requires_docker]
+        fn docker_available_check_succeeds() {
+            check_docker().expect("docker check should succeed when Docker is running");
+        }
     }
 }

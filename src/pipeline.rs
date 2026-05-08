@@ -1,7 +1,22 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::config::{LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
+use anyhow::{anyhow, Context};
+
+pub const SYSTEM_PREAMBLE: &str = include_str!("../base-image/system_preamble.md");
+
+fn prepend_preamble(user_prompt: &str) -> String {
+    format!("{SYSTEM_PREAMBLE}\n\n{user_prompt}")
+}
+
+fn read_prompt_file(capsule_dir: &Path, path_str: &str) -> anyhow::Result<String> {
+    let path = capsule_dir.join(path_str);
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("prompt file not found: {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
 
 pub trait StageRunner {
     fn run(&mut self, stage_name: &str, prompt: &str, model: Option<&str>) -> Option<Verdict>;
@@ -63,6 +78,186 @@ pub struct PipelineState {
     pub env: Vec<(String, String)>,
 }
 
+impl PipelineState {
+    pub fn to_json(&self) -> serde_json::Value {
+        let fail_counts: serde_json::Map<String, serde_json::Value> = self
+            .fail_counts
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect();
+        let loop_iterations: serde_json::Map<String, serde_json::Value> = self
+            .loop_iterations
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .collect();
+        let last_verdict = self
+            .last_verdict
+            .as_ref()
+            .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+        let env: serde_json::Map<String, serde_json::Value> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect();
+        serde_json::json!({
+            "current_idx": self.current_idx,
+            "global_counter": self.global_counter,
+            "fail_counts": fail_counts,
+            "last_stage": self.last_stage,
+            "last_verdict": last_verdict,
+            "loop_iterations": loop_iterations,
+            "env": env,
+        })
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> anyhow::Result<Self> {
+        let current_idx = v["current_idx"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("pipeline_state.current_idx missing or invalid"))?
+            as usize;
+        let global_counter = v["global_counter"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("pipeline_state.global_counter missing or invalid"))?
+            as u32;
+        let fail_counts: HashMap<String, u32> = v["fail_counts"]
+            .as_object()
+            .ok_or_else(|| anyhow!("pipeline_state.fail_counts missing or not an object"))?
+            .iter()
+            .map(|(k, val)| {
+                val.as_u64()
+                    .ok_or_else(|| anyhow!("pipeline_state.fail_counts[{}] is not a number", k))
+                    .map(|n| (k.clone(), n as u32))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        let last_stage = v["last_stage"].as_str().map(str::to_owned);
+        let last_verdict: Option<crate::verdict::Verdict> = if v["last_verdict"].is_null() {
+            None
+        } else {
+            Some(
+                serde_json::from_value(v["last_verdict"].clone())
+                    .context("pipeline_state.last_verdict is malformed")?,
+            )
+        };
+        let loop_iterations: HashMap<usize, u32> = v["loop_iterations"]
+            .as_object()
+            .ok_or_else(|| anyhow!("pipeline_state.loop_iterations missing or not an object"))?
+            .iter()
+            .map(|(k, val)| {
+                let ki = k.parse::<usize>().map_err(|_| {
+                    anyhow!(
+                        "pipeline_state.loop_iterations key {:?} is not a valid index",
+                        k
+                    )
+                })?;
+                let vi = val.as_u64().ok_or_else(|| {
+                    anyhow!("pipeline_state.loop_iterations[{}] is not a number", k)
+                })? as u32;
+                Ok((ki, vi))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        // env defaults to empty for backward compat (pre-ADR-0006 files lack this field)
+        let env: Vec<(String, String)> = v["env"]
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, val)| {
+                        let s = val
+                            .as_str()
+                            .ok_or_else(|| anyhow!("pipeline_state.env[{}] is not a string", k))?;
+                        Ok((k.clone(), s.to_owned()))
+                    })
+                    .collect::<anyhow::Result<_>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Self {
+            current_idx,
+            global_counter,
+            fail_counts,
+            last_stage,
+            last_verdict,
+            loop_iterations,
+            env,
+        })
+    }
+}
+
+/// Build the summary artifact JSON written to `last-run.json`.
+pub fn build_summary_artifact(
+    summary: &RunSummary,
+    workspace_dirty: bool,
+    pipeline_state: Option<&PipelineState>,
+) -> serde_json::Value {
+    let terminal_reason = match summary.terminal_reason {
+        TerminalReason::Done => "done",
+        TerminalReason::Exit => "exit",
+        TerminalReason::FailExit => "fail-exit",
+        TerminalReason::CapHit => "cap-hit",
+        TerminalReason::Ok => "ok",
+    };
+    let cap_hit_counter = match &summary.cap_hit {
+        None => serde_json::Value::Null,
+        Some(CapHitKind::LoopMaxIteration(idx)) => serde_json::json!({
+            "type": "max_iteration",
+            "loop_idx": idx,
+        }),
+        Some(CapHitKind::MaxPipelineIterations) => serde_json::json!({
+            "type": "max_pipeline_iterations",
+        }),
+    };
+    let last_verdict = summary
+        .last_verdict
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
+    let loops: serde_json::Map<String, serde_json::Value> = summary
+        .iteration_counters
+        .loops
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    let ps = pipeline_state.map(|s| s.to_json());
+    serde_json::json!({
+        "terminal_reason": terminal_reason,
+        "cap_hit_counter": cap_hit_counter,
+        "last_stage": summary.last_stage,
+        "last_verdict": last_verdict,
+        "session_id": summary.session_id,
+        "iteration_counters": {
+            "global": summary.iteration_counters.global,
+            "loops": loops,
+        },
+        "pipeline_state": ps,
+        "timestamp": iso8601_now(),
+        "workspace_dirty": workspace_dirty,
+    })
+}
+
+fn iso8601_now() -> String {
+    use std::time::SystemTime;
+    let secs = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    iso8601_from_secs(secs)
+}
+
+fn iso8601_from_secs(secs: u64) -> String {
+    let z = secs as i64 / 86400 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let h = (secs / 3600) % 24;
+    let min = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}Z")
+}
+
 /// Mutable progress tracked across stage invocations during a pipeline run.
 struct PipelineProgress {
     fail_counts: HashMap<String, u32>,
@@ -97,6 +292,40 @@ pub struct PipelineExecutor<R> {
     runner: R,
     input: Option<String>,
     initial_state: Option<PipelineState>,
+    capsule_dir: Option<PathBuf>,
+}
+
+fn resolve_all_prompts(
+    entries: &mut [PipelineEntry],
+    capsule_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    for entry in entries.iter_mut() {
+        match entry {
+            PipelineEntry::Stage(stage) => resolve_stage_prompt_inplace(stage, capsule_dir)?,
+            PipelineEntry::Loop(loop_config) => {
+                for stage in &mut loop_config.stages {
+                    resolve_stage_prompt_inplace(stage, capsule_dir)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_stage_prompt_inplace(
+    stage: &mut StageConfig,
+    capsule_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    stage.prompt = match (stage.prompt.as_deref(), capsule_dir) {
+        (Some(path_str), Some(dir)) => {
+            let content = read_prompt_file(dir, path_str)
+                .with_context(|| format!("stage '{}': failed to load prompt", stage.name))?;
+            Some(prepend_preamble(&content))
+        }
+        (Some(literal), None) => Some(literal.to_string()),
+        (None, _) => None,
+    };
+    Ok(())
 }
 
 impl<R: StageRunner> PipelineExecutor<R> {
@@ -106,6 +335,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             runner,
             input: None,
             initial_state: None,
+            capsule_dir: None,
         }
     }
 
@@ -115,6 +345,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             runner,
             input: None,
             initial_state: Some(state),
+            capsule_dir: None,
         }
     }
 
@@ -123,10 +354,17 @@ impl<R: StageRunner> PipelineExecutor<R> {
         self
     }
 
-    pub fn run(mut self) -> PipelineRunResult {
+    pub fn with_capsule_dir(mut self, dir: PathBuf) -> Self {
+        self.capsule_dir = Some(dir);
+        self
+    }
+
+    pub fn run(mut self) -> anyhow::Result<PipelineRunResult> {
+        resolve_all_prompts(&mut self.config.entries, self.capsule_dir.as_deref())?;
+
         let name_to_entry = build_name_index(&self.config);
         let max_pipeline = self.config.max_pipeline_iterations;
-        let is_flat_form = self.config.is_flat_form;
+        let cap_hit_is_ok = self.config.cap_hit_is_ok;
 
         let (mut current_idx, mut loop_iterations, mut progress) = match self.initial_state.take() {
             Some(s) => (
@@ -153,7 +391,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             ),
         };
 
-        let (outcome, cap_hit) = loop {
+        let (outcome, cap_hit) = 'pipeline: loop {
             if current_idx >= self.config.entries.len() {
                 break (PipelineOutcome::Done, None);
             }
@@ -167,7 +405,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         );
                     }
                     progress.global_counter += 1;
-                    match run_stage(&mut self.runner, stage, &name_to_entry, &mut progress) {
+                    match run_stage(&mut self.runner, stage, &name_to_entry, &mut progress)? {
                         StageOutcome::Advance(next_idx) => current_idx = next_idx,
                         StageOutcome::AdvanceIntoLoop {
                             entry_idx,
@@ -177,16 +415,19 @@ impl<R: StageRunner> PipelineExecutor<R> {
                             else {
                                 unreachable!("AdvanceIntoLoop references non-loop entry");
                             };
-                            let outcome = run_loop(
-                                &mut self.runner,
-                                loop_config,
-                                &mut progress,
-                                max_pipeline,
-                                stage_idx,
-                            );
-                            match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
+                            match handle_loop_outcome(
+                                run_loop(
+                                    &mut self.runner,
+                                    loop_config,
+                                    &mut progress,
+                                    max_pipeline,
+                                    stage_idx,
+                                )?,
+                                entry_idx,
+                                &mut loop_iterations,
+                            ) {
                                 LoopControl::Advance(next) => current_idx = next,
-                                LoopControl::Break(o, cap) => break (o, cap),
+                                LoopControl::Break(o, cap) => break 'pipeline (o, cap),
                             }
                         }
                         StageOutcome::Done => break (PipelineOutcome::Done, None),
@@ -200,14 +441,17 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 }
                 PipelineEntry::Loop(loop_config) => {
                     let entry_idx = current_idx;
-                    let outcome = run_loop(
-                        &mut self.runner,
-                        loop_config,
-                        &mut progress,
-                        max_pipeline,
-                        0,
-                    );
-                    match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
+                    match handle_loop_outcome(
+                        run_loop(
+                            &mut self.runner,
+                            loop_config,
+                            &mut progress,
+                            max_pipeline,
+                            0,
+                        )?,
+                        entry_idx,
+                        &mut loop_iterations,
+                    ) {
                         LoopControl::Advance(next) => current_idx = next,
                         LoopControl::Break(o, cap) => break (o, cap),
                     }
@@ -215,7 +459,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             }
         };
 
-        let terminal_reason = match (&outcome, is_flat_form) {
+        let terminal_reason = match (&outcome, cap_hit_is_ok) {
             (PipelineOutcome::Done, _) => TerminalReason::Done,
             (PipelineOutcome::Exit { from_fail: false }, _) => TerminalReason::Exit,
             (PipelineOutcome::Exit { from_fail: true }, _) => TerminalReason::FailExit,
@@ -233,7 +477,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             env: vec![],
         };
 
-        PipelineRunResult {
+        Ok(PipelineRunResult {
             outcome,
             summary: RunSummary {
                 terminal_reason,
@@ -247,7 +491,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 session_id: None,
             },
             pipeline_state,
-        }
+        })
     }
 }
 
@@ -291,7 +535,7 @@ fn run_loop(
     progress: &mut PipelineProgress,
     max_pipeline: u32,
     start_stage_idx: usize,
-) -> LoopOutcome {
+) -> anyhow::Result<LoopOutcome> {
     let loop_name_to_idx: HashMap<String, usize> = loop_config
         .stages
         .iter()
@@ -313,20 +557,20 @@ fn run_loop(
             iteration_count += 1;
             if let Some(max) = loop_config.max_iteration {
                 if iteration_count > max {
-                    return LoopOutcome::CapHit {
+                    return Ok(LoopOutcome::CapHit {
                         kind: LoopCapKind::MaxIteration,
                         iterations: iteration_count - 1,
-                    };
+                    });
                 }
             }
         }
         retrying_top = false;
 
         if progress.global_counter >= max_pipeline {
-            return LoopOutcome::CapHit {
+            return Ok(LoopOutcome::CapHit {
                 kind: LoopCapKind::MaxPipelineIterations,
                 iterations: iteration_count,
-            };
+            });
         }
         progress.global_counter += 1;
 
@@ -346,9 +590,9 @@ fn run_loop(
             verdict.as_ref().map(|v| &v.status),
             Some(VerdictStatus::Done)
         ) {
-            return LoopOutcome::LoopDone {
+            return Ok(LoopOutcome::LoopDone {
                 iterations: iteration_count,
-            };
+            });
         }
 
         let is_pass = matches!(
@@ -363,17 +607,17 @@ fn run_loop(
                 OnPass::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
                     Some(&idx) => stage_idx = idx,
                     None => {
-                        return LoopOutcome::Exit {
+                        return Ok(LoopOutcome::Exit {
                             kind: ExitKind::PassRoute,
                             iterations: iteration_count,
-                        }
+                        })
                     }
                 },
                 OnPass::Exit => {
-                    return LoopOutcome::Exit {
+                    return Ok(LoopOutcome::Exit {
                         kind: ExitKind::PassRoute,
                         iterations: iteration_count,
-                    }
+                    })
                 }
             }
         } else {
@@ -382,19 +626,19 @@ fn run_loop(
 
             if let Some(max) = stage.max_retries {
                 if *fail_count > max {
-                    return LoopOutcome::Exit {
+                    return Ok(LoopOutcome::Exit {
                         kind: ExitKind::FailRoute,
                         iterations: iteration_count,
-                    };
+                    });
                 }
             }
 
             match &stage.on_fail {
                 OnFail::Exit => {
-                    return LoopOutcome::Exit {
+                    return Ok(LoopOutcome::Exit {
                         kind: ExitKind::FailRoute,
                         iterations: iteration_count,
-                    }
+                    })
                 }
                 OnFail::Retry => {
                     if stage_idx == 0 {
@@ -404,10 +648,10 @@ fn run_loop(
                 OnFail::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
                     Some(&idx) => stage_idx = idx,
                     None => {
-                        return LoopOutcome::Exit {
+                        return Ok(LoopOutcome::Exit {
                             kind: ExitKind::FailRoute,
                             iterations: iteration_count,
-                        }
+                        })
                     }
                 },
             }
@@ -496,9 +740,16 @@ fn inject_note_block(
     base_prompt: &str,
 ) -> String {
     if let (Some(name), Some(verdict)) = (last_stage, last_verdict.as_ref()) {
-        if let Some(block) =
-            crate::note_block::format(name, &verdict.status, verdict.notes.as_deref())
-        {
+        let notes = verdict.notes.as_deref().filter(|n| !n.is_empty());
+        if let Some(notes) = notes {
+            let status_str = match verdict.status {
+                VerdictStatus::Pass => "pass",
+                VerdictStatus::Fail => "fail",
+                VerdictStatus::Done => "done",
+            };
+            let block = format!(
+                "<previous-stage>\nStage: {name}\nStatus: {status_str}\nNotes: {notes}\n</previous-stage>"
+            );
             return format!("{block}\n\n{base_prompt}");
         }
     }
@@ -510,7 +761,7 @@ fn run_stage(
     stage: &StageConfig,
     name_to_entry: &HashMap<String, RouteTarget>,
     progress: &mut PipelineProgress,
-) -> StageOutcome {
+) -> anyhow::Result<StageOutcome> {
     let base_prompt = stage.prompt.as_deref().unwrap_or("");
     let with_input = inject_input(&mut progress.input, base_prompt);
     let effective_prompt = inject_note_block(
@@ -526,7 +777,7 @@ fn run_stage(
         verdict.as_ref().map(|v| &v.status),
         Some(VerdictStatus::Done)
     ) {
-        return StageOutcome::Done;
+        return Ok(StageOutcome::Done);
     }
 
     let is_pass = matches!(
@@ -536,18 +787,18 @@ fn run_stage(
 
     if is_pass {
         progress.fail_counts.remove(&stage.name);
-        route_pass(stage, name_to_entry)
+        Ok(route_pass(stage, name_to_entry))
     } else {
         let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
         *fail_count += 1;
 
         if let Some(max) = stage.max_retries {
             if *fail_count > max {
-                return StageOutcome::Exit(ExitKind::FailRoute);
+                return Ok(StageOutcome::Exit(ExitKind::FailRoute));
             }
         }
 
-        route_fail(stage, name_to_entry)
+        Ok(route_fail(stage, name_to_entry))
     }
 }
 
@@ -667,7 +918,7 @@ mod tests {
         PipelineConfig {
             entries,
             max_pipeline_iterations: 1000,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         }
     }
 
@@ -676,7 +927,7 @@ mod tests {
     }
 
     fn run_outcome(config: PipelineConfig, runner: FakeRunner) -> PipelineOutcome {
-        PipelineExecutor::new(config, runner).run().outcome
+        PipelineExecutor::new(config, runner).run().unwrap().outcome
     }
 
     #[test]
@@ -773,7 +1024,7 @@ mod tests {
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 3,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         // 4 fails: 3rd triggers cap, 4th never runs
         assert_eq!(
@@ -848,7 +1099,7 @@ mod tests {
         // a emits done → pipeline Done immediately (b never runs)
         let runner = FakeRunner::new([done()]);
         assert_eq!(
-            PipelineExecutor::new(config, runner).run().outcome,
+            PipelineExecutor::new(config, runner).run().unwrap().outcome,
             PipelineOutcome::Done
         );
     }
@@ -896,7 +1147,8 @@ mod tests {
         let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
         PipelineExecutor::new(config, runner)
             .with_input(Some("my-input".to_string()))
-            .run();
+            .run()
+            .unwrap();
         let prompts = prompts.lock().unwrap();
         assert!(
             prompts[0].contains("<capsule:input>"),
@@ -918,7 +1170,7 @@ mod tests {
         s.prompt = Some("hello".to_string());
         let config = pipeline(vec![single_stage_entry(s)]);
         let (runner, prompts) = RecordingRunner::new([pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         assert_eq!(prompts.lock().unwrap()[0], "hello");
     }
 
@@ -933,7 +1185,7 @@ mod tests {
     fn first_stage_has_no_note_block() {
         let config = pipeline(vec![single_stage_entry(stage("a"))]);
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("first done")]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         assert!(!prompts.lock().unwrap()[0].contains("<previous-stage>"));
     }
 
@@ -945,7 +1197,7 @@ mod tests {
         b.prompt = Some("prompt-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("result from a"), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         let prompts = prompts.lock().unwrap();
         assert!(
             !prompts[0].contains("<previous-stage>"),
@@ -971,7 +1223,7 @@ mod tests {
             single_stage_entry(stage("b")),
         ]);
         let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         assert!(!prompts.lock().unwrap()[1].contains("<previous-stage>"));
     }
 
@@ -986,7 +1238,7 @@ mod tests {
         let config = pipeline(vec![loop_entry]);
         // iteration 1 passes with notes, iteration 2 passes (cap then terminates)
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("iter 1 output"), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         let prompts = prompts.lock().unwrap();
         assert!(
             !prompts[0].contains("<previous-stage>"),
@@ -1007,7 +1259,7 @@ mod tests {
         b.prompt = Some("task-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("output"), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         let second = &prompts.lock().unwrap()[1].clone();
         let notes_pos = second.find("<previous-stage>").unwrap();
         let base_pos = second.find("task-b").unwrap();
@@ -1015,7 +1267,7 @@ mod tests {
     }
 
     fn run_summary(config: PipelineConfig, runner: FakeRunner) -> RunSummary {
-        PipelineExecutor::new(config, runner).run().summary
+        PipelineExecutor::new(config, runner).run().unwrap().summary
     }
 
     #[test]
@@ -1049,7 +1301,7 @@ mod tests {
                 stages: vec![stage("a")],
             })],
             max_pipeline_iterations: 1000,
-            is_flat_form: true,
+            cap_hit_is_ok: true,
         };
         let summary = run_summary(config, FakeRunner::new([pass()]));
         assert_eq!(summary.terminal_reason, TerminalReason::Ok);
@@ -1111,14 +1363,14 @@ mod tests {
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 2,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
         assert_eq!(summary.cap_hit, Some(CapHitKind::MaxPipelineIterations));
     }
 
     fn run_result(config: PipelineConfig, runner: FakeRunner) -> PipelineRunResult {
-        PipelineExecutor::new(config, runner).run()
+        PipelineExecutor::new(config, runner).run().unwrap()
     }
 
     #[test]
@@ -1167,8 +1419,9 @@ mod tests {
 
         // Resume from saved state: b should run first (pass), then c (pass) → Done
         let state = first_run.pipeline_state;
-        let result =
-            PipelineExecutor::resume(config, FakeRunner::new([pass(), pass()]), state).run();
+        let result = PipelineExecutor::resume(config, FakeRunner::new([pass(), pass()]), state)
+            .run()
+            .unwrap();
         assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 
@@ -1180,7 +1433,9 @@ mod tests {
         b.prompt = Some("task-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
 
-        let first_run = PipelineExecutor::new(config.clone(), FakeRunner::new([fail()])).run();
+        let first_run = PipelineExecutor::new(config.clone(), FakeRunner::new([fail()]))
+            .run()
+            .unwrap();
         let state = first_run.pipeline_state.clone();
         assert_eq!(state.last_stage, Some("a".to_string()));
         assert_eq!(state.last_verdict, fail());
@@ -1196,7 +1451,9 @@ mod tests {
             ..first_run.pipeline_state
         };
         let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
-        PipelineExecutor::resume(config, runner, state2).run();
+        PipelineExecutor::resume(config, runner, state2)
+            .run()
+            .unwrap();
         let prompts = prompts.lock().unwrap();
         // First resumed stage should have note block from previous run
         assert!(
@@ -1213,21 +1470,22 @@ mod tests {
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 5,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         // First run: 3 fails → CapHit at max 3
         let config3 = PipelineConfig {
             entries: config.entries.clone(),
             max_pipeline_iterations: 3,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         let first_run = run_result(config3, FakeRunner::new([fail(), fail(), fail()]));
         assert_eq!(first_run.pipeline_state.global_counter, 3);
 
         // Resume with higher limit: counter starts at 3, 2 more iterations available
         let state = first_run.pipeline_state;
-        let result =
-            PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state).run();
+        let result = PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state)
+            .run()
+            .unwrap();
         assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 
@@ -1286,5 +1544,134 @@ mod tests {
             run_outcome(config, FakeRunner::new([pass(), pass(), pass()])),
             PipelineOutcome::CapHit
         );
+    }
+
+    // ── PipelineState serialization ────────────────────────────────────────────
+
+    fn full_state() -> PipelineState {
+        let mut fail_counts = HashMap::new();
+        fail_counts.insert("stage-a".to_string(), 2u32);
+        let mut loop_iters = HashMap::new();
+        loop_iters.insert(0usize, 3u32);
+        PipelineState {
+            current_idx: 2,
+            global_counter: 7,
+            fail_counts,
+            last_stage: Some("stage-a".to_string()),
+            last_verdict: Some(Verdict {
+                status: VerdictStatus::Fail,
+                notes: Some("oops".to_string()),
+            }),
+            loop_iterations: loop_iters,
+            env: vec![("KEY".to_string(), "val".to_string())],
+        }
+    }
+
+    #[test]
+    fn pipeline_state_to_json_produces_expected_shape() {
+        let state = full_state();
+        let v = state.to_json();
+        assert_eq!(v["current_idx"], 2);
+        assert_eq!(v["global_counter"], 7);
+        assert_eq!(v["fail_counts"]["stage-a"], 2);
+        assert_eq!(v["last_stage"], "stage-a");
+        assert_eq!(v["last_verdict"]["status"], "fail");
+        assert_eq!(v["last_verdict"]["notes"], "oops");
+        assert_eq!(v["loop_iterations"]["0"], 3);
+        assert_eq!(v["env"]["KEY"], "val");
+    }
+
+    #[test]
+    fn pipeline_state_round_trips_via_json() {
+        let original = full_state();
+        let json = original.to_json();
+        let restored = PipelineState::from_json(&json).unwrap();
+        assert_eq!(restored.current_idx, original.current_idx);
+        assert_eq!(restored.global_counter, original.global_counter);
+        assert_eq!(restored.fail_counts, original.fail_counts);
+        assert_eq!(restored.last_stage, original.last_stage);
+        assert_eq!(restored.last_verdict, original.last_verdict);
+        assert_eq!(restored.loop_iterations, original.loop_iterations);
+        assert_eq!(restored.env, original.env);
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_current_idx() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("current_idx");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_global_counter() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("global_counter");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_fail_counts() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("fail_counts");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_non_number_in_fail_counts() {
+        let mut v = full_state().to_json();
+        v["fail_counts"]["stage-a"] = serde_json::json!("not-a-number");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_missing_loop_iterations() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("loop_iterations");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_non_number_in_loop_iterations() {
+        let mut v = full_state().to_json();
+        v["loop_iterations"]["0"] = serde_json::json!("not-a-number");
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_errors_on_malformed_last_verdict() {
+        let mut v = full_state().to_json();
+        v["last_verdict"] = serde_json::json!({"status": 42});
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn from_json_env_defaults_to_empty_when_absent() {
+        let mut v = full_state().to_json();
+        v.as_object_mut().unwrap().remove("env");
+        let restored = PipelineState::from_json(&v).unwrap();
+        assert_eq!(restored.env, vec![]);
+    }
+
+    #[test]
+    fn from_json_errors_on_non_string_in_env() {
+        let mut v = full_state().to_json();
+        v["env"]["KEY"] = serde_json::json!(42);
+        assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn iso8601_epoch_zero() {
+        assert_eq!(iso8601_from_secs(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn iso8601_known_date() {
+        // 2025-01-01T00:00:00Z = 1735689600
+        assert_eq!(iso8601_from_secs(1_735_689_600), "2025-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn iso8601_mid_day() {
+        assert_eq!(iso8601_from_secs(961_073_130), "2000-06-15T12:45:30Z");
     }
 }

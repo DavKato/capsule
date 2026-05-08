@@ -89,7 +89,6 @@ pub struct PipelineConfig {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub iterations: u32,
-    pub prompt: Option<PathBuf>,
     pub capsule_dir: PathBuf,
     pub rebuild: bool,
     pub model: Option<String>,
@@ -431,11 +430,11 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
     let min_token_lifetime_minutes = cli.min_token_lifetime_minutes.or(file_min_token);
     let rebuild = cli.rebuild;
 
-    let (iterations, prompt, pipeline) = if let Some(multi) = file_multi {
+    let (iterations, pipeline) = if let Some(multi) = file_multi {
         let pipeline = build_pipeline_from_multi_stage(multi)
             .with_context(|| format!("validating {}", config_path.display()))?;
         // iterations is not applicable for multi-stage; use max_pipeline_iterations.
-        (pipeline.max_pipeline_iterations, None, pipeline)
+        (pipeline.max_pipeline_iterations, pipeline)
     } else {
         let file_flat = file_flat.unwrap_or_default();
         match mode {
@@ -451,20 +450,18 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "prompt.md".to_string());
                 let pipeline = desugar_flat_form(iterations, Some(&prompt_path_str));
-                (iterations, prompt_path, pipeline)
+                (iterations, pipeline)
             }
             ResolveMode::Check => {
                 let iterations = file_flat.iterations.unwrap_or(1);
-                let prompt = file_flat.prompt.as_deref().map(PathBuf::from);
                 let pipeline = desugar_flat_form(iterations, file_flat.prompt.as_deref());
-                (iterations, prompt, pipeline)
+                (iterations, pipeline)
             }
         }
     };
 
     Ok(Config {
         iterations,
-        prompt,
         capsule_dir: capsule_dir.to_path_buf(),
         rebuild,
         model,

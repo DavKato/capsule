@@ -295,6 +295,39 @@ pub struct PipelineExecutor<R> {
     capsule_dir: Option<PathBuf>,
 }
 
+fn resolve_all_prompts(
+    entries: &mut [PipelineEntry],
+    capsule_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    for entry in entries.iter_mut() {
+        match entry {
+            PipelineEntry::Stage(stage) => resolve_stage_prompt_inplace(stage, capsule_dir)?,
+            PipelineEntry::Loop(loop_config) => {
+                for stage in &mut loop_config.stages {
+                    resolve_stage_prompt_inplace(stage, capsule_dir)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_stage_prompt_inplace(
+    stage: &mut StageConfig,
+    capsule_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    stage.prompt = match (stage.prompt.as_deref(), capsule_dir) {
+        (Some(path_str), Some(dir)) => {
+            let content = read_prompt_file(dir, path_str)
+                .with_context(|| format!("stage '{}': failed to load prompt", stage.name))?;
+            Some(prepend_preamble(&content))
+        }
+        (Some(literal), None) => Some(literal.to_string()),
+        (None, _) => None,
+    };
+    Ok(())
+}
+
 impl<R: StageRunner> PipelineExecutor<R> {
     pub fn new(config: PipelineConfig, runner: R) -> Self {
         Self {
@@ -327,6 +360,8 @@ impl<R: StageRunner> PipelineExecutor<R> {
     }
 
     pub fn run(mut self) -> anyhow::Result<PipelineRunResult> {
+        resolve_all_prompts(&mut self.config.entries, self.capsule_dir.as_deref())?;
+
         let name_to_entry = build_name_index(&self.config);
         let max_pipeline = self.config.max_pipeline_iterations;
         let cap_hit_is_ok = self.config.cap_hit_is_ok;
@@ -356,8 +391,6 @@ impl<R: StageRunner> PipelineExecutor<R> {
             ),
         };
 
-        let capsule_dir = self.capsule_dir.clone();
-
         let (outcome, cap_hit) = 'pipeline: loop {
             if current_idx >= self.config.entries.len() {
                 break (PipelineOutcome::Done, None);
@@ -372,13 +405,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         );
                     }
                     progress.global_counter += 1;
-                    match run_stage(
-                        &mut self.runner,
-                        stage,
-                        &name_to_entry,
-                        &mut progress,
-                        capsule_dir.as_deref(),
-                    )? {
+                    match run_stage(&mut self.runner, stage, &name_to_entry, &mut progress)? {
                         StageOutcome::Advance(next_idx) => current_idx = next_idx,
                         StageOutcome::AdvanceIntoLoop {
                             entry_idx,
@@ -395,7 +422,6 @@ impl<R: StageRunner> PipelineExecutor<R> {
                                     &mut progress,
                                     max_pipeline,
                                     stage_idx,
-                                    capsule_dir.as_deref(),
                                 )?,
                                 entry_idx,
                                 &mut loop_iterations,
@@ -422,7 +448,6 @@ impl<R: StageRunner> PipelineExecutor<R> {
                             &mut progress,
                             max_pipeline,
                             0,
-                            capsule_dir.as_deref(),
                         )?,
                         entry_idx,
                         &mut loop_iterations,
@@ -510,7 +535,6 @@ fn run_loop(
     progress: &mut PipelineProgress,
     max_pipeline: u32,
     start_stage_idx: usize,
-    capsule_dir: Option<&Path>,
 ) -> anyhow::Result<LoopOutcome> {
     let loop_name_to_idx: HashMap<String, usize> = loop_config
         .stages
@@ -551,8 +575,8 @@ fn run_loop(
         progress.global_counter += 1;
 
         let stage = &loop_config.stages[stage_idx];
-        let base_prompt = resolve_stage_prompt(stage, capsule_dir)?;
-        let with_input = inject_input(&mut progress.input, &base_prompt);
+        let base_prompt = stage.prompt.as_deref().unwrap_or("");
+        let with_input = inject_input(&mut progress.input, base_prompt);
         let effective_prompt = inject_note_block(
             progress.last_stage.as_deref(),
             &progress.last_verdict,
@@ -710,19 +734,6 @@ fn inject_input(input: &mut Option<String>, base_prompt: &str) -> String {
     }
 }
 
-/// When `capsule_dir` is Some, prompt values are file paths relative to it. When None (tests), literal text.
-fn resolve_stage_prompt(stage: &StageConfig, capsule_dir: Option<&Path>) -> anyhow::Result<String> {
-    match (stage.prompt.as_deref(), capsule_dir) {
-        (Some(path_str), Some(dir)) => {
-            let content = read_prompt_file(dir, path_str)
-                .with_context(|| format!("stage '{}': failed to load prompt", stage.name))?;
-            Ok(prepend_preamble(&content))
-        }
-        (Some(literal), None) => Ok(literal.to_string()),
-        (None, _) => Ok(String::new()),
-    }
-}
-
 fn inject_note_block(
     last_stage: Option<&str>,
     last_verdict: &Option<Verdict>,
@@ -750,10 +761,9 @@ fn run_stage(
     stage: &StageConfig,
     name_to_entry: &HashMap<String, RouteTarget>,
     progress: &mut PipelineProgress,
-    capsule_dir: Option<&Path>,
 ) -> anyhow::Result<StageOutcome> {
-    let base_prompt = resolve_stage_prompt(stage, capsule_dir)?;
-    let with_input = inject_input(&mut progress.input, &base_prompt);
+    let base_prompt = stage.prompt.as_deref().unwrap_or("");
+    let with_input = inject_input(&mut progress.input, base_prompt);
     let effective_prompt = inject_note_block(
         progress.last_stage.as_deref(),
         &progress.last_verdict,

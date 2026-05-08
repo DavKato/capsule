@@ -197,9 +197,7 @@ impl RunSession {
         ctrlc::set_handler(move || {
             if let Ok(slot) = handler_container.lock() {
                 if let Some(name) = slot.as_ref() {
-                    let _ = std::process::Command::new("docker")
-                        .args(["stop", name])
-                        .output();
+                    let _ = Command::new("docker").args(["stop", name]).output();
                 }
             }
             std::process::exit(1);
@@ -273,9 +271,7 @@ impl RunSession {
                     eprintln!(
                         "GH_TOKEN not found in process environment — falling back to gh auth token"
                     );
-                    let _ = std::process::Command::new("gh")
-                        .args(["auth", "status"])
-                        .status();
+                    let _ = Command::new("gh").args(["auth", "status"]).status();
                     eprint!("Inject into container? [y/N] ");
                     let _ = std::io::stderr().flush();
                     let mut answer = String::new();
@@ -566,7 +562,7 @@ fn write_last_run(
 }
 
 fn is_workspace_dirty() -> bool {
-    std::process::Command::new("git")
+    Command::new("git")
         .args(["status", "--porcelain"])
         .output()
         .map(|o| !o.stdout.is_empty())
@@ -688,9 +684,7 @@ fn resolve_gh_token(
             if let Some(token) = pre_dotenv_env.get("GH_TOKEN").filter(|t| !t.is_empty()) {
                 return Ok(token.clone());
             }
-            let output = std::process::Command::new("gh")
-                .args(["auth", "token"])
-                .output();
+            let output = Command::new("gh").args(["auth", "token"]).output();
             if let Ok(out) = output {
                 if out.status.success() {
                     let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -1607,10 +1601,11 @@ mod tests {
         use serial_test::serial;
         use std::fs;
         use std::path::Path;
+        use std::process::Command;
         use tempfile::TempDir;
 
         fn git_init(dir: &TempDir) {
-            std::process::Command::new("git")
+            Command::new("git")
                 .args(["init"])
                 .current_dir(dir.path())
                 .output()

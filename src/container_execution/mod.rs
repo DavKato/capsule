@@ -1192,4 +1192,17 @@ mod tests {
             "auth failure must take priority"
         );
     }
+
+    #[test]
+    fn post_stream_error_submit_verdict_missing_takes_priority_over_non_zero_exit() {
+        let result = StreamResult {
+            submit_verdict_missing: true,
+            ..clear_result()
+        };
+        let err = post_stream_error(&result, &failure_status(), "test").unwrap();
+        assert!(
+            err.to_string().contains("submit_verdict"),
+            "submit_verdict_missing must take priority over non-zero exit"
+        );
+    }
 }

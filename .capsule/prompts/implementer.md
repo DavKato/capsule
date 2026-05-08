@@ -18,7 +18,7 @@ step 5.
    and the chosen sub-issue including comments to understand the full context.
 4. Check out the working branch named in the parent issue's comments.
    Create it if it doesn't exist yet.
-5. Implement the sub-issue using /tdd skill.
+5. Implement the sub-issue. Apply /tdd skill where applicable.
 6. Commit with a clear message referencing the sub-issue number
    (e.g. `fix: handle empty input (#42)`).
 7. Call `submit_verdict` with status `pass` and note the commit hash.

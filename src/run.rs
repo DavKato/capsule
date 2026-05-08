@@ -365,11 +365,14 @@ impl RunSession {
             resume_session_id,
         };
         let mut result = if let Some((_, state)) = resume {
-            PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state).run()
+            PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state)
+                .with_capsule_dir(self.cfg.capsule_dir.clone())
+                .run()?
         } else {
             PipelineExecutor::new(self.cfg.pipeline.clone(), runner)
+                .with_capsule_dir(self.cfg.capsule_dir.clone())
                 .with_input(self.input)
-                .run()
+                .run()?
         };
         result.summary.session_id = last_session_id.lock().unwrap().take();
         result.pipeline_state.env = self.env_pairs.clone();

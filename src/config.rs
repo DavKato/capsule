@@ -1,4 +1,3 @@
-use crate::prompt::{prepend_preamble, resolve_prompt};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -353,25 +352,6 @@ fn desugar_flat_form(iterations: u32, prompt: Option<&str>) -> PipelineConfig {
     }
 }
 
-fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -> Result<()> {
-    for entry in entries {
-        let stages = match entry {
-            PipelineEntry::Stage(s) => std::slice::from_mut(s),
-            PipelineEntry::Loop(l) => l.stages.as_mut_slice(),
-        };
-        for stage in stages {
-            if let Some(path_str) = stage.prompt.take() {
-                let path = capsule_dir.join(&path_str);
-                let bytes = std::fs::read(&path)
-                    .with_context(|| format!("prompt file not found: {}", path.display()))?;
-                let content = String::from_utf8_lossy(&bytes).into_owned();
-                stage.prompt = Some(prepend_preamble(&content));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn git_identity_from_str(s: &str) -> Option<GitIdentity> {
     match s.to_ascii_lowercase().as_str() {
         "user" => Some(GitIdentity::User),
@@ -452,11 +432,8 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
     let rebuild = cli.rebuild;
 
     let (iterations, prompt, pipeline) = if let Some(multi) = file_multi {
-        let mut pipeline = build_pipeline_from_multi_stage(multi)
+        let pipeline = build_pipeline_from_multi_stage(multi)
             .with_context(|| format!("validating {}", config_path.display()))?;
-        if matches!(mode, ResolveMode::Run) {
-            resolve_stage_prompts(&mut pipeline.entries, capsule_dir)?;
-        }
         // iterations is not applicable for multi-stage; use max_pipeline_iterations.
         (pipeline.max_pipeline_iterations, None, pipeline)
     } else {
@@ -469,10 +446,12 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
                     )
                 })?;
                 let prompt_path = cli.prompt.or_else(|| file_flat.prompt.map(PathBuf::from));
-                let prompt_bytes = resolve_prompt(capsule_dir, prompt_path.clone())?;
-                let user_prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
-                let resolved_content = prepend_preamble(&user_prompt);
-                let pipeline = desugar_flat_form(iterations, Some(&resolved_content));
+                // Executor resolves lazily; pass path string (default: "prompt.md" relative to capsule_dir)
+                let prompt_path_str = prompt_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "prompt.md".to_string());
+                let pipeline = desugar_flat_form(iterations, Some(&prompt_path_str));
                 (iterations, prompt_path, pipeline)
             }
             ResolveMode::Check => {

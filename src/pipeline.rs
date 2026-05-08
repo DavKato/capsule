@@ -1,8 +1,22 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::config::{LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
 use anyhow::{anyhow, Context};
+
+pub const SYSTEM_PREAMBLE: &str = include_str!("../base-image/system_preamble.md");
+
+pub fn prepend_preamble(user_prompt: &str) -> String {
+    format!("{SYSTEM_PREAMBLE}\n\n{user_prompt}")
+}
+
+fn read_prompt_file(capsule_dir: &Path, path_str: &str) -> anyhow::Result<String> {
+    let path = capsule_dir.join(path_str);
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("prompt file not found: {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
 
 pub trait StageRunner {
     fn run(&mut self, stage_name: &str, prompt: &str, model: Option<&str>) -> Option<Verdict>;
@@ -274,6 +288,7 @@ pub struct PipelineExecutor<R> {
     runner: R,
     input: Option<String>,
     initial_state: Option<PipelineState>,
+    capsule_dir: Option<PathBuf>,
 }
 
 impl<R: StageRunner> PipelineExecutor<R> {
@@ -283,6 +298,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             runner,
             input: None,
             initial_state: None,
+            capsule_dir: None,
         }
     }
 
@@ -292,6 +308,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             runner,
             input: None,
             initial_state: Some(state),
+            capsule_dir: None,
         }
     }
 
@@ -300,7 +317,12 @@ impl<R: StageRunner> PipelineExecutor<R> {
         self
     }
 
-    pub fn run(mut self) -> PipelineRunResult {
+    pub fn with_capsule_dir(mut self, dir: PathBuf) -> Self {
+        self.capsule_dir = Some(dir);
+        self
+    }
+
+    pub fn run(mut self) -> anyhow::Result<PipelineRunResult> {
         let name_to_entry = build_name_index(&self.config);
         let max_pipeline = self.config.max_pipeline_iterations;
         let cap_hit_is_ok = self.config.cap_hit_is_ok;
@@ -330,6 +352,9 @@ impl<R: StageRunner> PipelineExecutor<R> {
             ),
         };
 
+        let capsule_dir = self.capsule_dir.clone();
+        let mut early_exit_error: Option<anyhow::Error> = None;
+
         let (outcome, cap_hit) = loop {
             if current_idx >= self.config.entries.len() {
                 break (PipelineOutcome::Done, None);
@@ -344,53 +369,87 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         );
                     }
                     progress.global_counter += 1;
-                    match run_stage(&mut self.runner, stage, &name_to_entry, &mut progress) {
-                        StageOutcome::Advance(next_idx) => current_idx = next_idx,
-                        StageOutcome::AdvanceIntoLoop {
+                    match run_stage(
+                        &mut self.runner,
+                        stage,
+                        &name_to_entry,
+                        &mut progress,
+                        capsule_dir.as_deref(),
+                    ) {
+                        Err(e) => {
+                            early_exit_error = Some(e);
+                            break (PipelineOutcome::Exit { from_fail: true }, None);
+                        }
+                        Ok(StageOutcome::Advance(next_idx)) => current_idx = next_idx,
+                        Ok(StageOutcome::AdvanceIntoLoop {
                             entry_idx,
                             stage_idx,
-                        } => {
+                        }) => {
                             let PipelineEntry::Loop(loop_config) = &self.config.entries[entry_idx]
                             else {
                                 unreachable!("AdvanceIntoLoop references non-loop entry");
                             };
-                            let outcome = run_loop(
+                            match run_loop(
                                 &mut self.runner,
                                 loop_config,
                                 &mut progress,
                                 max_pipeline,
                                 stage_idx,
-                            );
-                            match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
-                                LoopControl::Advance(next) => current_idx = next,
-                                LoopControl::Break(o, cap) => break (o, cap),
+                                capsule_dir.as_deref(),
+                            ) {
+                                Err(e) => {
+                                    early_exit_error = Some(e);
+                                    break (PipelineOutcome::Exit { from_fail: true }, None);
+                                }
+                                Ok(outcome) => {
+                                    match handle_loop_outcome(
+                                        outcome,
+                                        entry_idx,
+                                        &mut loop_iterations,
+                                    ) {
+                                        LoopControl::Advance(next) => current_idx = next,
+                                        LoopControl::Break(o, cap) => break (o, cap),
+                                    }
+                                }
                             }
                         }
-                        StageOutcome::Done => break (PipelineOutcome::Done, None),
-                        StageOutcome::Exit(ExitKind::PassRoute) => {
+                        Ok(StageOutcome::Done) => break (PipelineOutcome::Done, None),
+                        Ok(StageOutcome::Exit(ExitKind::PassRoute)) => {
                             break (PipelineOutcome::Exit { from_fail: false }, None)
                         }
-                        StageOutcome::Exit(ExitKind::FailRoute) => {
+                        Ok(StageOutcome::Exit(ExitKind::FailRoute)) => {
                             break (PipelineOutcome::Exit { from_fail: true }, None)
                         }
                     }
                 }
                 PipelineEntry::Loop(loop_config) => {
                     let entry_idx = current_idx;
-                    let outcome = run_loop(
+                    match run_loop(
                         &mut self.runner,
                         loop_config,
                         &mut progress,
                         max_pipeline,
                         0,
-                    );
-                    match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
-                        LoopControl::Advance(next) => current_idx = next,
-                        LoopControl::Break(o, cap) => break (o, cap),
+                        capsule_dir.as_deref(),
+                    ) {
+                        Err(e) => {
+                            early_exit_error = Some(e);
+                            break (PipelineOutcome::Exit { from_fail: true }, None);
+                        }
+                        Ok(outcome) => {
+                            match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
+                                LoopControl::Advance(next) => current_idx = next,
+                                LoopControl::Break(o, cap) => break (o, cap),
+                            }
+                        }
                     }
                 }
             }
         };
+
+        if let Some(e) = early_exit_error {
+            return Err(e);
+        }
 
         let terminal_reason = match (&outcome, cap_hit_is_ok) {
             (PipelineOutcome::Done, _) => TerminalReason::Done,
@@ -410,7 +469,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             env: vec![],
         };
 
-        PipelineRunResult {
+        Ok(PipelineRunResult {
             outcome,
             summary: RunSummary {
                 terminal_reason,
@@ -424,7 +483,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 session_id: None,
             },
             pipeline_state,
-        }
+        })
     }
 }
 
@@ -468,7 +527,8 @@ fn run_loop(
     progress: &mut PipelineProgress,
     max_pipeline: u32,
     start_stage_idx: usize,
-) -> LoopOutcome {
+    capsule_dir: Option<&Path>,
+) -> anyhow::Result<LoopOutcome> {
     let loop_name_to_idx: HashMap<String, usize> = loop_config
         .stages
         .iter()
@@ -490,26 +550,26 @@ fn run_loop(
             iteration_count += 1;
             if let Some(max) = loop_config.max_iteration {
                 if iteration_count > max {
-                    return LoopOutcome::CapHit {
+                    return Ok(LoopOutcome::CapHit {
                         kind: LoopCapKind::MaxIteration,
                         iterations: iteration_count - 1,
-                    };
+                    });
                 }
             }
         }
         retrying_top = false;
 
         if progress.global_counter >= max_pipeline {
-            return LoopOutcome::CapHit {
+            return Ok(LoopOutcome::CapHit {
                 kind: LoopCapKind::MaxPipelineIterations,
                 iterations: iteration_count,
-            };
+            });
         }
         progress.global_counter += 1;
 
         let stage = &loop_config.stages[stage_idx];
-        let base_prompt = stage.prompt.as_deref().unwrap_or("");
-        let with_input = inject_input(&mut progress.input, base_prompt);
+        let base_prompt = resolve_stage_prompt(stage, capsule_dir)?;
+        let with_input = inject_input(&mut progress.input, &base_prompt);
         let effective_prompt = inject_note_block(
             progress.last_stage.as_deref(),
             &progress.last_verdict,
@@ -523,9 +583,9 @@ fn run_loop(
             verdict.as_ref().map(|v| &v.status),
             Some(VerdictStatus::Done)
         ) {
-            return LoopOutcome::LoopDone {
+            return Ok(LoopOutcome::LoopDone {
                 iterations: iteration_count,
-            };
+            });
         }
 
         let is_pass = matches!(
@@ -540,17 +600,17 @@ fn run_loop(
                 OnPass::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
                     Some(&idx) => stage_idx = idx,
                     None => {
-                        return LoopOutcome::Exit {
+                        return Ok(LoopOutcome::Exit {
                             kind: ExitKind::PassRoute,
                             iterations: iteration_count,
-                        }
+                        })
                     }
                 },
                 OnPass::Exit => {
-                    return LoopOutcome::Exit {
+                    return Ok(LoopOutcome::Exit {
                         kind: ExitKind::PassRoute,
                         iterations: iteration_count,
-                    }
+                    })
                 }
             }
         } else {
@@ -559,19 +619,19 @@ fn run_loop(
 
             if let Some(max) = stage.max_retries {
                 if *fail_count > max {
-                    return LoopOutcome::Exit {
+                    return Ok(LoopOutcome::Exit {
                         kind: ExitKind::FailRoute,
                         iterations: iteration_count,
-                    };
+                    });
                 }
             }
 
             match &stage.on_fail {
                 OnFail::Exit => {
-                    return LoopOutcome::Exit {
+                    return Ok(LoopOutcome::Exit {
                         kind: ExitKind::FailRoute,
                         iterations: iteration_count,
-                    }
+                    })
                 }
                 OnFail::Retry => {
                     if stage_idx == 0 {
@@ -581,10 +641,10 @@ fn run_loop(
                 OnFail::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
                     Some(&idx) => stage_idx = idx,
                     None => {
-                        return LoopOutcome::Exit {
+                        return Ok(LoopOutcome::Exit {
                             kind: ExitKind::FailRoute,
                             iterations: iteration_count,
-                        }
+                        })
                     }
                 },
             }
@@ -667,15 +727,34 @@ fn inject_input(input: &mut Option<String>, base_prompt: &str) -> String {
     }
 }
 
+fn resolve_stage_prompt(stage: &StageConfig, capsule_dir: Option<&Path>) -> anyhow::Result<String> {
+    match (stage.prompt.as_deref(), capsule_dir) {
+        (Some(path_str), Some(dir)) => {
+            let content = read_prompt_file(dir, path_str)
+                .with_context(|| format!("stage '{}': failed to load prompt", stage.name))?;
+            Ok(prepend_preamble(&content))
+        }
+        (Some(literal), None) => Ok(literal.to_string()),
+        (None, _) => Ok(String::new()),
+    }
+}
+
 fn inject_note_block(
     last_stage: Option<&str>,
     last_verdict: &Option<Verdict>,
     base_prompt: &str,
 ) -> String {
     if let (Some(name), Some(verdict)) = (last_stage, last_verdict.as_ref()) {
-        if let Some(block) =
-            crate::note_block::format(name, &verdict.status, verdict.notes.as_deref())
-        {
+        let notes = verdict.notes.as_deref().filter(|n| !n.is_empty());
+        if let Some(notes) = notes {
+            let status_str = match verdict.status {
+                VerdictStatus::Pass => "pass",
+                VerdictStatus::Fail => "fail",
+                VerdictStatus::Done => "done",
+            };
+            let block = format!(
+                "<previous-stage>\nStage: {name}\nStatus: {status_str}\nNotes: {notes}\n</previous-stage>"
+            );
             return format!("{block}\n\n{base_prompt}");
         }
     }
@@ -687,9 +766,10 @@ fn run_stage(
     stage: &StageConfig,
     name_to_entry: &HashMap<String, RouteTarget>,
     progress: &mut PipelineProgress,
-) -> StageOutcome {
-    let base_prompt = stage.prompt.as_deref().unwrap_or("");
-    let with_input = inject_input(&mut progress.input, base_prompt);
+    capsule_dir: Option<&Path>,
+) -> anyhow::Result<StageOutcome> {
+    let base_prompt = resolve_stage_prompt(stage, capsule_dir)?;
+    let with_input = inject_input(&mut progress.input, &base_prompt);
     let effective_prompt = inject_note_block(
         progress.last_stage.as_deref(),
         &progress.last_verdict,
@@ -703,7 +783,7 @@ fn run_stage(
         verdict.as_ref().map(|v| &v.status),
         Some(VerdictStatus::Done)
     ) {
-        return StageOutcome::Done;
+        return Ok(StageOutcome::Done);
     }
 
     let is_pass = matches!(
@@ -713,18 +793,18 @@ fn run_stage(
 
     if is_pass {
         progress.fail_counts.remove(&stage.name);
-        route_pass(stage, name_to_entry)
+        Ok(route_pass(stage, name_to_entry))
     } else {
         let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
         *fail_count += 1;
 
         if let Some(max) = stage.max_retries {
             if *fail_count > max {
-                return StageOutcome::Exit(ExitKind::FailRoute);
+                return Ok(StageOutcome::Exit(ExitKind::FailRoute));
             }
         }
 
-        route_fail(stage, name_to_entry)
+        Ok(route_fail(stage, name_to_entry))
     }
 }
 
@@ -853,7 +933,7 @@ mod tests {
     }
 
     fn run_outcome(config: PipelineConfig, runner: FakeRunner) -> PipelineOutcome {
-        PipelineExecutor::new(config, runner).run().outcome
+        PipelineExecutor::new(config, runner).run().unwrap().outcome
     }
 
     #[test]
@@ -1025,7 +1105,7 @@ mod tests {
         // a emits done → pipeline Done immediately (b never runs)
         let runner = FakeRunner::new([done()]);
         assert_eq!(
-            PipelineExecutor::new(config, runner).run().outcome,
+            PipelineExecutor::new(config, runner).run().unwrap().outcome,
             PipelineOutcome::Done
         );
     }
@@ -1073,7 +1153,8 @@ mod tests {
         let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
         PipelineExecutor::new(config, runner)
             .with_input(Some("my-input".to_string()))
-            .run();
+            .run()
+            .unwrap();
         let prompts = prompts.lock().unwrap();
         assert!(
             prompts[0].contains("<capsule:input>"),
@@ -1095,7 +1176,7 @@ mod tests {
         s.prompt = Some("hello".to_string());
         let config = pipeline(vec![single_stage_entry(s)]);
         let (runner, prompts) = RecordingRunner::new([pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         assert_eq!(prompts.lock().unwrap()[0], "hello");
     }
 
@@ -1110,7 +1191,7 @@ mod tests {
     fn first_stage_has_no_note_block() {
         let config = pipeline(vec![single_stage_entry(stage("a"))]);
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("first done")]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         assert!(!prompts.lock().unwrap()[0].contains("<previous-stage>"));
     }
 
@@ -1122,7 +1203,7 @@ mod tests {
         b.prompt = Some("prompt-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("result from a"), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         let prompts = prompts.lock().unwrap();
         assert!(
             !prompts[0].contains("<previous-stage>"),
@@ -1148,7 +1229,7 @@ mod tests {
             single_stage_entry(stage("b")),
         ]);
         let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         assert!(!prompts.lock().unwrap()[1].contains("<previous-stage>"));
     }
 
@@ -1163,7 +1244,7 @@ mod tests {
         let config = pipeline(vec![loop_entry]);
         // iteration 1 passes with notes, iteration 2 passes (cap then terminates)
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("iter 1 output"), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         let prompts = prompts.lock().unwrap();
         assert!(
             !prompts[0].contains("<previous-stage>"),
@@ -1184,7 +1265,7 @@ mod tests {
         b.prompt = Some("task-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
         let (runner, prompts) = RecordingRunner::new([pass_with_notes("output"), pass()]);
-        PipelineExecutor::new(config, runner).run();
+        PipelineExecutor::new(config, runner).run().unwrap();
         let second = &prompts.lock().unwrap()[1].clone();
         let notes_pos = second.find("<previous-stage>").unwrap();
         let base_pos = second.find("task-b").unwrap();
@@ -1192,7 +1273,7 @@ mod tests {
     }
 
     fn run_summary(config: PipelineConfig, runner: FakeRunner) -> RunSummary {
-        PipelineExecutor::new(config, runner).run().summary
+        PipelineExecutor::new(config, runner).run().unwrap().summary
     }
 
     #[test]
@@ -1295,7 +1376,7 @@ mod tests {
     }
 
     fn run_result(config: PipelineConfig, runner: FakeRunner) -> PipelineRunResult {
-        PipelineExecutor::new(config, runner).run()
+        PipelineExecutor::new(config, runner).run().unwrap()
     }
 
     #[test]
@@ -1344,8 +1425,9 @@ mod tests {
 
         // Resume from saved state: b should run first (pass), then c (pass) → Done
         let state = first_run.pipeline_state;
-        let result =
-            PipelineExecutor::resume(config, FakeRunner::new([pass(), pass()]), state).run();
+        let result = PipelineExecutor::resume(config, FakeRunner::new([pass(), pass()]), state)
+            .run()
+            .unwrap();
         assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 
@@ -1357,7 +1439,9 @@ mod tests {
         b.prompt = Some("task-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
 
-        let first_run = PipelineExecutor::new(config.clone(), FakeRunner::new([fail()])).run();
+        let first_run = PipelineExecutor::new(config.clone(), FakeRunner::new([fail()]))
+            .run()
+            .unwrap();
         let state = first_run.pipeline_state.clone();
         assert_eq!(state.last_stage, Some("a".to_string()));
         assert_eq!(state.last_verdict, fail());
@@ -1373,7 +1457,9 @@ mod tests {
             ..first_run.pipeline_state
         };
         let (runner, prompts) = RecordingRunner::new([pass(), pass()]);
-        PipelineExecutor::resume(config, runner, state2).run();
+        PipelineExecutor::resume(config, runner, state2)
+            .run()
+            .unwrap();
         let prompts = prompts.lock().unwrap();
         // First resumed stage should have note block from previous run
         assert!(
@@ -1403,8 +1489,9 @@ mod tests {
 
         // Resume with higher limit: counter starts at 3, 2 more iterations available
         let state = first_run.pipeline_state;
-        let result =
-            PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state).run();
+        let result = PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state)
+            .run()
+            .unwrap();
         assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 

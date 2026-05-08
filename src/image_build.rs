@@ -15,7 +15,7 @@ const DOCKERFILE_HASH_LABEL: &str = "capsule.dockerfile.hash";
 ///
 /// Uses hardcoded FNV-1a constants for stability across Rust versions
 /// (DefaultHasher is not guaranteed stable).
-pub fn fnv1a_hash(content: &str) -> String {
+fn fnv1a_hash(content: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in content.bytes() {
         hash ^= byte as u64;

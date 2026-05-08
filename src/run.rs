@@ -648,6 +648,7 @@ fn strip_quotes(s: &str) -> &str {
     }
 }
 
+/// Loads `.env` from capsule_dir into process env. Process env takes precedence (no overwrite).
 fn load_dotenv(capsule_dir: &Path) -> Result<()> {
     let path = capsule_dir.join(".env");
     if !path.exists() {
@@ -664,6 +665,7 @@ fn load_dotenv(capsule_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolves GH_TOKEN: local reads from dotenv only; global checks process env then `gh auth token`.
 fn resolve_gh_token(
     scope: &GithubScope,
     pre_dotenv_env: &HashMap<String, String>,
@@ -704,6 +706,7 @@ fn resolve_gh_token(
 
 // ── hooks ─────────────────────────────────────────────────────────────────────
 
+/// Runs `before-all.sh` if present. Absent script is Ok; non-zero exit is Err.
 fn run_before_all(capsule_dir: &Path, env_pairs: &[(String, String)]) -> Result<()> {
     let script = capsule_dir.join("before-all.sh");
     if !script.exists() {

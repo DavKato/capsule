@@ -238,6 +238,10 @@ fn iso8601_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    iso8601_from_secs(secs)
+}
+
+fn iso8601_from_secs(secs: u64) -> String {
     let z = secs as i64 / 86400 + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
@@ -706,6 +710,7 @@ fn inject_input(input: &mut Option<String>, base_prompt: &str) -> String {
     }
 }
 
+/// When `capsule_dir` is Some, prompt values are file paths relative to it. When None (tests), literal text.
 fn resolve_stage_prompt(stage: &StageConfig, capsule_dir: Option<&Path>) -> anyhow::Result<String> {
     match (stage.prompt.as_deref(), capsule_dir) {
         (Some(path_str), Some(dir)) => {
@@ -1642,5 +1647,21 @@ mod tests {
         let mut v = full_state().to_json();
         v["env"]["KEY"] = serde_json::json!(42);
         assert!(PipelineState::from_json(&v).is_err());
+    }
+
+    #[test]
+    fn iso8601_epoch_zero() {
+        assert_eq!(iso8601_from_secs(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn iso8601_known_date() {
+        // 2025-01-01T00:00:00Z = 1735689600
+        assert_eq!(iso8601_from_secs(1_735_689_600), "2025-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn iso8601_mid_day() {
+        assert_eq!(iso8601_from_secs(961_073_130), "2000-06-15T12:45:30Z");
     }
 }

@@ -7,7 +7,7 @@ use anyhow::{anyhow, Context};
 
 pub const SYSTEM_PREAMBLE: &str = include_str!("../base-image/system_preamble.md");
 
-pub fn prepend_preamble(user_prompt: &str) -> String {
+fn prepend_preamble(user_prompt: &str) -> String {
     format!("{SYSTEM_PREAMBLE}\n\n{user_prompt}")
 }
 
@@ -353,9 +353,8 @@ impl<R: StageRunner> PipelineExecutor<R> {
         };
 
         let capsule_dir = self.capsule_dir.clone();
-        let mut early_exit_error: Option<anyhow::Error> = None;
 
-        let (outcome, cap_hit) = loop {
+        let (outcome, cap_hit) = 'pipeline: loop {
             if current_idx >= self.config.entries.len() {
                 break (PipelineOutcome::Done, None);
             }
@@ -375,81 +374,61 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         &name_to_entry,
                         &mut progress,
                         capsule_dir.as_deref(),
-                    ) {
-                        Err(e) => {
-                            early_exit_error = Some(e);
-                            break (PipelineOutcome::Exit { from_fail: true }, None);
-                        }
-                        Ok(StageOutcome::Advance(next_idx)) => current_idx = next_idx,
-                        Ok(StageOutcome::AdvanceIntoLoop {
+                    )? {
+                        StageOutcome::Advance(next_idx) => current_idx = next_idx,
+                        StageOutcome::AdvanceIntoLoop {
                             entry_idx,
                             stage_idx,
-                        }) => {
+                        } => {
                             let PipelineEntry::Loop(loop_config) = &self.config.entries[entry_idx]
                             else {
                                 unreachable!("AdvanceIntoLoop references non-loop entry");
                             };
-                            match run_loop(
-                                &mut self.runner,
-                                loop_config,
-                                &mut progress,
-                                max_pipeline,
-                                stage_idx,
-                                capsule_dir.as_deref(),
+                            match handle_loop_outcome(
+                                run_loop(
+                                    &mut self.runner,
+                                    loop_config,
+                                    &mut progress,
+                                    max_pipeline,
+                                    stage_idx,
+                                    capsule_dir.as_deref(),
+                                )?,
+                                entry_idx,
+                                &mut loop_iterations,
                             ) {
-                                Err(e) => {
-                                    early_exit_error = Some(e);
-                                    break (PipelineOutcome::Exit { from_fail: true }, None);
-                                }
-                                Ok(outcome) => {
-                                    match handle_loop_outcome(
-                                        outcome,
-                                        entry_idx,
-                                        &mut loop_iterations,
-                                    ) {
-                                        LoopControl::Advance(next) => current_idx = next,
-                                        LoopControl::Break(o, cap) => break (o, cap),
-                                    }
-                                }
+                                LoopControl::Advance(next) => current_idx = next,
+                                LoopControl::Break(o, cap) => break 'pipeline (o, cap),
                             }
                         }
-                        Ok(StageOutcome::Done) => break (PipelineOutcome::Done, None),
-                        Ok(StageOutcome::Exit(ExitKind::PassRoute)) => {
+                        StageOutcome::Done => break (PipelineOutcome::Done, None),
+                        StageOutcome::Exit(ExitKind::PassRoute) => {
                             break (PipelineOutcome::Exit { from_fail: false }, None)
                         }
-                        Ok(StageOutcome::Exit(ExitKind::FailRoute)) => {
+                        StageOutcome::Exit(ExitKind::FailRoute) => {
                             break (PipelineOutcome::Exit { from_fail: true }, None)
                         }
                     }
                 }
                 PipelineEntry::Loop(loop_config) => {
                     let entry_idx = current_idx;
-                    match run_loop(
-                        &mut self.runner,
-                        loop_config,
-                        &mut progress,
-                        max_pipeline,
-                        0,
-                        capsule_dir.as_deref(),
+                    match handle_loop_outcome(
+                        run_loop(
+                            &mut self.runner,
+                            loop_config,
+                            &mut progress,
+                            max_pipeline,
+                            0,
+                            capsule_dir.as_deref(),
+                        )?,
+                        entry_idx,
+                        &mut loop_iterations,
                     ) {
-                        Err(e) => {
-                            early_exit_error = Some(e);
-                            break (PipelineOutcome::Exit { from_fail: true }, None);
-                        }
-                        Ok(outcome) => {
-                            match handle_loop_outcome(outcome, entry_idx, &mut loop_iterations) {
-                                LoopControl::Advance(next) => current_idx = next,
-                                LoopControl::Break(o, cap) => break (o, cap),
-                            }
-                        }
+                        LoopControl::Advance(next) => current_idx = next,
+                        LoopControl::Break(o, cap) => break (o, cap),
                     }
                 }
             }
         };
-
-        if let Some(e) = early_exit_error {
-            return Err(e);
-        }
 
         let terminal_reason = match (&outcome, cap_hit_is_ok) {
             (PipelineOutcome::Done, _) => TerminalReason::Done,

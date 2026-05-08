@@ -446,7 +446,6 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
                     )
                 })?;
                 let prompt_path = cli.prompt.or_else(|| file_flat.prompt.map(PathBuf::from));
-                // Executor resolves lazily; pass path string (default: "prompt.md" relative to capsule_dir)
                 let prompt_path_str = prompt_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned())

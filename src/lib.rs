@@ -1,15 +1,11 @@
 pub mod check;
 pub mod config;
 pub mod container_execution;
-pub mod env;
 pub mod explain;
-pub mod git;
-pub mod hooks;
 pub mod image_build;
 pub mod init;
 pub mod mcp_server;
 pub mod pipeline;
-pub mod preflight;
 pub mod templates;
 pub mod update_check;
 pub mod verdict;

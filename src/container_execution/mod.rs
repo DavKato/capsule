@@ -1,4 +1,6 @@
-use crate::stream_parser::StreamParser;
+mod stream_parser;
+
+use self::stream_parser::StreamParser;
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -6,19 +8,17 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 /// The jq stream-display filter embedded at compile time.
-pub const STREAM_DISPLAY_JQ: &str = include_str!("../base-image/stream_display.jq");
+pub const STREAM_DISPLAY_JQ: &str = include_str!("../../base-image/stream_display.jq");
 
 /// Configuration for a single iteration's `docker run`.
 #[derive(Default, Clone)]
-pub struct RunConfig {
+pub struct ExecutionConfig {
     /// Docker image to run (base or derived).
     pub image: String,
     /// Prompt content to mount as `/home/claude/prompt.txt`.
     pub prompt: String,
     /// Host working directory — mounted as `/workspace`.
     pub pwd: PathBuf,
-    /// Capsule directory (unused in this slice; reserved for future mounts).
-    pub capsule_dir: PathBuf,
     /// Optional model override passed via `-e CAPSULE_MODEL`.
     pub model: Option<String>,
     /// When true, print unfiltered container output in addition to jq-filtered view.
@@ -81,7 +81,7 @@ pub fn container_name_for(iteration: u32) -> String {
 /// present in `cfg.pwd`, preventing container processes from mutating the host
 /// repository's remote URLs or other local git config.
 pub fn build_docker_args(
-    cfg: &RunConfig,
+    cfg: &ExecutionConfig,
     prompt_path: &std::path::Path,
     container_name: &str,
 ) -> Vec<String> {
@@ -318,7 +318,7 @@ fn stream_output(
 /// Returns the parsed stream result and the container exit status. Callers own all
 /// post-stream policy (retry, bail, verdict routing).
 pub fn run_container(
-    cfg: &RunConfig,
+    cfg: &ExecutionConfig,
     container_name: &str,
     active_container: &Arc<Mutex<Option<String>>>,
     resume_session_id: Option<&str>,
@@ -428,7 +428,7 @@ fn should_attempt_resume(
 /// - Container exits non-zero → error naming the exit code.
 /// - Auth failed and host token is already expired → error with remediation hint.
 pub fn run_iteration(
-    cfg: &RunConfig,
+    cfg: &ExecutionConfig,
     iteration: u32,
     active_container: &Arc<Mutex<Option<String>>>,
 ) -> Result<IterationOutcome> {
@@ -517,9 +517,9 @@ mod tests {
     fn prompt_mount_is_not_read_only() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let prompt_arg = args.iter().find(|a| a.contains("prompt.txt")).unwrap();
@@ -533,9 +533,9 @@ mod tests {
     fn workspace_mounted_at_host_path_not_slash_workspace() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -554,9 +554,9 @@ mod tests {
     fn workdir_set_to_host_path() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -571,9 +571,9 @@ mod tests {
     fn capsule_workspace_env_var_set_to_host_path() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -589,10 +589,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join(".env"), "FOO=bar\n").unwrap();
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             env_file: Some(dir.path().join(".env")),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -610,9 +610,9 @@ mod tests {
     fn env_file_arg_absent_when_no_file() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -628,10 +628,10 @@ mod tests {
         let token_file = dir.path().join("gh-token.env");
         std::fs::write(&token_file, "GH_TOKEN=ghs_testtoken\n").unwrap();
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             gh_token_env_file: Some(token_file.clone()),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -653,11 +653,11 @@ mod tests {
         std::fs::write(&primary, "FOO=default\n").unwrap();
         std::fs::write(&extra, "FOO=override\n").unwrap();
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             env_file: Some(primary.clone()),
             extra_env_file: Some(extra.clone()),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let primary_pos = args
@@ -678,13 +678,11 @@ mod tests {
     fn extra_env_file_absent_when_none() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
-        // Without extra_env_file only the primary --env-file (if any) may appear.
-        // Since env_file is also None here, no --env-file at all.
         let joined = args.join(" ");
         assert!(
             !joined.contains("extra"),
@@ -696,9 +694,9 @@ mod tests {
     fn gh_token_not_in_docker_args_when_env_file_none() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -710,15 +708,14 @@ mod tests {
 
     #[test]
     fn gh_token_never_appears_inline_in_docker_args() {
-        // The only valid path for the token value is via --env-file.
         let dir = tempfile::tempdir().expect("temp dir");
         let token_file = dir.path().join("gh-token.env");
         std::fs::write(&token_file, "GH_TOKEN=ghs_secret\n").unwrap();
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             gh_token_env_file: Some(token_file),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         for arg in &args {
@@ -740,9 +737,9 @@ mod tests {
         )
         .unwrap();
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -757,9 +754,9 @@ mod tests {
     fn git_config_mount_absent_when_no_git_dir() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -773,11 +770,11 @@ mod tests {
     fn git_identity_env_vars_present_in_docker_args() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             git_author_name: "Bob Builder".to_string(),
             git_author_email: "bob@example.com".to_string(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -803,9 +800,9 @@ mod tests {
     fn git_identity_env_vars_present_when_empty() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -825,10 +822,10 @@ mod tests {
         let before_each = dir.path().join("before-each.sh");
         std::fs::write(&before_each, "#!/bin/sh\n").unwrap();
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             before_each_path: Some(before_each.clone()),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -846,9 +843,9 @@ mod tests {
     fn before_each_not_mounted_when_absent() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -862,10 +859,10 @@ mod tests {
     fn model_arg_present_when_model_set() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             model: Some("claude-opus-4-6".to_string()),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -879,9 +876,9 @@ mod tests {
     fn model_arg_absent_when_no_model() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -893,17 +890,16 @@ mod tests {
 
     #[test]
     fn verbose_flag_not_added_to_docker_args() {
-        // verbose is host-side behavior; it must not add extra docker flags.
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg_verbose = RunConfig {
+        let cfg_verbose = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             verbose: true,
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
-        let cfg_quiet = RunConfig {
+        let cfg_quiet = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args_verbose = build_docker_args(&cfg_verbose, prompt_file.path(), "capsule-test");
         let args_quiet = build_docker_args(&cfg_quiet, prompt_file.path(), "capsule-test");
@@ -917,9 +913,9 @@ mod tests {
     fn container_name_present_in_docker_args() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-run-12345-1");
         let joined = args.join(" ");
@@ -933,10 +929,10 @@ mod tests {
     fn compose_network_arg_present_when_set() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             compose_network: Some("myproject_default".to_string()),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -950,9 +946,9 @@ mod tests {
     fn compose_network_arg_absent_when_none() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -967,10 +963,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let creds_file = tempfile::NamedTempFile::new().unwrap();
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             credentials_file: Some(creds_file.path().to_path_buf()),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -1010,7 +1006,6 @@ mod tests {
     fn host_token_expired_when_expires_at_in_past() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        // expiresAt = 1000 (epoch ms) → way in the past
         std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":1000}}"#).unwrap();
         assert!(host_token_is_expired(dir.path()));
     }
@@ -1019,7 +1014,6 @@ mod tests {
     fn host_token_not_expired_when_expires_at_in_future() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        // expiresAt far in the future (year ~2050)
         std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":2524608000000}}"#).unwrap();
         assert!(!host_token_is_expired(dir.path()));
     }
@@ -1071,10 +1065,10 @@ mod tests {
     fn credentials_file_absent_when_none() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             credentials_file: None,
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -1089,10 +1083,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let claude_dir = tempfile::tempdir().expect("claude temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
-        let cfg = RunConfig {
+        let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             claude_dir: claude_dir.path().to_path_buf(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
@@ -1103,6 +1097,99 @@ mod tests {
         assert!(
             joined.contains(claude_dir.path().to_string_lossy().as_ref()),
             "expected host claude_dir path in mount: {joined}"
+        );
+    }
+
+    // ── post_stream_error ─────────────────────────────────────────────────────
+
+    fn success_status() -> std::process::ExitStatus {
+        std::process::Command::new("true")
+            .status()
+            .expect("true command")
+    }
+
+    fn failure_status() -> std::process::ExitStatus {
+        std::process::Command::new("false")
+            .status()
+            .expect("false command")
+    }
+
+    fn clear_result() -> StreamResult {
+        StreamResult {
+            auth_failed: false,
+            submit_verdict_missing: false,
+            verdict: None,
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn post_stream_error_returns_none_when_all_clear() {
+        let result = clear_result();
+        assert!(post_stream_error(&result, &success_status(), "test").is_none());
+    }
+
+    #[test]
+    fn post_stream_error_auth_failed_returns_error() {
+        let result = StreamResult {
+            auth_failed: true,
+            ..clear_result()
+        };
+        let err = post_stream_error(&result, &success_status(), "iteration").unwrap();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("authentication failed"),
+            "expected auth error message: {msg}"
+        );
+        assert!(
+            msg.contains("claude auth login"),
+            "expected remediation hint: {msg}"
+        );
+    }
+
+    #[test]
+    fn post_stream_error_submit_verdict_missing_returns_error() {
+        let result = StreamResult {
+            submit_verdict_missing: true,
+            ..clear_result()
+        };
+        let err = post_stream_error(&result, &success_status(), "iteration").unwrap();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("submit_verdict"),
+            "expected tool name in error: {msg}"
+        );
+        assert!(
+            msg.contains("MCP tool was not registered"),
+            "expected registration error: {msg}"
+        );
+    }
+
+    #[test]
+    fn post_stream_error_non_zero_exit_returns_error() {
+        let result = clear_result();
+        let err = post_stream_error(&result, &failure_status(), "pipeline").unwrap();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pipeline"),
+            "expected context name in error: {msg}"
+        );
+        assert!(
+            msg.contains("exited with code"),
+            "expected exit code in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn post_stream_error_auth_failed_takes_priority_over_non_zero_exit() {
+        let result = StreamResult {
+            auth_failed: true,
+            ..clear_result()
+        };
+        let err = post_stream_error(&result, &failure_status(), "test").unwrap();
+        assert!(
+            err.to_string().contains("authentication failed"),
+            "auth failure must take priority"
         );
     }
 }

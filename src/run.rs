@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, Config, GithubScope, ResolveMode};
-use capsule::docker::{
+use capsule::container_execution::{
     container_name_for, detect_compose_network, post_stream_error, run_container, run_iteration,
-    token_remaining_minutes, IterationOutcome, RunConfig,
+    token_remaining_minutes, ExecutionConfig, IterationOutcome,
 };
 use capsule::env::{load_dotenv, parse_dotenv, resolve_gh_token};
 use capsule::git::resolve_git_identity;
@@ -328,11 +328,10 @@ impl RunSession {
         // resume-retry re-copies host credentials.
         let credentials_guard = self.credentials_guard.take();
         let credentials_file = credentials_guard.as_ref().map(|g| g.path().to_path_buf());
-        let base_cfg = RunConfig {
+        let base_cfg = ExecutionConfig {
             image: self.image.clone(),
             prompt: String::new(),
             pwd: self.pwd.clone(),
-            capsule_dir: self.cfg.capsule_dir.clone(),
             model: self.cfg.model.clone(),
             verbose: self.cfg.verbose,
             env_file: self.env_file.clone(),
@@ -401,7 +400,7 @@ impl RunSession {
 }
 
 struct DockerStageRunner {
-    base_cfg: RunConfig,
+    base_cfg: ExecutionConfig,
     active_container: Arc<Mutex<Option<String>>>,
     iteration: u32,
     last_error: Arc<Mutex<Option<anyhow::Error>>>,
@@ -468,7 +467,7 @@ impl StageRunner for DockerStageRunner {
 impl DockerStageRunner {
     /// Re-copy host credentials, reset the guard baseline, and launch a resume container.
     /// Returns the verdict if the resumed session submits one.
-    fn run_resume(&mut self, cfg: &RunConfig, session_id: &str) -> Option<Verdict> {
+    fn run_resume(&mut self, cfg: &ExecutionConfig, session_id: &str) -> Option<Verdict> {
         eprintln!(
             "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
             session_id

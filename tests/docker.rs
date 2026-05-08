@@ -1,6 +1,6 @@
 mod common;
 
-use capsule::docker::{detect_compose_network, run_iteration, RunConfig};
+use capsule::container_execution::{detect_compose_network, run_iteration, ExecutionConfig};
 use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use common::requires_docker;
 use serial_test::serial;
@@ -74,13 +74,13 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
     child.wait().expect("docker build should complete");
 
     let result = run_iteration(
-        &RunConfig {
+        &ExecutionConfig {
             image: "capsule-test-model".to_string(),
             prompt: "hello".to_string(),
             pwd: workdir.path().to_path_buf(),
             model: Some("claude-opus-4-6".to_string()),
             claude_dir: std::env::temp_dir(),
-            ..RunConfig::default()
+            ..ExecutionConfig::default()
         },
         1,
         &Arc::new(Mutex::new(None)),
@@ -550,13 +550,13 @@ fn extra_env_file_visible_across_stages() {
         .unwrap();
     writeln!(extra_env_tmp, "MY_RUN_PARAM=expected_value").unwrap();
 
-    let cfg = RunConfig {
+    let cfg = ExecutionConfig {
         image: "capsule-test-extra-env".to_string(),
         prompt: "ignored".to_string(),
         pwd: workdir.path().to_path_buf(),
         extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
         claude_dir: std::env::temp_dir(),
-        ..RunConfig::default()
+        ..ExecutionConfig::default()
     };
     let active = Arc::new(Mutex::new(None));
 
@@ -598,7 +598,7 @@ fn extra_env_file_visible_across_stages() {
 #[requires_docker]
 #[serial(run_iteration)]
 fn extra_env_file_delivers_merged_env_to_container() {
-    use capsule::docker::RunConfig;
+    use capsule::container_execution::ExecutionConfig;
     use std::io::Write;
 
     let workdir = tempfile::tempdir().expect("temp workdir");
@@ -648,13 +648,13 @@ fn extra_env_file_delivers_merged_env_to_container() {
         writeln!(extra_env_tmp, "{k}={v}").unwrap();
     }
 
-    let cfg = RunConfig {
+    let cfg = ExecutionConfig {
         image: "capsule-test-resume-env-merge".to_string(),
         prompt: "ignored".to_string(),
         pwd: workdir.path().to_path_buf(),
         extra_env_file: Some(extra_env_tmp.path().to_path_buf()),
         claude_dir: std::env::temp_dir(),
-        ..RunConfig::default()
+        ..ExecutionConfig::default()
     };
     let active = Arc::new(Mutex::new(None));
 

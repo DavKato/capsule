@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use capsule::config::{resolve, CliOverrides, Config, GithubScope, PipelineEntry};
+use capsule::config::{resolve, CliOverrides, Config, GithubScope, ResolveMode};
 use capsule::docker::{
     build_base_image, build_derived_image, container_name_for, detect_compose_network,
     post_stream_error, run_container, run_iteration, token_remaining_minutes, IterationOutcome,
@@ -13,7 +13,6 @@ use capsule::pipeline::{
     TerminalReason,
 };
 use capsule::preflight::{check_docker, env_gitignore_warning};
-use capsule::prompt::{prepend_preamble, resolve_prompt};
 use capsule::update_check;
 use capsule::verdict::Verdict;
 use std::collections::HashMap;
@@ -132,7 +131,7 @@ impl RunSession {
     pub(crate) fn prepare(capsule_dir: PathBuf, mut overrides: CliOverrides) -> Result<Self> {
         let input = overrides.input.take();
         let env_pairs: Vec<(String, String)> = std::mem::take(&mut overrides.env);
-        let mut cfg = resolve(&capsule_dir, overrides)?;
+        let cfg = resolve(&capsule_dir, overrides, ResolveMode::Run)?;
 
         check_docker()?;
 
@@ -160,30 +159,6 @@ impl RunSession {
         let process_env: HashMap<String, String> = std::env::vars().collect();
         let (git_author_name, git_author_email) =
             resolve_git_identity(&cfg.git_identity, &process_env);
-
-        // Resolve stage prompt paths to file content so PipelineExecutor receives real text.
-        // Flat-form: a single path lives in cfg.prompt; patch it into the lone loop stage.
-        // Multi-stage: each stage carries its own path in stage.prompt; resolve all of them.
-        if cfg.pipeline.is_flat_form {
-            let prompt_bytes = resolve_prompt(&cfg.capsule_dir, cfg.prompt.clone())?;
-            let user_prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
-            let resolved = prepend_preamble(&user_prompt);
-            let first = cfg
-                .pipeline
-                .entries
-                .first_mut()
-                .ok_or_else(|| anyhow::anyhow!("flat-form pipeline has no entries"))?;
-            let PipelineEntry::Loop(loop_cfg) = first else {
-                anyhow::bail!("flat-form pipeline: first entry is not a loop");
-            };
-            let stage = loop_cfg
-                .stages
-                .first_mut()
-                .ok_or_else(|| anyhow::anyhow!("flat-form pipeline: loop has no stages"))?;
-            stage.prompt = Some(resolved);
-        } else {
-            resolve_stage_prompts(&mut cfg.pipeline.entries, &cfg.capsule_dir)?;
-        }
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;
@@ -556,25 +531,6 @@ fn build_extra_env_tempfile(pairs: &[(String, String)]) -> Result<Option<tempfil
         writeln!(tmp, "{k}={v}").context("failed to write --env temp file")?;
     }
     Ok(Some(tmp))
-}
-
-fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -> Result<()> {
-    for entry in entries {
-        let stages = match entry {
-            PipelineEntry::Stage(s) => std::slice::from_mut(s),
-            PipelineEntry::Loop(l) => l.stages.as_mut_slice(),
-        };
-        for stage in stages {
-            if let Some(ref path_str) = stage.prompt.clone() {
-                let path = capsule_dir.join(path_str);
-                let bytes = std::fs::read(&path)
-                    .with_context(|| format!("prompt file not found: {}", path.display()))?;
-                let content = String::from_utf8_lossy(&bytes).into_owned();
-                stage.prompt = Some(prepend_preamble(&content));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// `Exit` (pass-route, i.e. `on_pass: exit`) is treated as success (exit 0)

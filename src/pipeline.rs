@@ -303,7 +303,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
     pub fn run(mut self) -> PipelineRunResult {
         let name_to_entry = build_name_index(&self.config);
         let max_pipeline = self.config.max_pipeline_iterations;
-        let is_flat_form = self.config.is_flat_form;
+        let cap_hit_is_ok = self.config.cap_hit_is_ok;
 
         let (mut current_idx, mut loop_iterations, mut progress) = match self.initial_state.take() {
             Some(s) => (
@@ -392,7 +392,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             }
         };
 
-        let terminal_reason = match (&outcome, is_flat_form) {
+        let terminal_reason = match (&outcome, cap_hit_is_ok) {
             (PipelineOutcome::Done, _) => TerminalReason::Done,
             (PipelineOutcome::Exit { from_fail: false }, _) => TerminalReason::Exit,
             (PipelineOutcome::Exit { from_fail: true }, _) => TerminalReason::FailExit,
@@ -844,7 +844,7 @@ mod tests {
         PipelineConfig {
             entries,
             max_pipeline_iterations: 1000,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         }
     }
 
@@ -950,7 +950,7 @@ mod tests {
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 3,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         // 4 fails: 3rd triggers cap, 4th never runs
         assert_eq!(
@@ -1226,7 +1226,7 @@ mod tests {
                 stages: vec![stage("a")],
             })],
             max_pipeline_iterations: 1000,
-            is_flat_form: true,
+            cap_hit_is_ok: true,
         };
         let summary = run_summary(config, FakeRunner::new([pass()]));
         assert_eq!(summary.terminal_reason, TerminalReason::Ok);
@@ -1288,7 +1288,7 @@ mod tests {
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 2,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
         assert_eq!(summary.cap_hit, Some(CapHitKind::MaxPipelineIterations));
@@ -1390,13 +1390,13 @@ mod tests {
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 5,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         // First run: 3 fails → CapHit at max 3
         let config3 = PipelineConfig {
             entries: config.entries.clone(),
             max_pipeline_iterations: 3,
-            is_flat_form: false,
+            cap_hit_is_ok: false,
         };
         let first_run = run_result(config3, FakeRunner::new([fail(), fail(), fail()]));
         assert_eq!(first_run.pipeline_state.global_counter, 3);

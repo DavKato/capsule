@@ -1,6 +1,15 @@
+use crate::prompt::{prepend_preamble, resolve_prompt};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+
+/// Controls which resolution path `resolve()` takes.
+pub enum ResolveMode {
+    /// Full run path: prompt files are read and injected into stages; iterations required for flat-form.
+    Run,
+    /// Check path: prompt files are not read; iterations default to 1 for flat-form.
+    Check,
+}
 
 pub const MAX_PIPELINE_ITERATIONS_DEFAULT: u32 = 1000;
 
@@ -72,8 +81,8 @@ pub enum PipelineEntry {
 pub struct PipelineConfig {
     pub entries: Vec<PipelineEntry>,
     pub max_pipeline_iterations: u32,
-    /// True when desugared from flat-form config (no explicit `stages:`).
-    pub is_flat_form: bool,
+    /// True when hitting the loop cap should be treated as success (flat-form desugared configs).
+    pub cap_hit_is_ok: bool,
 }
 
 /// Resolved configuration used by all downstream modules.
@@ -320,7 +329,7 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
         max_pipeline_iterations: cfg
             .max_pipeline_iterations
             .unwrap_or(MAX_PIPELINE_ITERATIONS_DEFAULT),
-        is_flat_form: false,
+        cap_hit_is_ok: false,
     })
 }
 
@@ -339,8 +348,27 @@ fn desugar_flat_form(iterations: u32, prompt: Option<&str>) -> PipelineConfig {
             stages: vec![stage],
         })],
         max_pipeline_iterations: MAX_PIPELINE_ITERATIONS_DEFAULT,
-        is_flat_form: true,
+        cap_hit_is_ok: true,
     }
+}
+
+fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -> Result<()> {
+    for entry in entries {
+        let stages = match entry {
+            PipelineEntry::Stage(s) => std::slice::from_mut(s),
+            PipelineEntry::Loop(l) => l.stages.as_mut_slice(),
+        };
+        for stage in stages {
+            if let Some(ref path_str) = stage.prompt.clone() {
+                let path = capsule_dir.join(path_str);
+                let bytes = std::fs::read(&path)
+                    .with_context(|| format!("prompt file not found: {}", path.display()))?;
+                let content = String::from_utf8_lossy(&bytes).into_owned();
+                stage.prompt = Some(prepend_preamble(&content));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn git_identity_from_str(s: &str) -> Option<GitIdentity> {
@@ -361,7 +389,10 @@ fn github_scope_from_str(s: &str) -> Option<GithubScope> {
 
 /// Resolve configuration by merging (highest → lowest priority):
 ///   CLI overrides → config file → compiled-in defaults.
-pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
+///
+/// `mode` controls whether prompt files are read (`Run`) or left as paths (`Check`),
+/// and whether flat-form configs require an explicit iterations value.
+pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Result<Config> {
     let config_path = capsule_dir.join("config.yml");
     let raw = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
@@ -420,18 +451,36 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     let rebuild = cli.rebuild;
 
     let (iterations, prompt, pipeline) = if let Some(multi) = file_multi {
-        let pipeline = build_pipeline_from_multi_stage(multi)
+        let mut pipeline = build_pipeline_from_multi_stage(multi)
             .with_context(|| format!("validating {}", config_path.display()))?;
+        if matches!(mode, ResolveMode::Run) {
+            resolve_stage_prompts(&mut pipeline.entries, capsule_dir)?;
+        }
         // iterations is not applicable for multi-stage; use max_pipeline_iterations.
         (pipeline.max_pipeline_iterations, None, pipeline)
     } else {
         let file_flat = file_flat.unwrap_or_default();
-        let iterations = cli.iterations.or(file_flat.iterations).ok_or_else(|| {
-            anyhow::anyhow!("--iterations is required (no CLI flag or config.yml value found)")
-        })?;
-        let prompt = cli.prompt.or_else(|| file_flat.prompt.map(PathBuf::from));
-        let pipeline = desugar_flat_form(iterations, prompt.as_ref().and_then(|p| p.to_str()));
-        (iterations, prompt, pipeline)
+        match mode {
+            ResolveMode::Run => {
+                let iterations = cli.iterations.or(file_flat.iterations).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--iterations is required (no CLI flag or config.yml value found)"
+                    )
+                })?;
+                let prompt_path = cli.prompt.or_else(|| file_flat.prompt.map(PathBuf::from));
+                let prompt_bytes = resolve_prompt(capsule_dir, prompt_path.clone())?;
+                let user_prompt = String::from_utf8_lossy(&prompt_bytes).into_owned();
+                let resolved_content = prepend_preamble(&user_prompt);
+                let pipeline = desugar_flat_form(iterations, Some(&resolved_content));
+                (iterations, prompt_path, pipeline)
+            }
+            ResolveMode::Check => {
+                let iterations = file_flat.iterations.unwrap_or(1);
+                let prompt = file_flat.prompt.as_deref().map(PathBuf::from);
+                let pipeline = desugar_flat_form(iterations, file_flat.prompt.as_deref());
+                (iterations, prompt, pipeline)
+            }
+        }
     };
 
     Ok(Config {
@@ -446,27 +495,6 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
         pipeline,
         min_token_lifetime_minutes,
     })
-}
-
-/// Parse a pipeline from the given capsule dir for use in `capsule check`.
-/// For flat-form configs, `iterations` is not required (uses 1 as a placeholder).
-pub fn load_pipeline_for_check(capsule_dir: &Path) -> Result<PipelineConfig> {
-    let config_path = capsule_dir.join("config.yml");
-    if !config_path.exists() {
-        anyhow::bail!("config.yml not found in {}", capsule_dir.display());
-    }
-    let content = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("reading {}", config_path.display()))?;
-    let raw = parse_config_file(&content)
-        .with_context(|| format!("parsing {}", config_path.display()))?;
-    match raw {
-        RawConfig::MultiStage(m) => build_pipeline_from_multi_stage(m)
-            .with_context(|| format!("validating {}", config_path.display())),
-        RawConfig::Flat(f) => {
-            let iterations = f.iterations.unwrap_or(1);
-            Ok(desugar_flat_form(iterations, f.prompt.as_deref()))
-        }
-    }
 }
 
 /// Extract all stage names from a raw YAML string without strict validation.

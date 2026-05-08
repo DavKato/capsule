@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Controls which resolution path `resolve()` takes.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResolveMode {
     /// Full run path: prompt files are read and injected into stages; iterations required for flat-form.
     Run,
@@ -359,8 +360,8 @@ fn resolve_stage_prompts(entries: &mut Vec<PipelineEntry>, capsule_dir: &Path) -
             PipelineEntry::Loop(l) => l.stages.as_mut_slice(),
         };
         for stage in stages {
-            if let Some(ref path_str) = stage.prompt.clone() {
-                let path = capsule_dir.join(path_str);
+            if let Some(path_str) = stage.prompt.take() {
+                let path = capsule_dir.join(&path_str);
                 let bytes = std::fs::read(&path)
                     .with_context(|| format!("prompt file not found: {}", path.display()))?;
                 let content = String::from_utf8_lossy(&bytes).into_owned();

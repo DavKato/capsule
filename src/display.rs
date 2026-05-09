@@ -67,9 +67,10 @@ fn render_box<W: Write + QueueableCommand>(
     out.queue(Print(format!("{top}\n")))?;
     for line in content {
         let padded = format!(" {line}");
-        let cell = if padded.len() + 1 > inner_w {
-            // Truncate: leave room for trailing space inside the border.
-            format!("{} ", &padded[..inner_w.saturating_sub(1)])
+        let char_count = padded.chars().count();
+        let cell = if char_count + 1 > inner_w {
+            let truncated: String = padded.chars().take(inner_w.saturating_sub(1)).collect();
+            format!("{truncated} ")
         } else {
             format!("{:<width$}", padded, width = inner_w)
         };
@@ -235,7 +236,6 @@ fn session_footer_to<W: Write + QueueableCommand>(
         }
     });
 
-    // Build plain-text lines for box-width computation.
     let status_plain = format!("Status: {status_label}");
     let duration_line = format!("Duration: {}", format_duration(duration));
     let notes_line = notes_text.as_deref().map(|n| format!("Notes: {n}"));
@@ -260,10 +260,8 @@ fn session_footer_to<W: Write + QueueableCommand>(
     out.queue(SetForegroundColor(CYAN))?;
     out.queue(Print(format!("┌{horiz}┐\n")))?;
 
-    // Status line: border in CYAN, "Status: " in default, label in status color.
     render_footer_status_line(out, status_label, status_color, inner_w)?;
 
-    // Plain content lines.
     for line in &plain_lines[1..] {
         render_footer_plain_line(out, line, inner_w)?;
     }
@@ -308,8 +306,10 @@ fn render_footer_plain_line<W: Write + QueueableCommand>(
     inner_w: usize,
 ) -> std::io::Result<()> {
     let padded = format!(" {line}");
-    let cell = if padded.len() + 1 > inner_w {
-        format!("{} ", &padded[..inner_w.saturating_sub(1)])
+    let char_count = padded.chars().count();
+    let cell = if char_count + 1 > inner_w {
+        let truncated: String = padded.chars().take(inner_w.saturating_sub(1)).collect();
+        format!("{truncated} ")
     } else {
         format!("{:<width$}", padded, width = inner_w)
     };

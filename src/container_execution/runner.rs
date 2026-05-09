@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use crate::display::RetryInfo;
 use crate::pipeline::StageRunner;
 use crate::verdict::Verdict;
 
@@ -128,9 +129,13 @@ impl StageRunner for DockerStageRunner {
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
+        retry: Option<&RetryInfo>,
     ) -> anyhow::Result<Option<Verdict>> {
         self.iteration += 1;
-        println!("── {} (iteration {}) ──", stage_name, self.iteration);
+        let effective_model = model
+            .or(self.base_cfg.model.as_deref())
+            .unwrap_or("unknown");
+        crate::display::stage_header(stage_name, self.iteration, effective_model, retry);
         let mut cfg = self.base_cfg.clone();
         cfg.prompt = prompt.to_string();
         if let Some(m) = model {

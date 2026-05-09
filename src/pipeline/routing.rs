@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::config::{LoopConfig, OnFail, OnPass, StageConfig};
+use crate::display::RetryInfo;
 use crate::verdict::{Verdict, VerdictStatus};
 
 use super::prompt::{inject_input, inject_note_block};
@@ -104,7 +105,21 @@ pub(super) fn run_loop(
             &with_input,
         );
         progress.last_stage = Some(stage.name.clone());
-        let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref())?;
+        let fail_count = progress.fail_counts.get(&stage.name).copied().unwrap_or(0);
+        let retry = if fail_count > 0 {
+            Some(RetryInfo {
+                current: fail_count,
+                max: stage.max_retries,
+            })
+        } else {
+            None
+        };
+        let verdict = runner.run(
+            &stage.name,
+            &effective_prompt,
+            stage.model.as_deref(),
+            retry.as_ref(),
+        )?;
         progress.last_verdict = verdict.clone();
 
         if matches!(
@@ -263,7 +278,21 @@ pub(super) fn run_stage(
         &with_input,
     );
     progress.last_stage = Some(stage.name.clone());
-    let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref())?;
+    let prior_fails = progress.fail_counts.get(&stage.name).copied().unwrap_or(0);
+    let retry = if prior_fails > 0 {
+        Some(RetryInfo {
+            current: prior_fails,
+            max: stage.max_retries,
+        })
+    } else {
+        None
+    };
+    let verdict = runner.run(
+        &stage.name,
+        &effective_prompt,
+        stage.model.as_deref(),
+        retry.as_ref(),
+    )?;
     progress.last_verdict = verdict.clone();
 
     if matches!(

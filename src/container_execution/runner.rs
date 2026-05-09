@@ -201,7 +201,7 @@ impl DockerStageRunner {
         session_id: &str,
     ) -> anyhow::Result<Option<Verdict>> {
         crate::display::warning(&format!(
-            "[capsule] auth failed — host token valid, attempting resume-retry (session {session_id})"
+            "auth failed — host token valid, attempting resume-retry (session {session_id})"
         ));
         if let Some(ref mut guard) = self.credentials_guard {
             let host_creds = cfg.claude_dir.join(".credentials.json");

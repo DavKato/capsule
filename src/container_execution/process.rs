@@ -1,8 +1,10 @@
 use super::docker_args::{build_docker_args, container_name_for};
 use super::infra::{host_token_is_expired, make_mcp_config};
 use super::stream_parser::StreamParser;
-use super::{ExecutionConfig, IterationOutcome, STREAM_DISPLAY_JQ};
+use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -42,12 +44,9 @@ pub fn post_stream_error(
     None
 }
 
-fn stream_output(
-    reader: BufReader<impl std::io::Read>,
-    mut jq_stdin: impl Write,
-    verbose: bool,
-) -> Result<StreamResult> {
+fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result<StreamResult> {
     let mut parser = StreamParser::new();
+    let mut pending_tool_names: HashMap<String, String> = HashMap::new();
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
@@ -55,7 +54,11 @@ fn stream_output(
         if verbose {
             eprintln!("{line}");
         }
-        let _ = writeln!(jq_stdin, "{line}");
+        if let Ok(msg) = serde_json::from_str::<Value>(&line) {
+            handle_display(&msg, &mut pending_tool_names);
+        } else {
+            println!("{line}");
+        }
     }
 
     Ok(StreamResult {
@@ -66,8 +69,86 @@ fn stream_output(
     })
 }
 
+fn handle_display(msg: &Value, pending: &mut HashMap<String, String>) {
+    match msg.get("type").and_then(Value::as_str) {
+        Some("assistant") => {
+            let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
+                return;
+            };
+            for block in content {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(text) = block.get("text").and_then(Value::as_str) {
+                            crate::display::text_content(text);
+                        }
+                    }
+                    Some("thinking") => {
+                        if let Some(text) = block.get("thinking").and_then(Value::as_str) {
+                            crate::display::thinking_text(text);
+                        }
+                    }
+                    Some("tool_use") => {
+                        let Some(name) = block.get("name").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let Some(id) = block.get("id").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let input = block.get("input").cloned().unwrap_or(Value::Null);
+                        let args = format_tool_args(&input);
+                        pending.insert(id.to_owned(), name.to_owned());
+                        crate::display::tool_call(name, &args);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some("user") => {
+            let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
+                return;
+            };
+            for block in content {
+                if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                    let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let name = pending
+                        .get(tool_use_id)
+                        .map(String::as_str)
+                        .unwrap_or("unknown");
+                    crate::display::tool_result(name, !is_error);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn format_tool_args(input: &Value) -> String {
+    let Some(obj) = input.as_object() else {
+        return String::new();
+    };
+    // Prefer well-known keys for readable single-line display.
+    for key in &["command", "file_path", "path", "pattern", "prompt"] {
+        if let Some(s) = obj.get(*key).and_then(Value::as_str) {
+            return s.to_owned();
+        }
+    }
+    // Fall back to the first string value found.
+    for val in obj.values() {
+        if let Some(s) = val.as_str() {
+            return s.to_owned();
+        }
+    }
+    String::new()
+}
+
 /// Shared scaffolding for one container run: temp files, docker args, MCP config,
-/// jq piping, streaming, wait, and active-container slot management.
+/// streaming, wait, and active-container slot management.
 ///
 /// `resume_session_id` — when `Some`, adds `-e=CAPSULE_RESUME_SESSION=<id>` so the
 /// entrypoint invokes `claude --resume` instead of piping `prompt.txt`.
@@ -136,19 +217,8 @@ pub fn run_container(
         .context("failed to spawn `docker run`")?;
 
     let reader = BufReader::new(docker_child.stdout.take().expect("stdout piped"));
+    let result = stream_output(reader, cfg.verbose)?;
 
-    let mut jq_child = Command::new("jq")
-        .args(["-R", "-r", STREAM_DISPLAY_JQ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn `jq`")?;
-
-    let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
-    let result = stream_output(reader, jq_stdin, cfg.verbose)?;
-
-    let _ = jq_child.wait();
     let status = docker_child.wait().context("docker run did not complete")?;
 
     if let Ok(mut slot) = active_container.lock() {

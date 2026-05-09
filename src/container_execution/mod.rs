@@ -14,9 +14,6 @@ pub use stream_parser::{StreamParser, ToolEvent, ToolResultEvent, ToolUseEvent};
 
 use std::path::PathBuf;
 
-/// The jq stream-display filter embedded at compile time.
-pub const STREAM_DISPLAY_JQ: &str = include_str!("../../base-image/stream_display.jq");
-
 /// Configuration for a single iteration's `docker run`.
 #[derive(Default, Clone)]
 pub struct ExecutionConfig {
@@ -72,21 +69,4 @@ pub enum IterationOutcome {
     /// credentials, call `CredentialsGuard::reset_baseline`, and retry with
     /// `run_container(..., Some(session_id))`.
     AuthFailedResumable { session_id: String },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embedded_stream_display_jq_is_non_empty() {
-        assert!(
-            !STREAM_DISPLAY_JQ.is_empty(),
-            "embedded stream_display.jq must not be empty"
-        );
-        assert!(
-            STREAM_DISPLAY_JQ.contains("fromjson"),
-            "jq filter must contain fromjson"
-        );
-    }
 }

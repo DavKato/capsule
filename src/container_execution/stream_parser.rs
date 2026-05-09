@@ -58,9 +58,7 @@ impl StreamParser {
         }
         if let Some(v) = extract_verdict(&msg) {
             if self.verdict.is_some() {
-                crate::display::warning(
-                    "[capsule] submit_verdict called more than once; using latest",
-                );
+                crate::display::warning("submit_verdict called more than once; using latest");
             }
             self.verdict = Some(v);
         }

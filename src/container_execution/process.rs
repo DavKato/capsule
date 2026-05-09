@@ -1,9 +1,8 @@
 use super::docker_args::{build_docker_args, container_name_for};
 use super::infra::{host_token_is_expired, make_mcp_config};
-use super::stream_parser::StreamParser;
+use super::stream_parser::{StreamParser, ToolEvent};
 use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -50,13 +49,30 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
-        parser.feed(&line);
+        let parsed = parser.feed(&line).is_some();
         if verbose {
             eprintln!("{line}");
         }
-        if let Ok(msg) = serde_json::from_str::<Value>(&line) {
-            handle_display(&msg, &mut pending_tool_names);
-        } else {
+        if let Some(event) = parser.last_tool_event() {
+            match event {
+                ToolEvent::Use(tu) => {
+                    let args = format_tool_args(&tu.input);
+                    pending_tool_names.insert(tu.id.clone(), tu.name.clone());
+                    crate::display::tool_call(&tu.name, &args);
+                }
+                ToolEvent::Result(tr) => {
+                    let name = pending_tool_names
+                        .remove(&tr.tool_use_id)
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    crate::display::tool_result(&name, !tr.is_error);
+                }
+            }
+        } else if let Some(display) = extract_text_display(&line) {
+            match display {
+                TextDisplay::Content(text) => crate::display::text_content(&text),
+                TextDisplay::Thinking(text) => crate::display::thinking_text(&text),
+            }
+        } else if !parsed && !line.is_empty() {
             println!("{line}");
         }
     }
@@ -69,79 +85,47 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
     })
 }
 
-fn handle_display(msg: &Value, pending: &mut HashMap<String, String>) {
-    match msg.get("type").and_then(Value::as_str) {
-        Some("assistant") => {
-            let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
-                return;
-            };
-            for block in content {
-                match block.get("type").and_then(Value::as_str) {
-                    Some("text") => {
-                        if let Some(text) = block.get("text").and_then(Value::as_str) {
-                            crate::display::text_content(text);
-                        }
-                    }
-                    Some("thinking") => {
-                        if let Some(text) = block.get("thinking").and_then(Value::as_str) {
-                            crate::display::thinking_text(text);
-                        }
-                    }
-                    Some("tool_use") => {
-                        let Some(name) = block.get("name").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        let Some(id) = block.get("id").and_then(Value::as_str) else {
-                            continue;
-                        };
-                        let input = block.get("input").cloned().unwrap_or(Value::Null);
-                        let args = format_tool_args(&input);
-                        pending.insert(id.to_owned(), name.to_owned());
-                        crate::display::tool_call(name, &args);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Some("user") => {
-            let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
-                return;
-            };
-            for block in content {
-                if block.get("type").and_then(Value::as_str) == Some("tool_result") {
-                    let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let is_error = block
-                        .get("is_error")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    let name = pending
-                        .get(tool_use_id)
-                        .map(String::as_str)
-                        .unwrap_or("unknown");
-                    crate::display::tool_result(name, !is_error);
-                }
-            }
-        }
-        _ => {}
-    }
+enum TextDisplay {
+    Content(String),
+    Thinking(String),
 }
 
-fn format_tool_args(input: &Value) -> String {
+fn extract_text_display(line: &str) -> Option<TextDisplay> {
+    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+    if msg.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let content = msg.pointer("/message/content")?.as_array()?;
+    for block in content {
+        match block.get("type").and_then(serde_json::Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(serde_json::Value::as_str) {
+                    return Some(TextDisplay::Content(text.to_owned()));
+                }
+            }
+            Some("thinking") => {
+                if let Some(text) = block.get("thinking").and_then(serde_json::Value::as_str) {
+                    return Some(TextDisplay::Thinking(text.to_owned()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn format_tool_args(input: &serde_json::Value) -> String {
     let Some(obj) = input.as_object() else {
         return String::new();
     };
-    // Prefer well-known keys for readable single-line display.
     for key in &["command", "file_path", "path", "pattern", "prompt"] {
-        if let Some(s) = obj.get(*key).and_then(Value::as_str) {
-            return s.to_owned();
+        if let Some(s) = obj.get(*key).and_then(serde_json::Value::as_str) {
+            return s.replace('\n', " ");
         }
     }
-    // Fall back to the first string value found.
     for val in obj.values() {
         if let Some(s) = val.as_str() {
-            return s.to_owned();
+            return s.replace('\n', " ");
         }
     }
     String::new()
@@ -240,7 +224,7 @@ fn should_attempt_resume(
     session_id.is_some() && has_credentials && !host_token_expired
 }
 
-/// Run one iteration: mount prompt, stream output through jq, propagate exit code.
+/// Run one iteration: mount prompt, stream output, propagate exit code.
 ///
 /// `iteration` is used to derive a unique `--name` for the container so that a
 /// registered ctrlc handler can call `docker stop <name>` on SIGINT.

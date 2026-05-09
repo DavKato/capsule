@@ -343,20 +343,17 @@ impl RunSession {
             claude_dir: self.claude_dir.clone(),
             credentials_file,
         };
-        let last_error: Arc<Mutex<Option<anyhow::Error>>> = Arc::new(Mutex::new(None));
-        let last_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let resume = self.resume.take();
         let resume_session_id = resume.as_ref().map(|(id, _)| id.clone());
         let runner = DockerStageRunner {
             base_cfg,
             active_container: Arc::clone(&self.active_container),
             iteration: 0,
-            last_error: Arc::clone(&last_error),
-            last_session_id: Arc::clone(&last_session_id),
+            session_id: None,
             credentials_guard,
             resume_session_id,
         };
-        let mut result = if let Some((_, state)) = resume {
+        let (mut result, runner) = if let Some((_, state)) = resume {
             PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state)
                 .with_capsule_dir(self.cfg.capsule_dir.clone())
                 .run()?
@@ -366,16 +363,8 @@ impl RunSession {
                 .with_input(self.input)
                 .run()?
         };
-        result.summary.session_id = last_session_id.lock().unwrap().take();
+        result.summary.session_id = runner.session_id;
         result.pipeline_state.env = self.env_pairs.clone();
-        if let Some(e) = last_error.lock().unwrap().take() {
-            let _ = write_last_run(
-                &self.cfg.capsule_dir,
-                &result.summary,
-                Some(&result.pipeline_state),
-            );
-            return Err(e);
-        }
         let state_to_write = match result.summary.terminal_reason {
             TerminalReason::FailExit | TerminalReason::CapHit => Some(&result.pipeline_state),
             _ => None,
@@ -396,14 +385,18 @@ struct DockerStageRunner {
     base_cfg: ExecutionConfig,
     active_container: Arc<Mutex<Option<String>>>,
     iteration: u32,
-    last_error: Arc<Mutex<Option<anyhow::Error>>>,
-    last_session_id: Arc<Mutex<Option<String>>>,
+    session_id: Option<String>,
     credentials_guard: Option<CredentialsGuard>,
     resume_session_id: Option<String>,
 }
 
 impl StageRunner for DockerStageRunner {
-    fn run(&mut self, stage_name: &str, prompt: &str, model: Option<&str>) -> Option<Verdict> {
+    fn run(
+        &mut self,
+        stage_name: &str,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> anyhow::Result<Option<Verdict>> {
         self.iteration += 1;
         println!("── {} (iteration {}) ──", stage_name, self.iteration);
         let mut cfg = self.base_cfg.clone();
@@ -414,44 +407,33 @@ impl StageRunner for DockerStageRunner {
         if let Some(session_id) = self.resume_session_id.take() {
             let name = format!("{}-resume-pipeline", container_name_for(self.iteration));
             let (result, status) =
-                match run_container(&cfg, &name, &self.active_container, Some(&session_id)) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        *self.last_error.lock().unwrap() = Some(e);
-                        return None;
-                    }
-                };
+                run_container(&cfg, &name, &self.active_container, Some(&session_id))?;
             if let Some(e) = post_stream_error(&result, &status, "pipeline-resume") {
-                *self.last_error.lock().unwrap() = Some(e);
-                return None;
+                return Err(e);
             }
             if let Some(id) = result.session_id {
-                *self.last_session_id.lock().unwrap() = Some(id);
+                self.session_id = Some(id);
             }
-            return result.verdict;
+            return Ok(result.verdict);
         }
-        match run_iteration(&cfg, self.iteration, &self.active_container) {
-            Ok(IterationOutcome::Done {
+        match run_iteration(&cfg, self.iteration, &self.active_container)? {
+            IterationOutcome::Done {
                 verdict,
                 session_id,
-            }) => {
+            } => {
                 if let Some(id) = session_id {
-                    *self.last_session_id.lock().unwrap() = Some(id);
+                    self.session_id = Some(id);
                 }
-                Some(verdict)
+                Ok(Some(verdict))
             }
-            Ok(IterationOutcome::Continue { session_id }) => {
+            IterationOutcome::Continue { session_id } => {
                 if let Some(id) = session_id {
-                    *self.last_session_id.lock().unwrap() = Some(id);
+                    self.session_id = Some(id);
                 }
-                None
+                Ok(None)
             }
-            Ok(IterationOutcome::AuthFailedResumable { session_id }) => {
+            IterationOutcome::AuthFailedResumable { session_id } => {
                 self.run_resume(&cfg, &session_id)
-            }
-            Err(e) => {
-                *self.last_error.lock().unwrap() = Some(e);
-                None
             }
         }
     }
@@ -460,41 +442,31 @@ impl StageRunner for DockerStageRunner {
 impl DockerStageRunner {
     /// Re-copy host credentials, reset the guard baseline, and launch a resume container.
     /// Returns the verdict if the resumed session submits one.
-    fn run_resume(&mut self, cfg: &ExecutionConfig, session_id: &str) -> Option<Verdict> {
+    fn run_resume(
+        &mut self,
+        cfg: &ExecutionConfig,
+        session_id: &str,
+    ) -> anyhow::Result<Option<Verdict>> {
         eprintln!(
             "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
             session_id
         );
         if let Some(ref mut guard) = self.credentials_guard {
             let host_creds = cfg.claude_dir.join(".credentials.json");
-            if let Err(e) = std::fs::copy(&host_creds, guard.path())
-                .context("failed to re-copy credentials for resume-retry")
-            {
-                *self.last_error.lock().unwrap() = Some(e);
-                return None;
-            }
-            if let Err(e) = guard.reset_baseline() {
-                *self.last_error.lock().unwrap() = Some(e);
-                return None;
-            }
+            std::fs::copy(&host_creds, guard.path())
+                .context("failed to re-copy credentials for resume-retry")?;
+            guard.reset_baseline()?;
         }
         let resume_name = format!("{}-resume", container_name_for(self.iteration));
         let (result, status) =
-            match run_container(cfg, &resume_name, &self.active_container, Some(session_id)) {
-                Ok(r) => r,
-                Err(e) => {
-                    *self.last_error.lock().unwrap() = Some(e);
-                    return None;
-                }
-            };
+            run_container(cfg, &resume_name, &self.active_container, Some(session_id))?;
         if let Some(e) = post_stream_error(&result, &status, "resume-retry") {
-            *self.last_error.lock().unwrap() = Some(e);
-            return None;
+            return Err(e);
         }
         if let Some(id) = result.session_id {
-            *self.last_session_id.lock().unwrap() = Some(id);
+            self.session_id = Some(id);
         }
-        result.verdict
+        Ok(result.verdict)
     }
 }
 

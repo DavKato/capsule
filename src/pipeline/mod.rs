@@ -27,7 +27,7 @@ pub trait StageRunner {
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
-    ) -> Option<crate::verdict::Verdict>;
+    ) -> anyhow::Result<Option<crate::verdict::Verdict>>;
 }
 
 /// Return value of `PipelineExecutor::run`.
@@ -77,7 +77,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
         self
     }
 
-    pub fn run(mut self) -> anyhow::Result<PipelineRunResult> {
+    pub fn run(mut self) -> anyhow::Result<(PipelineRunResult, R)> {
         prompt::resolve_all_prompts(&mut self.config.entries, self.capsule_dir.as_deref())?;
 
         let name_to_entry = build_name_index(&self.config);
@@ -192,21 +192,24 @@ impl<R: StageRunner> PipelineExecutor<R> {
             env: vec![],
         };
 
-        Ok(PipelineRunResult {
-            outcome,
-            summary: RunSummary {
-                terminal_reason,
-                last_stage: progress.last_stage,
-                last_verdict: progress.last_verdict,
-                iteration_counters: IterationCounters {
-                    global: pipeline_state.global_counter,
-                    loops: loop_iterations,
+        Ok((
+            PipelineRunResult {
+                outcome,
+                summary: RunSummary {
+                    terminal_reason,
+                    last_stage: progress.last_stage,
+                    last_verdict: progress.last_verdict,
+                    iteration_counters: IterationCounters {
+                        global: pipeline_state.global_counter,
+                        loops: loop_iterations,
+                    },
+                    cap_hit,
+                    session_id: None,
                 },
-                cap_hit,
-                session_id: None,
+                pipeline_state,
             },
-            pipeline_state,
-        })
+            self.runner,
+        ))
     }
 }
 
@@ -235,10 +238,11 @@ mod tests {
             _stage_name: &str,
             _prompt: &str,
             _model: Option<&str>,
-        ) -> Option<Verdict> {
-            self.responses
+        ) -> anyhow::Result<Option<Verdict>> {
+            Ok(self
+                .responses
                 .pop_front()
-                .expect("FakeRunner: no more responses queued")
+                .expect("FakeRunner: no more responses queued"))
         }
     }
 
@@ -287,7 +291,11 @@ mod tests {
     }
 
     fn run_outcome(config: PipelineConfig, runner: FakeRunner) -> PipelineOutcome {
-        PipelineExecutor::new(config, runner).run().unwrap().outcome
+        PipelineExecutor::new(config, runner)
+            .run()
+            .unwrap()
+            .0
+            .outcome
     }
 
     #[test]
@@ -459,7 +467,11 @@ mod tests {
         // a emits done → pipeline Done immediately (b never runs)
         let runner = FakeRunner::new([done()]);
         assert_eq!(
-            PipelineExecutor::new(config, runner).run().unwrap().outcome,
+            PipelineExecutor::new(config, runner)
+                .run()
+                .unwrap()
+                .0
+                .outcome,
             PipelineOutcome::Done
         );
     }
@@ -490,11 +502,12 @@ mod tests {
             _stage_name: &str,
             prompt: &str,
             _model: Option<&str>,
-        ) -> Option<Verdict> {
+        ) -> anyhow::Result<Option<Verdict>> {
             self.prompts.lock().unwrap().push(prompt.to_string());
-            self.responses
+            Ok(self
+                .responses
                 .pop_front()
-                .expect("RecordingRunner: no more responses queued")
+                .expect("RecordingRunner: no more responses queued"))
         }
     }
 
@@ -627,7 +640,11 @@ mod tests {
     }
 
     fn run_summary(config: PipelineConfig, runner: FakeRunner) -> RunSummary {
-        PipelineExecutor::new(config, runner).run().unwrap().summary
+        PipelineExecutor::new(config, runner)
+            .run()
+            .unwrap()
+            .0
+            .summary
     }
 
     #[test]
@@ -730,7 +747,7 @@ mod tests {
     }
 
     fn run_result(config: PipelineConfig, runner: FakeRunner) -> PipelineRunResult {
-        PipelineExecutor::new(config, runner).run().unwrap()
+        PipelineExecutor::new(config, runner).run().unwrap().0
     }
 
     #[test]
@@ -779,9 +796,10 @@ mod tests {
 
         // Resume from saved state: b should run first (pass), then c (pass) → Done
         let state = first_run.pipeline_state;
-        let result = PipelineExecutor::resume(config, FakeRunner::new([pass(), pass()]), state)
-            .run()
-            .unwrap();
+        let (result, _) =
+            PipelineExecutor::resume(config, FakeRunner::new([pass(), pass()]), state)
+                .run()
+                .unwrap();
         assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 
@@ -793,7 +811,7 @@ mod tests {
         b.prompt = Some("task-b".to_string());
         let config = pipeline(vec![single_stage_entry(a), single_stage_entry(b)]);
 
-        let first_run = PipelineExecutor::new(config.clone(), FakeRunner::new([fail()]))
+        let (first_run, _) = PipelineExecutor::new(config.clone(), FakeRunner::new([fail()]))
             .run()
             .unwrap();
         let state = first_run.pipeline_state.clone();
@@ -843,9 +861,10 @@ mod tests {
 
         // Resume with higher limit: counter starts at 3, 2 more iterations available
         let state = first_run.pipeline_state;
-        let result = PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state)
-            .run()
-            .unwrap();
+        let (result, _) =
+            PipelineExecutor::resume(config, FakeRunner::new([fail(), pass()]), state)
+                .run()
+                .unwrap();
         assert_eq!(result.outcome, PipelineOutcome::Done);
     }
 

@@ -104,7 +104,7 @@ pub(super) fn run_loop(
             &with_input,
         );
         progress.last_stage = Some(stage.name.clone());
-        let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref());
+        let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref())?;
         progress.last_verdict = verdict.clone();
 
         if matches!(
@@ -263,7 +263,7 @@ pub(super) fn run_stage(
         &with_input,
     );
     progress.last_stage = Some(stage.name.clone());
-    let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref());
+    let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref())?;
     progress.last_verdict = verdict.clone();
 
     if matches!(

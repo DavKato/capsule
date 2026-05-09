@@ -79,7 +79,7 @@ impl Drop for CredentialsGuard {
         let current = match std::fs::read(self.tempfile.path()) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("warning: failed to read credentials temp file: {e}");
+                crate::display::warning(&format!("failed to read credentials temp file: {e}"));
                 return;
             }
         };
@@ -87,7 +87,7 @@ impl Drop for CredentialsGuard {
             return;
         }
         if let Err(e) = std::fs::copy(self.tempfile.path(), &dest) {
-            eprintln!("warning: failed to write back credentials: {e}");
+            crate::display::warning(&format!("failed to write back credentials: {e}"));
         }
     }
 }
@@ -200,10 +200,9 @@ impl DockerStageRunner {
         cfg: &ExecutionConfig,
         session_id: &str,
     ) -> anyhow::Result<Option<Verdict>> {
-        eprintln!(
-            "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
-            session_id
-        );
+        crate::display::warning(&format!(
+            "[capsule] auth failed — host token valid, attempting resume-retry (session {session_id})"
+        ));
         if let Some(ref mut guard) = self.credentials_guard {
             let host_creds = cfg.claude_dir.join(".credentials.json");
             std::fs::copy(&host_creds, guard.path())

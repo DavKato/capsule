@@ -1,6 +1,9 @@
 use crossterm::{
+    cursor,
     style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal, QueueableCommand,
+    terminal,
+    terminal::ClearType,
+    QueueableCommand,
 };
 use std::io::{stdout, Write};
 
@@ -90,6 +93,75 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
     render_box(&mut stdout(), &lines, term_w).ok();
 }
 
+const TOOL_ARGS_MAX: usize = 60;
+
+/// Print a yellow-dot tool-call line: `  ● ToolName  args`.
+pub fn tool_call(name: &str, args: &str) {
+    tool_call_to(&mut stdout(), name, args).ok();
+}
+
+fn tool_call_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    args: &str,
+) -> std::io::Result<()> {
+    let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
+        let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
+        format!("{s}…")
+    } else {
+        args.to_owned()
+    };
+    out.queue(SetForegroundColor(YELLOW))?;
+    out.queue(Print("  ● "))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!("{name}  {display_args}\n")))?;
+    out.flush()
+}
+
+/// Cursor-up to overwrite the previous tool-call line with a green (success) or red (failure) dot.
+pub fn tool_result(name: &str, success: bool) {
+    tool_result_to(&mut stdout(), name, success).ok();
+}
+
+fn tool_result_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    success: bool,
+) -> std::io::Result<()> {
+    let color = if success { GREEN } else { RED };
+    out.queue(cursor::MoveUp(1))?;
+    out.queue(terminal::Clear(ClearType::CurrentLine))?;
+    out.queue(SetForegroundColor(color))?;
+    out.queue(Print("  ● "))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!("{name}\n")))?;
+    out.flush()
+}
+
+/// Print agent thinking text at normal weight (not dimmed).
+pub fn thinking_text(text: &str) {
+    thinking_text_to(&mut stdout(), text).ok();
+}
+
+fn thinking_text_to<W: Write + QueueableCommand>(out: &mut W, text: &str) -> std::io::Result<()> {
+    out.queue(Print(text))?;
+    out.queue(Print("\n"))?;
+    out.flush()
+}
+
+/// Print assistant text-content in white.
+pub fn text_content(text: &str) {
+    text_content_to(&mut stdout(), text).ok();
+}
+
+fn text_content_to<W: Write + QueueableCommand>(out: &mut W, text: &str) -> std::io::Result<()> {
+    out.queue(SetForegroundColor(Color::White))?;
+    out.queue(Print(text))?;
+    out.queue(ResetColor)?;
+    out.queue(Print("\n"))?;
+    out.flush()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +228,87 @@ mod tests {
         // render_box may fail if crossterm's queue fails on a non-tty buffer;
         // we only assert it doesn't panic.
         let _ = render_box(&mut buf, &lines, 80);
+    }
+
+    #[test]
+    fn tool_call_renders_name_and_args() {
+        let mut buf: Vec<u8> = Vec::new();
+        tool_call_to(&mut buf, "Bash", "ls -la").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("Bash"), "tool name must appear in output");
+        assert!(out.contains("ls -la"), "args must appear in output");
+        assert!(out.contains("●"), "dot must appear in output");
+    }
+
+    #[test]
+    fn tool_call_long_args_truncates() {
+        let long_args = "a".repeat(100);
+        let mut buf: Vec<u8> = Vec::new();
+        tool_call_to(&mut buf, "Bash", &long_args).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("…"), "truncated args must end with ellipsis");
+        assert!(
+            !out.contains(&long_args),
+            "full long args must not appear verbatim"
+        );
+    }
+
+    #[test]
+    fn tool_call_short_args_not_truncated() {
+        let short_args = "short";
+        let mut buf: Vec<u8> = Vec::new();
+        tool_call_to(&mut buf, "Read", short_args).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains(short_args), "short args must appear verbatim");
+        assert!(!out.contains("…"), "short args must not be truncated");
+    }
+
+    #[test]
+    fn tool_result_success_emits_cursor_up_and_green() {
+        let mut buf: Vec<u8> = Vec::new();
+        tool_result_to(&mut buf, "Bash", true).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        // Cursor-up escape: ESC [ 1 A
+        assert!(
+            buf.windows(4).any(|w| w == b"\x1b[1A"),
+            "cursor-up escape must be emitted; output: {out:?}"
+        );
+        assert!(
+            out.contains("Bash"),
+            "tool name must appear after overwrite"
+        );
+    }
+
+    #[test]
+    fn tool_result_failure_emits_cursor_up_and_red() {
+        let mut buf: Vec<u8> = Vec::new();
+        tool_result_to(&mut buf, "Write", false).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            buf.windows(4).any(|w| w == b"\x1b[1A"),
+            "cursor-up escape must be emitted on failure; output: {out:?}"
+        );
+        assert!(out.contains("Write"), "tool name must appear on failure");
+    }
+
+    #[test]
+    fn thinking_text_not_dimmed() {
+        let mut buf: Vec<u8> = Vec::new();
+        thinking_text_to(&mut buf, "some thought").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("some thought"), "text must appear");
+        // dim ANSI code is ESC[2m — must not appear
+        assert!(
+            !buf.windows(4).any(|w| w == b"\x1b[2m"),
+            "thinking_text must not emit dim escape code"
+        );
+    }
+
+    #[test]
+    fn text_content_renders_text() {
+        let mut buf: Vec<u8> = Vec::new();
+        text_content_to(&mut buf, "hello world").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("hello world"), "text must appear in output");
     }
 }

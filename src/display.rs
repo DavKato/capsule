@@ -127,23 +127,17 @@ mod tests {
 
     #[test]
     fn narrow_terminal_truncates_content() {
-        // With a 20-char terminal the box is 20 wide; inner is 18.
-        // "Stage: implementer" = 18 chars; padded = 19 chars.
-        // 19 + 1 (trailing space check) = 20 > 18, so truncation fires.
         let content = ["Stage: implementer_long_name".to_string()];
-        let term_w: usize = 20;
-        let max_content = content.iter().map(|l| l.len()).max().unwrap_or(0);
-        let box_w = (max_content + 4).min(term_w);
-        let inner_w = box_w.saturating_sub(2);
-
-        let padded = format!(" {}", content[0]);
-        let cell = if padded.len() + 1 > inner_w {
-            format!("{} ", &padded[..inner_w.saturating_sub(1)])
-        } else {
-            format!("{:<width$}", padded, width = inner_w)
-        };
-        // Cell must fit exactly inside the box.
-        assert_eq!(cell.len(), inner_w, "cell must fill inner_w exactly");
+        let mut buf: Vec<u8> = Vec::new();
+        let _ = render_box(&mut buf, &content, 20);
+        let output = String::from_utf8_lossy(&buf);
+        // Top border is capped to terminal width (20 chars).
+        assert!(output.contains("┌"), "output must contain top-left corner");
+        // The long content line must be truncated — the full text should not appear.
+        assert!(
+            !output.contains("implementer_long_name"),
+            "long content must be truncated"
+        );
     }
 
     #[test]

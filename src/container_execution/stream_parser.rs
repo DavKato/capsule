@@ -1,12 +1,29 @@
 use crate::verdict::{Verdict, VerdictStatus};
 use serde_json::Value;
 
+pub struct ToolUseEvent {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+}
+
+pub struct ToolResultEvent {
+    pub tool_use_id: String,
+    pub is_error: bool,
+}
+
+pub enum ToolEvent {
+    Use(ToolUseEvent),
+    Result(ToolResultEvent),
+}
+
 pub struct StreamParser {
     verdict: Option<Verdict>,
     auth_failed: bool,
     init_seen: bool,
     submit_verdict_registered: bool,
     session_id: Option<String>,
+    last_tool_event: Option<ToolEvent>,
 }
 
 impl StreamParser {
@@ -17,10 +34,12 @@ impl StreamParser {
             init_seen: false,
             submit_verdict_registered: false,
             session_id: None,
+            last_tool_event: None,
         }
     }
 
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
+        self.last_tool_event = None;
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return self.verdict.as_ref();
         };
@@ -43,6 +62,7 @@ impl StreamParser {
             }
             self.verdict = Some(v);
         }
+        self.last_tool_event = extract_tool_event(&msg);
         self.verdict.as_ref()
     }
 
@@ -61,6 +81,11 @@ impl StreamParser {
     /// True when the init event was seen but `submit_verdict` was not in the tool list.
     pub fn submit_verdict_missing(&self) -> bool {
         self.init_seen && !self.submit_verdict_registered
+    }
+
+    /// Returns the tool event extracted from the most recent `feed()` call, if any.
+    pub fn last_tool_event(&self) -> Option<&ToolEvent> {
+        self.last_tool_event.as_ref()
     }
 }
 
@@ -100,6 +125,42 @@ fn is_submit_verdict(name: &str) -> bool {
 
 fn extract_init_tools(msg: &Value) -> Option<Vec<Value>> {
     Some(msg.get("tools")?.as_array()?.clone())
+}
+
+fn extract_tool_event(msg: &Value) -> Option<ToolEvent> {
+    let msg_type = msg.get("type")?.as_str()?;
+    match msg_type {
+        "assistant" => {
+            let content = msg.pointer("/message/content")?.as_array()?;
+            for block in content {
+                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    let name = block.get("name")?.as_str()?.to_owned();
+                    let id = block.get("id")?.as_str()?.to_owned();
+                    let input = block.get("input")?.clone();
+                    return Some(ToolEvent::Use(ToolUseEvent { id, name, input }));
+                }
+            }
+            None
+        }
+        "user" => {
+            let content = msg.pointer("/message/content")?.as_array()?;
+            for block in content {
+                if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                    let tool_use_id = block.get("tool_use_id")?.as_str()?.to_owned();
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    return Some(ToolEvent::Result(ToolResultEvent {
+                        tool_use_id,
+                        is_error,
+                    }));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn extract_verdict(msg: &Value) -> Option<Verdict> {
@@ -373,5 +434,104 @@ mod tests {
         let mut p = StreamParser::new();
         p.feed(line);
         assert_eq!(p.session_id(), Some("sess_foo-bar_baz"));
+    }
+
+    // Tool event extraction tests
+    const TOOL_USE_LINE: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_bash01","name":"Bash","input":{"command":"ls -la"}}]}}"#;
+    const TOOL_RESULT_LINE: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","content":"file1.txt\nfile2.txt","is_error":false}]}}"#;
+    const TOOL_RESULT_ERROR_LINE: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","content":"command not found","is_error":true}]}}"#;
+    const MCP_TOOL_USE_LINE: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_mcp01","name":"mcp__capsule__run_task","input":{"task":"build"}}]}}"#;
+
+    #[test]
+    fn tool_use_event_is_extracted() {
+        let mut p = StreamParser::new();
+        p.feed(TOOL_USE_LINE);
+        let event = p.last_tool_event().unwrap();
+        let ToolEvent::Use(use_event) = event else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert_eq!(use_event.id, "toolu_bash01");
+        assert_eq!(use_event.name, "Bash");
+        assert_eq!(use_event.input["command"], "ls -la");
+    }
+
+    #[test]
+    fn tool_result_success_event_is_extracted() {
+        let mut p = StreamParser::new();
+        p.feed(TOOL_RESULT_LINE);
+        let event = p.last_tool_event().unwrap();
+        let ToolEvent::Result(result_event) = event else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(result_event.tool_use_id, "toolu_bash01");
+        assert!(!result_event.is_error);
+    }
+
+    #[test]
+    fn tool_result_error_event_is_extracted() {
+        let mut p = StreamParser::new();
+        p.feed(TOOL_RESULT_ERROR_LINE);
+        let event = p.last_tool_event().unwrap();
+        let ToolEvent::Result(result_event) = event else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(result_event.tool_use_id, "toolu_bash01");
+        assert!(result_event.is_error);
+    }
+
+    #[test]
+    fn interleaved_tool_use_and_result_events() {
+        let mut p = StreamParser::new();
+
+        p.feed(TOOL_USE_LINE);
+        let event = p.last_tool_event().unwrap();
+        assert!(matches!(event, ToolEvent::Use(_)));
+
+        p.feed(TOOL_RESULT_LINE);
+        let event = p.last_tool_event().unwrap();
+        let ToolEvent::Result(result_event) = event else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(result_event.tool_use_id, "toolu_bash01");
+    }
+
+    #[test]
+    fn mcp_prefixed_tool_use_is_extracted() {
+        let mut p = StreamParser::new();
+        p.feed(MCP_TOOL_USE_LINE);
+        let event = p.last_tool_event().unwrap();
+        let ToolEvent::Use(use_event) = event else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert_eq!(use_event.name, "mcp__capsule__run_task");
+        assert_eq!(use_event.id, "toolu_mcp01");
+        assert_eq!(use_event.input["task"], "build");
+    }
+
+    #[test]
+    fn non_tool_line_clears_last_tool_event() {
+        let mut p = StreamParser::new();
+        p.feed(TOOL_USE_LINE);
+        assert!(p.last_tool_event().is_some());
+        p.feed(TEXT_LINE);
+        assert!(p.last_tool_event().is_none());
+    }
+
+    #[test]
+    fn no_tool_event_before_any_feed() {
+        let p = StreamParser::new();
+        assert!(p.last_tool_event().is_none());
+    }
+
+    #[test]
+    fn submit_verdict_tool_use_also_emits_tool_event() {
+        let mut p = StreamParser::new();
+        p.feed(PASS_LINE);
+        // submit_verdict is a tool_use and should also appear as a ToolEvent::Use
+        let event = p.last_tool_event().unwrap();
+        let ToolEvent::Use(use_event) = event else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert_eq!(use_event.name, "submit_verdict");
     }
 }

@@ -25,7 +25,7 @@ pub struct ExecutionConfig {
     pub pwd: PathBuf,
     /// Optional model override passed via `-e CAPSULE_MODEL`.
     pub model: Option<String>,
-    /// When true, print unfiltered container output in addition to jq-filtered view.
+    /// When true, print unfiltered container output to stderr in addition to the display view.
     pub verbose: bool,
     /// Path to the `.env` file to pass via `--env-file` (None → omitted).
     pub env_file: Option<PathBuf>,

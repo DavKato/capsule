@@ -4,6 +4,7 @@ use capsule::verdict::{Verdict, VerdictStatus};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug)]
 struct RecordingRunner {
     responses: VecDeque<Option<Verdict>>,
     prompts: Arc<Mutex<Vec<String>>>,
@@ -25,9 +26,14 @@ impl RecordingRunner {
 }
 
 impl StageRunner for RecordingRunner {
-    fn run(&mut self, _stage_name: &str, prompt: &str, _model: Option<&str>) -> Option<Verdict> {
+    fn run(
+        &mut self,
+        _stage_name: &str,
+        prompt: &str,
+        _model: Option<&str>,
+    ) -> anyhow::Result<Option<Verdict>> {
         self.prompts.lock().unwrap().push(prompt.to_string());
-        self.responses.pop_front().expect("no more responses")
+        Ok(self.responses.pop_front().expect("no more responses"))
     }
 }
 

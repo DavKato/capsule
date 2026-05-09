@@ -53,7 +53,7 @@ impl CredentialsGuard {
     /// Re-read host mtime and temp file content after an external mutation of the
     /// temp file (e.g. re-copying host credentials for a resume-retry). Resets the
     /// write-back baseline so the guard correctly detects further token rotations.
-    pub fn reset_baseline(&mut self) -> Result<()> {
+    fn reset_baseline(&mut self) -> Result<()> {
         let src = self.claude_dir.join(".credentials.json");
         self.host_mtime = src
             .metadata()
@@ -92,12 +92,34 @@ impl Drop for CredentialsGuard {
 }
 
 pub struct DockerStageRunner {
-    pub base_cfg: ExecutionConfig,
-    pub active_container: Arc<Mutex<Option<String>>>,
-    pub iteration: u32,
-    pub session_id: Option<String>,
-    pub credentials_guard: Option<CredentialsGuard>,
-    pub resume_session_id: Option<String>,
+    base_cfg: ExecutionConfig,
+    active_container: Arc<Mutex<Option<String>>>,
+    iteration: u32,
+    session_id: Option<String>,
+    credentials_guard: Option<CredentialsGuard>,
+    resume_session_id: Option<String>,
+}
+
+impl DockerStageRunner {
+    pub fn new(
+        base_cfg: ExecutionConfig,
+        active_container: Arc<Mutex<Option<String>>>,
+        credentials_guard: Option<CredentialsGuard>,
+        resume_session_id: Option<String>,
+    ) -> Self {
+        Self {
+            base_cfg,
+            active_container,
+            iteration: 0,
+            session_id: None,
+            credentials_guard,
+            resume_session_id,
+        }
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
 }
 
 impl StageRunner for DockerStageRunner {

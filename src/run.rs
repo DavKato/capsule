@@ -263,14 +263,12 @@ impl RunSession {
         };
         let resume = self.resume.take();
         let resume_session_id = resume.as_ref().map(|(id, _)| id.clone());
-        let runner = DockerStageRunner {
+        let runner = DockerStageRunner::new(
             base_cfg,
-            active_container: Arc::clone(&self.active_container),
-            iteration: 0,
-            session_id: None,
+            Arc::clone(&self.active_container),
             credentials_guard,
             resume_session_id,
-        };
+        );
         let (mut result, runner) = if let Some((_, state)) = resume {
             PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state)
                 .with_capsule_dir(self.cfg.capsule_dir.clone())
@@ -281,7 +279,7 @@ impl RunSession {
                 .with_input(self.input)
                 .run()?
         };
-        result.summary.session_id = runner.session_id;
+        result.summary.session_id = runner.session_id().map(String::from);
         result.pipeline_state.env = self.env_pairs.clone();
         let state_to_write = match result.summary.terminal_reason {
             TerminalReason::FailExit | TerminalReason::CapHit => Some(&result.pipeline_state),

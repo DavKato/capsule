@@ -27,27 +27,11 @@ pub fn maybe_print_notice(rx: Receiver<Option<UpdateNotice>>) {
     let Ok(Some(notice)) = rx.recv_timeout(Duration::from_secs(2)) else {
         return;
     };
-    eprintln!();
-    eprintln!("╭─────────────────────────────────────────╮");
-    eprintln!(
-        "│  Update available: {} → {}{}│",
-        notice.current,
-        notice.latest,
-        padding(notice.current.len() + notice.latest.len())
-    );
-    eprintln!("│  Run capsule update to install it.      │");
-    eprintln!("╰─────────────────────────────────────────╯");
-}
-
-fn padding(used: usize) -> &'static str {
-    // Box inner width = 41, "  Update available: " = 20, " → " = 3
-    // padding fills the rest: 41 - 20 - 3 - used = 18 - used
-    const INNER: usize = 41;
-    const PREFIX: usize = 20; // "  Update available: "
-    const ARROW: usize = 3; // " → "
-    let space = INNER.saturating_sub(PREFIX + ARROW + used);
-    // Return a static slice from a fixed-length spaces string.
-    &"                                         "[..space.min(41)]
+    crate::display::info("");
+    crate::display::notice_box(&[
+        format!("Update available: {} → {}", notice.current, notice.latest),
+        "Run capsule update to install it.".to_string(),
+    ]);
 }
 
 fn check_for_update() -> Option<UpdateNotice> {

@@ -97,6 +97,38 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
     render_box(&mut stdout(), &lines, term_w).ok();
 }
 
+/// Print a yellow warning icon followed by `msg`.
+pub fn warning(msg: &str) {
+    warning_to(&mut stdout(), msg).ok();
+}
+
+fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
+    out.queue(SetForegroundColor(YELLOW))?;
+    out.queue(Print("⚠ "))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!("{msg}\n")))?;
+    out.flush()
+}
+
+/// Print a neutral informational line.
+pub fn info(msg: &str) {
+    info_to(&mut stdout(), msg).ok();
+}
+
+fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
+    out.queue(Print(format!("{msg}\n")))?;
+    out.flush()
+}
+
+/// Render a bordered notice box using the standard `┌┐└┘` character set.
+///
+/// Accepts plain content lines (without borders); the box is sized to fit
+/// the widest line and capped at terminal width.
+pub fn notice_box(lines: &[String]) {
+    let term_w = terminal_width() as usize;
+    render_box(&mut stdout(), lines, term_w).ok();
+}
+
 const TOOL_ARGS_MAX: usize = 60;
 
 /// Print a yellow-dot tool-call line: `  ● ToolName  args`.
@@ -388,6 +420,51 @@ mod tests {
     }
 
     #[test]
+    fn warning_renders_icon_in_yellow_and_message() {
+        let mut buf: Vec<u8> = Vec::new();
+        warning_to(&mut buf, "something went wrong").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("⚠"), "warning must contain the warning icon");
+        assert!(
+            out.contains("something went wrong"),
+            "warning must contain the message"
+        );
+        assert!(
+            contains_seq(&buf, YELLOW_ANSI),
+            "warning must emit yellow color escape; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn warning_icon_precedes_message() {
+        let mut buf: Vec<u8> = Vec::new();
+        warning_to(&mut buf, "bad news").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        let icon_pos = out.find('⚠').expect("icon must be present");
+        let msg_pos = out.find("bad news").expect("message must be present");
+        assert!(icon_pos < msg_pos, "icon must appear before message");
+    }
+
+    #[test]
+    fn info_renders_message_without_icon() {
+        let mut buf: Vec<u8> = Vec::new();
+        info_to(&mut buf, "build complete").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("build complete"), "info must contain message");
+        assert!(!out.contains('⚠'), "info must not contain warning icon");
+    }
+
+    #[test]
+    fn info_does_not_emit_color_escapes() {
+        let mut buf: Vec<u8> = Vec::new();
+        info_to(&mut buf, "neutral message").unwrap();
+        assert!(
+            !buf.windows(2).any(|w| w == b"\x1b["),
+            "info must not emit ANSI escape codes"
+        );
+    }
+
+    #[test]
     fn tool_call_renders_name_and_args() {
         let mut buf: Vec<u8> = Vec::new();
         tool_call_to(&mut buf, "Bash", "ls -la").unwrap();
@@ -473,6 +550,7 @@ mod tests {
     const GREEN_ANSI: &[u8] = b"\x1b[38;5;10m";
     const RED_ANSI: &[u8] = b"\x1b[38;5;9m";
     const CYAN_ANSI: &[u8] = b"\x1b[38;5;14m";
+    const YELLOW_ANSI: &[u8] = b"\x1b[38;5;11m";
 
     fn contains_seq(buf: &[u8], seq: &[u8]) -> bool {
         buf.windows(seq.len()).any(|w| w == seq)

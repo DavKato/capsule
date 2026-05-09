@@ -27,14 +27,14 @@ pub fn init(template: &str, dest: &Path, force: bool) -> Result<()> {
     } else {
         templates::copy_to(template, dest)?;
     }
-    println!("Wrote .capsule/ from template \"{template}\".");
-    println!();
-    println!("Next:");
-    println!("  - Read the agent guide:        capsule explain --all");
-    println!("  - Customize prompts in:        .capsule/prompts/");
-    println!("  - Validate after edits:        capsule check");
-    println!(
-        "  - Reference templates online:  https://github.com/DavKato/capsule/tree/main/templates"
+    crate::display::info(&format!("Wrote .capsule/ from template \"{template}\"."));
+    crate::display::info("");
+    crate::display::info("Next:");
+    crate::display::info("  - Read the agent guide:        capsule explain --all");
+    crate::display::info("  - Customize prompts in:        .capsule/prompts/");
+    crate::display::info("  - Validate after edits:        capsule check");
+    crate::display::info(
+        "  - Reference templates online:  https://github.com/DavKato/capsule/tree/main/templates",
     );
     Ok(())
 }

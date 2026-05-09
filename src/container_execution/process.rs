@@ -51,7 +51,7 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         let line = line.context("error reading docker stdout")?;
         let parsed = parser.feed(&line).is_some();
         if verbose {
-            eprintln!("{line}");
+            crate::display::info(&line);
         }
         if let Some(event) = parser.last_tool_event() {
             match event {
@@ -73,7 +73,7 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
                 TextDisplay::Thinking(text) => crate::display::thinking_text(&text),
             }
         } else if !parsed && !line.is_empty() {
-            println!("{line}");
+            crate::display::info(&line);
         }
     }
 

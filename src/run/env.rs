@@ -65,15 +65,14 @@ pub(super) fn setup_gh_token(
 
     match scope {
         GithubScope::Local => {
-            eprintln!("GH_TOKEN: local (.capsule/.env)");
+            capsule::display::info("GH_TOKEN: local (.capsule/.env)");
         }
         GithubScope::Global => {
             if pre_dotenv_env.contains_key("GH_TOKEN") {
-                eprintln!("GH_TOKEN: global (process environment)");
+                capsule::display::info("GH_TOKEN: global (process environment)");
             } else {
-                // Fell back to gh auth token — show scopes and ask for confirmation.
-                eprintln!(
-                    "GH_TOKEN not found in process environment — falling back to gh auth token"
+                capsule::display::warning(
+                    "GH_TOKEN not found in process environment — falling back to gh auth token",
                 );
                 let _ = Command::new("gh").args(["auth", "status"]).status();
                 eprint!("Inject into container? [y/N] ");

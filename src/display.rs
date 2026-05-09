@@ -6,6 +6,9 @@ use crossterm::{
     QueueableCommand,
 };
 use std::io::{stdout, Write};
+use std::time::Duration;
+
+use crate::verdict::{Verdict, VerdictStatus};
 
 pub const GREEN: Color = Color::Green;
 pub const RED: Color = Color::Red;
@@ -162,6 +165,160 @@ fn text_content_to<W: Write + QueueableCommand>(out: &mut W, text: &str) -> std:
     out.flush()
 }
 
+const NOTES_MAX: usize = 60;
+const SESSION_ID_MAX: usize = 32;
+
+fn verdict_color_label(status: &VerdictStatus) -> (Color, &'static str) {
+    match status {
+        VerdictStatus::Pass => (GREEN, "pass"),
+        VerdictStatus::Fail => (RED, "fail"),
+        VerdictStatus::Done => (CYAN, "done"),
+    }
+}
+
+/// Render a color-coded single-line verdict label to stdout.
+pub fn verdict(status: &VerdictStatus) {
+    verdict_to(&mut stdout(), status).ok();
+}
+
+fn verdict_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    status: &VerdictStatus,
+) -> std::io::Result<()> {
+    let (color, label) = verdict_color_label(status);
+    out.queue(SetForegroundColor(color))?;
+    out.queue(Print(format!("{label}\n")))?;
+    out.queue(ResetColor)?;
+    out.flush()
+}
+
+fn format_duration(d: Duration) -> String {
+    let total = d.as_secs();
+    format!("{:02}:{:02}", total / 60, total % 60)
+}
+
+/// Render a bordered session-footer box to stdout after a stage completes.
+///
+/// `verdict` is `None` for an implicit fail (stage exited without emitting a verdict).
+pub fn session_footer(verdict: Option<&Verdict>, duration: Duration, session_id: Option<&str>) {
+    session_footer_to(&mut stdout(), verdict, duration, session_id).ok();
+}
+
+fn session_footer_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    verdict: Option<&Verdict>,
+    duration: Duration,
+    session_id: Option<&str>,
+) -> std::io::Result<()> {
+    let term_w = terminal_width() as usize;
+
+    let (status_color, status_label) = match verdict {
+        Some(v) => verdict_color_label(&v.status),
+        None => (RED, "fail"),
+    };
+
+    let notes_text = verdict.and_then(|v| v.notes.as_deref()).map(|n| {
+        if n.chars().count() > NOTES_MAX {
+            let s: String = n.chars().take(NOTES_MAX).collect();
+            format!("{s}…")
+        } else {
+            n.to_string()
+        }
+    });
+
+    let session_text = session_id.map(|id| {
+        if id.chars().count() > SESSION_ID_MAX {
+            let s: String = id.chars().take(SESSION_ID_MAX).collect();
+            format!("{s}…")
+        } else {
+            id.to_string()
+        }
+    });
+
+    // Build plain-text lines for box-width computation.
+    let status_plain = format!("Status: {status_label}");
+    let duration_line = format!("Duration: {}", format_duration(duration));
+    let notes_line = notes_text.as_deref().map(|n| format!("Notes: {n}"));
+    let session_line = session_text.as_deref().map(|s| format!("Session: {s}"));
+
+    let plain_lines: Vec<&str> = {
+        let mut v: Vec<&str> = vec![&status_plain, &duration_line];
+        if let Some(ref nl) = notes_line {
+            v.push(nl.as_str());
+        }
+        if let Some(ref sl) = session_line {
+            v.push(sl.as_str());
+        }
+        v
+    };
+
+    let max_content = plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    let box_w = (max_content + 4).min(term_w);
+    let inner_w = box_w.saturating_sub(2);
+    let horiz = "─".repeat(box_w.saturating_sub(2));
+
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print(format!("┌{horiz}┐\n")))?;
+
+    // Status line: border in CYAN, "Status: " in default, label in status color.
+    render_footer_status_line(out, status_label, status_color, inner_w)?;
+
+    // Plain content lines.
+    for line in &plain_lines[1..] {
+        render_footer_plain_line(out, line, inner_w)?;
+    }
+
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print(format!("└{horiz}┘\n")))?;
+    out.queue(ResetColor)?;
+    out.flush()
+}
+
+fn render_footer_status_line<W: Write + QueueableCommand>(
+    out: &mut W,
+    label: &str,
+    color: Color,
+    inner_w: usize,
+) -> std::io::Result<()> {
+    let prefix = " Status: ";
+    let prefix_len = prefix.len();
+    let value_w = inner_w.saturating_sub(prefix_len.min(inner_w));
+    let value_display: String = if label.chars().count() > value_w {
+        let s: String = label.chars().take(value_w.saturating_sub(1)).collect();
+        format!("{s}…")
+    } else {
+        format!("{:<width$}", label, width = value_w)
+    };
+
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print("│"))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(prefix))?;
+    out.queue(SetForegroundColor(color))?;
+    out.queue(Print(&value_display))?;
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print("│\n"))?;
+    out.queue(ResetColor)?;
+    Ok(())
+}
+
+fn render_footer_plain_line<W: Write + QueueableCommand>(
+    out: &mut W,
+    line: &str,
+    inner_w: usize,
+) -> std::io::Result<()> {
+    let padded = format!(" {line}");
+    let cell = if padded.len() + 1 > inner_w {
+        format!("{} ", &padded[..inner_w.saturating_sub(1)])
+    } else {
+        format!("{:<width$}", padded, width = inner_w)
+    };
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print(format!("│{cell}│\n")))?;
+    out.queue(ResetColor)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +467,178 @@ mod tests {
         text_content_to(&mut buf, "hello world").unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("hello world"), "text must appear in output");
+    }
+
+    // Crossterm emits 256-color (8-bit) SGR sequences on non-tty buffers.
+    const GREEN_ANSI: &[u8] = b"\x1b[38;5;10m";
+    const RED_ANSI: &[u8] = b"\x1b[38;5;9m";
+    const CYAN_ANSI: &[u8] = b"\x1b[38;5;14m";
+
+    fn contains_seq(buf: &[u8], seq: &[u8]) -> bool {
+        buf.windows(seq.len()).any(|w| w == seq)
+    }
+
+    #[test]
+    fn verdict_pass_renders_green() {
+        let mut buf: Vec<u8> = Vec::new();
+        verdict_to(&mut buf, &VerdictStatus::Pass).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("pass"), "pass label must appear");
+        assert!(
+            contains_seq(&buf, GREEN_ANSI),
+            "green color escape must be emitted for pass; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn verdict_fail_renders_red() {
+        let mut buf: Vec<u8> = Vec::new();
+        verdict_to(&mut buf, &VerdictStatus::Fail).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("fail"), "fail label must appear");
+        assert!(
+            contains_seq(&buf, RED_ANSI),
+            "red color escape must be emitted for fail; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn verdict_done_renders_cyan() {
+        let mut buf: Vec<u8> = Vec::new();
+        verdict_to(&mut buf, &VerdictStatus::Done).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("done"), "done label must appear");
+        assert!(
+            contains_seq(&buf, CYAN_ANSI),
+            "cyan color escape must be emitted for done; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn session_footer_pass_contains_status_and_duration() {
+        let v = Verdict {
+            status: VerdictStatus::Pass,
+            notes: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(83), None).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("pass"), "pass label must appear in footer");
+        assert!(out.contains("01:23"), "duration must be formatted as MM:SS");
+        assert!(out.contains("┌"), "top border must appear");
+        assert!(out.contains("└"), "bottom border must appear");
+    }
+
+    #[test]
+    fn session_footer_fail_shows_red_status() {
+        let v = Verdict {
+            status: VerdictStatus::Fail,
+            notes: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(5), None).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("fail"), "fail label must appear");
+        assert!(
+            contains_seq(&buf, RED_ANSI),
+            "red escape must be emitted for fail status; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn session_footer_done_shows_cyan_status() {
+        let v = Verdict {
+            status: VerdictStatus::Done,
+            notes: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("done"), "done label must appear");
+    }
+
+    #[test]
+    fn session_footer_none_verdict_is_implicit_fail() {
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(&mut buf, None, Duration::from_secs(10), None).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("fail"), "implicit fail must show 'fail'");
+        assert!(
+            contains_seq(&buf, RED_ANSI),
+            "red escape must be emitted for implicit fail; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn session_footer_notes_truncated_when_long() {
+        let long_notes = "x".repeat(100);
+        let v = Verdict {
+            status: VerdictStatus::Pass,
+            notes: Some(long_notes),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("…"),
+            "long notes must be truncated with ellipsis"
+        );
+        assert!(
+            !out.contains(&"x".repeat(100)),
+            "full long notes must not appear verbatim"
+        );
+    }
+
+    #[test]
+    fn session_footer_session_id_displayed() {
+        let v = Verdict {
+            status: VerdictStatus::Pass,
+            notes: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(
+            &mut buf,
+            Some(&v),
+            Duration::from_secs(0),
+            Some("sess_abc123"),
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("sess_abc123"),
+            "session id must appear in footer"
+        );
+    }
+
+    #[test]
+    fn session_footer_session_id_truncated_when_long() {
+        let long_id = "s".repeat(64);
+        let v = Verdict {
+            status: VerdictStatus::Pass,
+            notes: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), Some(&long_id)).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("…"), "long session id must be truncated");
+        assert!(
+            !out.contains(&long_id),
+            "full long session id must not appear"
+        );
+    }
+
+    #[test]
+    fn format_duration_zero() {
+        assert_eq!(format_duration(Duration::from_secs(0)), "00:00");
+    }
+
+    #[test]
+    fn format_duration_one_minute_twenty_three() {
+        assert_eq!(format_duration(Duration::from_secs(83)), "01:23");
+    }
+
+    #[test]
+    fn format_duration_over_an_hour() {
+        assert_eq!(format_duration(Duration::from_secs(3723)), "62:03");
     }
 }

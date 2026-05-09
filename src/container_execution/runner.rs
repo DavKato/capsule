@@ -136,6 +136,22 @@ impl StageRunner for DockerStageRunner {
             .or(self.base_cfg.model.as_deref())
             .unwrap_or("unknown");
         crate::display::stage_header(stage_name, self.iteration, effective_model, retry);
+        let start = std::time::Instant::now();
+        let result = self.execute_stage(prompt, model);
+        let duration = start.elapsed();
+        if let Ok(ref verdict) = result {
+            crate::display::session_footer(verdict.as_ref(), duration, self.session_id.as_deref());
+        }
+        result
+    }
+}
+
+impl DockerStageRunner {
+    fn execute_stage(
+        &mut self,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> anyhow::Result<Option<Verdict>> {
         let mut cfg = self.base_cfg.clone();
         cfg.prompt = prompt.to_string();
         if let Some(m) = model {

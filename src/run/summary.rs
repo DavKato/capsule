@@ -8,14 +8,7 @@ use super::ExitDecision;
 pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
     match summary.terminal_reason {
         TerminalReason::Done | TerminalReason::Exit | TerminalReason::Ok => ExitDecision::Success,
-        TerminalReason::FailExit | TerminalReason::CapHit => {
-            let msg = summary
-                .last_verdict
-                .as_ref()
-                .and_then(|v| v.notes.clone())
-                .unwrap_or_else(|| format!("pipeline ended with {:?}", summary.terminal_reason));
-            ExitDecision::Failure(msg)
-        }
+        TerminalReason::FailExit | TerminalReason::CapHit => ExitDecision::Failure,
     }
 }
 

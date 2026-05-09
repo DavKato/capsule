@@ -321,11 +321,11 @@ fn main() -> Result<()> {
             let env = parse_env_pairs(env)?;
             match RunSession::prepare_resume(capsule_dir, env)?.execute()? {
                 run::ExitDecision::Success => {
-                    println!("Claude submitted a pass verdict.");
+                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Pass);
                     Ok(())
                 }
-                run::ExitDecision::Failure(msg) => {
-                    eprintln!("{msg}");
+                run::ExitDecision::Failure => {
+                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Fail);
                     std::process::exit(1);
                 }
             }
@@ -446,11 +446,11 @@ fn main() -> Result<()> {
             };
             match RunSession::prepare(capsule_dir, overrides)?.execute()? {
                 run::ExitDecision::Success => {
-                    println!("Claude submitted a pass verdict.");
+                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Pass);
                     Ok(())
                 }
-                run::ExitDecision::Failure(msg) => {
-                    eprintln!("{msg}");
+                run::ExitDecision::Failure => {
+                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Fail);
                     std::process::exit(1);
                 }
             }

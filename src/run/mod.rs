@@ -19,7 +19,7 @@ mod summary;
 
 pub(crate) enum ExitDecision {
     Success,
-    Failure,
+    Failure(String),
 }
 
 pub(crate) struct RunSession {

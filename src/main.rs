@@ -324,8 +324,11 @@ fn main() -> Result<()> {
                     capsule::display::verdict(&capsule::verdict::VerdictStatus::Pass);
                     Ok(())
                 }
-                run::ExitDecision::Failure => {
+                run::ExitDecision::Failure(notes) => {
                     capsule::display::verdict(&capsule::verdict::VerdictStatus::Fail);
+                    if !notes.is_empty() {
+                        capsule::display::info(&notes);
+                    }
                     std::process::exit(1);
                 }
             }
@@ -449,8 +452,11 @@ fn main() -> Result<()> {
                     capsule::display::verdict(&capsule::verdict::VerdictStatus::Pass);
                     Ok(())
                 }
-                run::ExitDecision::Failure => {
+                run::ExitDecision::Failure(notes) => {
                     capsule::display::verdict(&capsule::verdict::VerdictStatus::Fail);
+                    if !notes.is_empty() {
+                        capsule::display::info(&notes);
+                    }
                     std::process::exit(1);
                 }
             }

@@ -8,12 +8,16 @@ use super::ExitDecision;
 pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
     match summary.terminal_reason {
         TerminalReason::Done | TerminalReason::Exit | TerminalReason::Ok => ExitDecision::Success,
-        TerminalReason::FailExit | TerminalReason::CapHit => {
+        ref reason @ (TerminalReason::FailExit | TerminalReason::CapHit) => {
+            let fallback = match reason {
+                TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
+                _ => "pipeline ended with fail-exit (no verdict emitted)",
+            };
             let notes = summary
                 .last_verdict
                 .as_ref()
                 .and_then(|v| v.notes.as_deref())
-                .unwrap_or("")
+                .unwrap_or(fallback)
                 .to_string();
             ExitDecision::Failure(notes)
         }
@@ -430,18 +434,21 @@ mod tests {
     }
 
     #[test]
-    fn failure_decision_empty_notes_when_no_verdict() {
+    fn failure_decision_fallback_notes_when_no_verdict() {
         let s = minimal_summary(TerminalReason::FailExit);
         match exit_decision_from_summary(&s) {
             ExitDecision::Failure(notes) => {
-                assert!(notes.is_empty(), "notes must be empty when no last verdict");
+                assert!(
+                    notes.contains("fail-exit"),
+                    "fallback must mention fail-exit, got: {notes}"
+                );
             }
             _ => panic!("expected Failure"),
         }
     }
 
     #[test]
-    fn failure_decision_empty_notes_when_verdict_has_no_notes() {
+    fn failure_decision_fallback_notes_when_verdict_has_no_notes() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.last_verdict = Some(Verdict {
             status: VerdictStatus::Fail,
@@ -450,8 +457,8 @@ mod tests {
         match exit_decision_from_summary(&s) {
             ExitDecision::Failure(notes) => {
                 assert!(
-                    notes.is_empty(),
-                    "notes must be empty when verdict notes is None"
+                    notes.contains("cap-hit"),
+                    "fallback must mention cap-hit, got: {notes}"
                 );
             }
             _ => panic!("expected Failure"),

@@ -60,7 +60,6 @@ fn render_box<W: Write + QueueableCommand>(
     term_w: usize,
 ) -> std::io::Result<()> {
     let max_content = content.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-    // box width includes two border chars; inner holds the padded content
     let box_w = (max_content + 4).min(term_w);
     let inner_w = box_w.saturating_sub(2);
 
@@ -390,9 +389,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         let _ = render_box(&mut buf, &content, 20);
         let output = String::from_utf8_lossy(&buf);
-        // Top border is capped to terminal width (20 chars).
         assert!(output.contains("┌"), "output must contain top-left corner");
-        // The long content line must be truncated — the full text should not appear.
         assert!(
             !output.contains("implementer_long_name"),
             "long content must be truncated"
@@ -401,7 +398,6 @@ mod tests {
 
     #[test]
     fn box_renders_without_error() {
-        // Smoke test: render_box must not panic or error on a normal terminal width.
         let lines = header_content_lines(
             "implementer",
             1,

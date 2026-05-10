@@ -483,7 +483,6 @@ mod tests {
         assert_eq!(p.session_id(), Some("sess_foo-bar_baz"));
     }
 
-    // Tool event extraction tests
     const TOOL_USE_LINE: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_bash01","name":"Bash","input":{"command":"ls -la"}}]}}"#;
     const TOOL_RESULT_LINE: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","content":"file1.txt\nfile2.txt","is_error":false}]}}"#;
     const TOOL_RESULT_ERROR_LINE: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","content":"command not found","is_error":true}]}}"#;
@@ -624,7 +623,6 @@ mod tests {
         assert!(second.is_error);
     }
 
-    // Text display extraction tests
     #[test]
     fn text_content_extracted_from_assistant_message() {
         let mut p = StreamParser::new();

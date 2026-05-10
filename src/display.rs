@@ -163,8 +163,13 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
 
 pub fn clear_stage() {
     TIMER_GEN.fetch_add(1, Ordering::Relaxed);
-    let guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(state) = guard.as_ref() {
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    handle_resize_if_needed(&mut guard);
+    if let Some(state) = guard.as_mut() {
+        state.stage_name.clear();
+        state.iteration = 0;
+        state.model.clear();
+        state.token_warning = None;
         let (info_r, status_r) = (state.info_row(), state.status_row());
         drop(guard);
         clear_panel_row(info_r);

@@ -249,10 +249,8 @@ mod tests {
         std::fs::write(&creds_path, b"original").unwrap();
 
         let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
-        // Simulate re-copying host creds to the temp file (as resume-retry does).
         std::fs::write(guard.path(), b"resumed-creds").unwrap();
         guard.reset_baseline().unwrap();
-        // Simulate the resumed container rotating the token.
         std::fs::write(guard.path(), b"rotated-by-resume").unwrap();
         drop(guard);
 

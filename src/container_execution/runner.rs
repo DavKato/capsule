@@ -138,8 +138,25 @@ impl StageRunner for DockerStageRunner {
         let start = std::time::Instant::now();
         let result = self.execute_stage(prompt, model);
         let duration = start.elapsed();
-        if let Ok(ref verdict) = result {
-            crate::display::session_footer(verdict.as_ref(), duration, self.session_id.as_deref());
+        match &result {
+            Ok(verdict) => {
+                crate::display::session_footer(
+                    verdict.as_ref(),
+                    duration,
+                    self.session_id.as_deref(),
+                );
+            }
+            Err(e) => {
+                let error_verdict = crate::verdict::Verdict {
+                    status: crate::verdict::VerdictStatus::Fail,
+                    notes: Some(format!("{e:#}")),
+                };
+                crate::display::session_footer(
+                    Some(&error_verdict),
+                    duration,
+                    self.session_id.as_deref(),
+                );
+            }
         }
         result
     }

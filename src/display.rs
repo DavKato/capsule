@@ -128,7 +128,6 @@ pub fn teardown() {
     let mut out = stdout();
     // Reset scroll region to full screen.
     out.write_all(b"\x1b[r").ok();
-    // Clear panel rows.
     let (_, term_h) = terminal::size().unwrap_or((80, 24));
     for row in term_h.saturating_sub(PANEL_HEIGHT)..term_h {
         out.queue(cursor::MoveTo(0, row)).ok();
@@ -212,14 +211,12 @@ fn setup_scroll_region(term_w: u16, term_h: u16) {
     out.write_all(format!("\x1b[1;{}r", scroll_bottom).as_bytes())
         .ok();
 
-    // Draw separator.
     let sep_row = scroll_bottom; // 0-indexed (crossterm MoveTo is 0-indexed)
     out.queue(cursor::MoveTo(0, sep_row)).ok();
     out.queue(SetForegroundColor(CYAN)).ok();
     out.queue(Print("─".repeat(term_w as usize))).ok();
     out.queue(ResetColor).ok();
 
-    // Clear info and status rows.
     for row in (sep_row + 1)..term_h {
         out.queue(cursor::MoveTo(0, row)).ok();
         out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
@@ -728,8 +725,6 @@ fn session_footer_to<W: Write + QueueableCommand>(
     out.queue(ResetColor)?;
     out.queue(Print("\n"))?;
 
-    // Gutter content: session ID, context usage, notes
-    // "│ " prefix = 2 chars; gutter_width is the usable content area
     let gutter_width = term_w.saturating_sub(2);
 
     if let Some(id) = session_id {
@@ -763,7 +758,6 @@ fn session_footer_to<W: Write + QueueableCommand>(
         }
     }
 
-    // Bottom rule
     out.queue(SetForegroundColor(CYAN))?;
     out.queue(Print(format!("{}\n", "─".repeat(term_w))))?;
     out.queue(ResetColor)?;

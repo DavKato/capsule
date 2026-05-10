@@ -17,11 +17,7 @@ pub const RED: Color = Color::Red;
 pub const CYAN: Color = Color::Cyan;
 pub const YELLOW: Color = Color::Yellow;
 
-/// Number of rows reserved for the fixed status panel at the bottom.
-/// Layout: separator row + stage-info row + tool-status row.
 const PANEL_HEIGHT: u16 = 3;
-
-/// Minimum terminal height required to activate the panel.
 const MIN_TERM_HEIGHT: u16 = 12;
 
 struct DisplayState {
@@ -31,9 +27,6 @@ struct DisplayState {
     iteration: u32,
     model: String,
     start_time: Instant,
-    /// Name of the currently-pending tool call (yellow dot in panel).
-    pending_tool: Option<String>,
-    /// Token expiry warning text shown in the info row suffix.
     token_warning: Option<String>,
 }
 
@@ -46,22 +39,18 @@ impl DisplayState {
             iteration: 0,
             model: String::new(),
             start_time: Instant::now(),
-            pending_tool: None,
             token_warning: None,
         }
     }
 
-    /// 0-indexed row of the separator line.
     fn separator_row(&self) -> u16 {
         self.term_height.saturating_sub(PANEL_HEIGHT)
     }
 
-    /// 0-indexed row of the stage-info line.
     fn info_row(&self) -> u16 {
         self.term_height.saturating_sub(PANEL_HEIGHT - 1)
     }
 
-    /// 0-indexed row of the tool-status line.
     fn status_row(&self) -> u16 {
         self.term_height.saturating_sub(PANEL_HEIGHT - 2)
     }
@@ -80,12 +69,6 @@ fn is_in_tty_mode() -> bool {
         .is_some()
 }
 
-/// Initialise the display module.  Must be called once before any rendering.
-///
-/// When stdout is a TTY with sufficient height the display switches to scroll-
-/// region mode: DECSTBM splits the terminal into a scrolling content area and a
-/// fixed status panel at the bottom.  When stdout is not a TTY (e.g. piped) the
-/// module falls back to plain sequential output.
 pub fn init() {
     if !stdout().is_terminal() {
         return;
@@ -101,7 +84,6 @@ pub fn init() {
     setup_scroll_region(term_w, term_h);
 }
 
-/// Restore the terminal to a clean state.  Must be called once before exit.
 pub fn teardown() {
     let had_state = {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -125,9 +107,6 @@ pub fn teardown() {
     out.flush().ok();
 }
 
-/// Update the token-expiry warning shown in the status panel info row.
-///
-/// `msg` is `None` to clear an existing warning.
 pub fn set_token_warning(msg: Option<&str>) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
@@ -168,8 +147,6 @@ fn setup_scroll_region(term_w: u16, term_h: u16) {
     out.flush().ok();
 }
 
-/// Check if the terminal was resized since last draw; if so, re-setup panel.
-/// Returns true when a resize was detected.
 fn handle_resize_if_needed(guard: &mut Option<DisplayState>) -> bool {
     let current = terminal::size().unwrap_or((80, 24));
     if let Some(state) = guard.as_mut() {
@@ -300,7 +277,6 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
         state.iteration = iteration;
         state.model = model.to_owned();
         state.start_time = Instant::now();
-        state.pending_tool = None;
         let info_text = build_info_text(state);
         let (tw, sep, info, status_row) = (
             state.term_width,
@@ -377,11 +353,6 @@ fn notice_box_to<W: Write + QueueableCommand>(
 
 const TOOL_ARGS_MAX: usize = 60;
 
-/// Display a tool-call event.
-///
-/// In TTY mode the yellow dot is shown in the status panel (no cursor-up
-/// required on result).  In non-TTY mode a yellow-dot line is printed to
-/// stdout sequentially.
 pub fn tool_call(name: &str, args: &str) {
     let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
         let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
@@ -400,14 +371,8 @@ pub fn tool_call(name: &str, args: &str) {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         handle_resize_if_needed(&mut guard);
         if let Some(state) = guard.as_mut() {
-            state.pending_tool = Some(name.to_owned());
-            // Collect info needed before drop.
             let info_text = build_info_text(state);
-            let (tw, info_r, status_r) = (
-                state.term_width,
-                state.info_row(),
-                state.status_row(),
-            );
+            let (tw, info_r, status_r) = (state.term_width, state.info_row(), state.status_row());
             drop(guard);
             // Refresh duration on info row too.
             draw_panel_info_row_raw(tw, info_r, &info_text);
@@ -445,11 +410,6 @@ fn tool_call_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
-/// Display a tool-result event.
-///
-/// In TTY mode the status panel dot is updated to green/red in-place — no
-/// cursor-up required.  In non-TTY mode a colored dot line is printed
-/// sequentially (no cursor-up, which is fragile with interleaved output).
 pub fn tool_result(name: &str, success: bool) {
     let color = if success { GREEN } else { RED };
 
@@ -457,7 +417,6 @@ pub fn tool_result(name: &str, success: bool) {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         handle_resize_if_needed(&mut guard);
         if let Some(state) = guard.as_mut() {
-            state.pending_tool = None;
             let (tw, status_r) = (state.term_width, state.status_row());
             drop(guard);
             draw_panel_status_row_raw(tw, status_r, color, name);
@@ -467,7 +426,6 @@ pub fn tool_result(name: &str, success: bool) {
     }
 }
 
-/// Non-TTY tool-result: print a colored dot line sequentially (no cursor-up).
 fn tool_result_to<W: Write + QueueableCommand>(
     out: &mut W,
     name: &str,
@@ -774,7 +732,6 @@ mod tests {
 
     #[test]
     fn tool_call_long_args_truncates() {
-        // Truncation now happens in tool_call(); tool_call_to() receives already-truncated args.
         let long_args: String = "a".repeat(TOOL_ARGS_MAX + 1);
         let truncated: String = long_args.chars().take(TOOL_ARGS_MAX).collect();
         let display_args = format!("{truncated}…");

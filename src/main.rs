@@ -319,8 +319,9 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Resume { capsule_dir, env } => {
             let env = parse_env_pairs(env)?;
+            let session = RunSession::prepare_resume(capsule_dir, env)?;
             capsule::display::init();
-            let result = RunSession::prepare_resume(capsule_dir, env)?.execute();
+            let result = session.execute();
             capsule::display::teardown();
             match result? {
                 run::ExitDecision::Success => {
@@ -450,8 +451,9 @@ fn main() -> Result<()> {
                 min_token_lifetime_minutes,
                 env,
             };
+            let session = RunSession::prepare(capsule_dir, overrides)?;
             capsule::display::init();
-            let result = RunSession::prepare(capsule_dir, overrides)?.execute();
+            let result = session.execute();
             capsule::display::teardown();
             match result? {
                 run::ExitDecision::Success => {

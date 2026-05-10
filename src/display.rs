@@ -8,20 +8,13 @@ use crossterm::{
 use std::io::{stdout, Write};
 use std::time::Duration;
 
+use crate::pipeline::RetryInfo;
 use crate::verdict::{Verdict, VerdictStatus};
 
 pub const GREEN: Color = Color::Green;
 pub const RED: Color = Color::Red;
 pub const CYAN: Color = Color::Cyan;
 pub const YELLOW: Color = Color::Yellow;
-
-/// Info about the current retry attempt — shown only when retrying.
-pub struct RetryInfo {
-    /// How many times the stage has already failed (1 = first retry).
-    pub current: u32,
-    /// Maximum number of retries (`None` = unlimited).
-    pub max: Option<u32>,
-}
 
 fn terminal_width() -> u16 {
     terminal::size().map(|(w, _)| w).unwrap_or(80)

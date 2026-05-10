@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::display::RetryInfo;
-use crate::pipeline::StageRunner;
+use crate::pipeline::{RetryInfo, StageRunner};
 use crate::verdict::Verdict;
 
 use super::{

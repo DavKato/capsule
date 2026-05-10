@@ -5,7 +5,7 @@ use crossterm::{
     terminal::ClearType,
     QueueableCommand,
 };
-use std::io::{stdout, Write};
+use std::io::{stderr, stdout, Write};
 use std::time::Duration;
 
 use crate::pipeline::RetryInfo;
@@ -92,7 +92,7 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
 
 /// Print a yellow warning icon followed by `msg`.
 pub fn warning(msg: &str) {
-    warning_to(&mut stdout(), msg).ok();
+    warning_to(&mut stderr(), msg).ok();
 }
 
 fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -105,7 +105,7 @@ fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
 
 /// Print a neutral informational line.
 pub fn info(msg: &str) {
-    info_to(&mut stdout(), msg).ok();
+    info_to(&mut stderr(), msg).ok();
 }
 
 fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {

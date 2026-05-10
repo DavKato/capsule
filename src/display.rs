@@ -5,8 +5,9 @@ use crossterm::{
     terminal::ClearType,
     QueueableCommand,
 };
-use std::io::{stderr, stdout, Write};
-use std::time::Duration;
+use std::io::{stderr, stdout, IsTerminal, Write};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::pipeline::RetryInfo;
 use crate::verdict::{Verdict, VerdictStatus};
@@ -15,6 +16,201 @@ pub const GREEN: Color = Color::Green;
 pub const RED: Color = Color::Red;
 pub const CYAN: Color = Color::Cyan;
 pub const YELLOW: Color = Color::Yellow;
+
+/// Number of rows reserved for the fixed status panel at the bottom.
+/// Layout: separator row + stage-info row + tool-status row.
+const PANEL_HEIGHT: u16 = 3;
+
+/// Minimum terminal height required to activate the panel.
+const MIN_TERM_HEIGHT: u16 = 12;
+
+struct DisplayState {
+    term_width: u16,
+    term_height: u16,
+    stage_name: String,
+    iteration: u32,
+    model: String,
+    start_time: Instant,
+    /// Name of the currently-pending tool call (yellow dot in panel).
+    pending_tool: Option<String>,
+    /// Token expiry warning text shown in the info row suffix.
+    token_warning: Option<String>,
+}
+
+impl DisplayState {
+    fn new(term_w: u16, term_h: u16) -> Self {
+        Self {
+            term_width: term_w,
+            term_height: term_h,
+            stage_name: String::new(),
+            iteration: 0,
+            model: String::new(),
+            start_time: Instant::now(),
+            pending_tool: None,
+            token_warning: None,
+        }
+    }
+
+    /// 0-indexed row of the separator line.
+    fn separator_row(&self) -> u16 {
+        self.term_height.saturating_sub(PANEL_HEIGHT)
+    }
+
+    /// 0-indexed row of the stage-info line.
+    fn info_row(&self) -> u16 {
+        self.term_height.saturating_sub(PANEL_HEIGHT - 1)
+    }
+
+    /// 0-indexed row of the tool-status line.
+    fn status_row(&self) -> u16 {
+        self.term_height.saturating_sub(PANEL_HEIGHT - 2)
+    }
+}
+
+static STATE: OnceLock<Mutex<Option<DisplayState>>> = OnceLock::new();
+
+fn get_state() -> &'static Mutex<Option<DisplayState>> {
+    STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn is_in_tty_mode() -> bool {
+    get_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+}
+
+/// Initialise the display module.  Must be called once before any rendering.
+///
+/// When stdout is a TTY with sufficient height the display switches to scroll-
+/// region mode: DECSTBM splits the terminal into a scrolling content area and a
+/// fixed status panel at the bottom.  When stdout is not a TTY (e.g. piped) the
+/// module falls back to plain sequential output.
+pub fn init() {
+    if !stdout().is_terminal() {
+        return;
+    }
+    let (term_w, term_h) = terminal::size().unwrap_or((80, 24));
+    if term_h < MIN_TERM_HEIGHT {
+        return;
+    }
+    {
+        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(DisplayState::new(term_w, term_h));
+    }
+    setup_scroll_region(term_w, term_h);
+}
+
+/// Restore the terminal to a clean state.  Must be called once before exit.
+pub fn teardown() {
+    let had_state = {
+        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        let had = guard.is_some();
+        *guard = None;
+        had
+    };
+    if !had_state {
+        return;
+    }
+    let mut out = stdout();
+    // Reset scroll region to full screen.
+    out.write_all(b"\x1b[r").ok();
+    // Clear panel rows.
+    let (_, term_h) = terminal::size().unwrap_or((80, 24));
+    for row in term_h.saturating_sub(PANEL_HEIGHT)..term_h {
+        out.queue(cursor::MoveTo(0, row)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+    }
+    out.queue(cursor::MoveTo(0, term_h.saturating_sub(1))).ok();
+    out.flush().ok();
+}
+
+/// Update the token-expiry warning shown in the status panel info row.
+///
+/// `msg` is `None` to clear an existing warning.
+pub fn set_token_warning(msg: Option<&str>) {
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.as_mut() {
+        state.token_warning = msg.map(str::to_owned);
+        // Collect the values needed for drawing before dropping the guard.
+        let (tw, info) = (state.term_width, state.info_row());
+        let info_text = build_info_text(state);
+        drop(guard);
+        draw_panel_info_row_raw(tw, info, &info_text);
+    }
+}
+
+fn setup_scroll_region(term_w: u16, term_h: u16) {
+    let scroll_bottom = term_h.saturating_sub(PANEL_HEIGHT); // 1-indexed == this value
+    let mut out = stdout();
+
+    // Set DECSTBM scroll region (rows are 1-indexed in the escape sequence).
+    out.write_all(format!("\x1b[1;{}r", scroll_bottom).as_bytes())
+        .ok();
+
+    // Draw separator.
+    let sep_row = scroll_bottom; // 0-indexed (crossterm MoveTo is 0-indexed)
+    out.queue(cursor::MoveTo(0, sep_row)).ok();
+    out.queue(SetForegroundColor(CYAN)).ok();
+    out.queue(Print("─".repeat(term_w as usize))).ok();
+    out.queue(ResetColor).ok();
+
+    // Clear info and status rows.
+    for row in (sep_row + 1)..term_h {
+        out.queue(cursor::MoveTo(0, row)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+    }
+
+    // Position cursor at the last row of the scroll region so subsequent
+    // output scrolls naturally within the content area.
+    out.queue(cursor::MoveTo(0, scroll_bottom.saturating_sub(1)))
+        .ok();
+    out.flush().ok();
+}
+
+/// Check if the terminal was resized since last draw; if so, re-setup panel.
+/// Returns true when a resize was detected.
+fn handle_resize_if_needed(guard: &mut Option<DisplayState>) -> bool {
+    let current = terminal::size().unwrap_or((80, 24));
+    if let Some(state) = guard.as_mut() {
+        if state.term_width != current.0 || state.term_height != current.1 {
+            state.term_width = current.0;
+            state.term_height = current.1;
+            setup_scroll_region(current.0, current.1);
+            return true;
+        }
+    }
+    false
+}
+
+fn build_info_text(state: &DisplayState) -> String {
+    let duration = state.start_time.elapsed();
+    let base = format!(
+        "Stage: {}  Iter: {}  Model: {}  Duration: {}",
+        state.stage_name,
+        state.iteration,
+        state.model,
+        format_duration(duration),
+    );
+    if let Some(warn) = &state.token_warning {
+        format!("{base}  ⚠ {warn}")
+    } else {
+        base
+    }
+}
+
+fn draw_panel_info_row_raw(term_w: u16, info_row: u16, text: &str) {
+    let padded = pad_or_truncate(text, term_w as usize);
+    let mut out = stdout();
+    out.queue(cursor::SavePosition).ok();
+    out.queue(cursor::MoveTo(0, info_row)).ok();
+    out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+    out.queue(SetForegroundColor(CYAN)).ok();
+    out.queue(Print(&padded)).ok();
+    out.queue(ResetColor).ok();
+    out.queue(cursor::RestorePosition).ok();
+    out.flush().ok();
+}
 
 fn terminal_width() -> u16 {
     terminal::size().map(|(w, _)| w).unwrap_or(80)
@@ -92,9 +288,55 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
     let lines = header_content_lines(stage_name, iteration, model, retry);
     let term_w = terminal_width() as usize;
     render_box(&mut stdout(), &lines, term_w).ok();
+
+    // Update panel state in TTY mode.
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() {
+        return;
+    }
+    handle_resize_if_needed(&mut guard);
+    if let Some(state) = guard.as_mut() {
+        state.stage_name = stage_name.to_owned();
+        state.iteration = iteration;
+        state.model = model.to_owned();
+        state.start_time = Instant::now();
+        state.pending_tool = None;
+        let info_text = build_info_text(state);
+        let (tw, sep, info, status_row) = (
+            state.term_width,
+            state.separator_row(),
+            state.info_row(),
+            state.status_row(),
+        );
+        drop(guard);
+        draw_panel_separator_raw(tw, sep);
+        draw_panel_info_row_raw(tw, info, &info_text);
+        clear_panel_row(status_row);
+    }
 }
 
-/// Print a yellow warning icon followed by `msg`.
+fn draw_panel_separator_raw(term_w: u16, sep_row: u16) {
+    let dashes = "─".repeat(term_w as usize);
+    let mut out = stdout();
+    out.queue(cursor::SavePosition).ok();
+    out.queue(cursor::MoveTo(0, sep_row)).ok();
+    out.queue(SetForegroundColor(CYAN)).ok();
+    out.queue(Print(&dashes)).ok();
+    out.queue(ResetColor).ok();
+    out.queue(cursor::RestorePosition).ok();
+    out.flush().ok();
+}
+
+fn clear_panel_row(row: u16) {
+    let mut out = stdout();
+    out.queue(cursor::SavePosition).ok();
+    out.queue(cursor::MoveTo(0, row)).ok();
+    out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+    out.queue(cursor::RestorePosition).ok();
+    out.flush().ok();
+}
+
+/// Print a yellow warning icon followed by `msg` to stderr.
 pub fn warning(msg: &str) {
     warning_to(&mut stderr(), msg).ok();
 }
@@ -107,7 +349,7 @@ fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
     out.flush()
 }
 
-/// Print a neutral informational line.
+/// Print a neutral informational line to stderr.
 pub fn info(msg: &str) {
     info_to(&mut stderr(), msg).ok();
 }
@@ -135,22 +377,67 @@ fn notice_box_to<W: Write + QueueableCommand>(
 
 const TOOL_ARGS_MAX: usize = 60;
 
-/// Print a yellow-dot tool-call line: `  ● ToolName  args`.
+/// Display a tool-call event.
+///
+/// In TTY mode the yellow dot is shown in the status panel (no cursor-up
+/// required on result).  In non-TTY mode a yellow-dot line is printed to
+/// stdout sequentially.
 pub fn tool_call(name: &str, args: &str) {
-    tool_call_to(&mut stdout(), name, args).ok();
-}
-
-fn tool_call_to<W: Write + QueueableCommand>(
-    out: &mut W,
-    name: &str,
-    args: &str,
-) -> std::io::Result<()> {
     let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
         let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
         format!("{s}…")
     } else {
         args.to_owned()
     };
+
+    if is_in_tty_mode() {
+        // Update panel status row.
+        let label = if display_args.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{name}  {display_args}")
+        };
+        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        handle_resize_if_needed(&mut guard);
+        if let Some(state) = guard.as_mut() {
+            state.pending_tool = Some(name.to_owned());
+            // Collect info needed before drop.
+            let info_text = build_info_text(state);
+            let (tw, info_r, status_r) = (
+                state.term_width,
+                state.info_row(),
+                state.status_row(),
+            );
+            drop(guard);
+            // Refresh duration on info row too.
+            draw_panel_info_row_raw(tw, info_r, &info_text);
+            draw_panel_status_row_raw(tw, status_r, YELLOW, &label);
+        }
+    } else {
+        tool_call_to(&mut stdout(), name, &display_args).ok();
+    }
+}
+
+fn draw_panel_status_row_raw(term_w: u16, status_row: u16, color: Color, label: &str) {
+    let name_part = pad_or_truncate(label, (term_w as usize).saturating_sub(4));
+    let mut out = stdout();
+    out.queue(cursor::SavePosition).ok();
+    out.queue(cursor::MoveTo(0, status_row)).ok();
+    out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+    out.queue(Print("  ")).ok();
+    out.queue(SetForegroundColor(color)).ok();
+    out.queue(Print("●")).ok();
+    out.queue(ResetColor).ok();
+    out.queue(Print(format!(" {name_part}"))).ok();
+    out.queue(cursor::RestorePosition).ok();
+    out.flush().ok();
+}
+
+fn tool_call_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    display_args: &str,
+) -> std::io::Result<()> {
     out.queue(SetForegroundColor(YELLOW))?;
     out.queue(Print("  ● "))?;
     out.queue(ResetColor)?;
@@ -158,21 +445,38 @@ fn tool_call_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
-/// Cursor-up to overwrite the previous tool-call line with a green (success) or red (failure) dot.
+/// Display a tool-result event.
+///
+/// In TTY mode the status panel dot is updated to green/red in-place — no
+/// cursor-up required.  In non-TTY mode a colored dot line is printed
+/// sequentially (no cursor-up, which is fragile with interleaved output).
 pub fn tool_result(name: &str, success: bool) {
-    tool_result_to(&mut stdout(), name, success).ok();
+    let color = if success { GREEN } else { RED };
+
+    if is_in_tty_mode() {
+        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        handle_resize_if_needed(&mut guard);
+        if let Some(state) = guard.as_mut() {
+            state.pending_tool = None;
+            let (tw, status_r) = (state.term_width, state.status_row());
+            drop(guard);
+            draw_panel_status_row_raw(tw, status_r, color, name);
+        }
+    } else {
+        tool_result_to(&mut stdout(), name, success).ok();
+    }
 }
 
+/// Non-TTY tool-result: print a colored dot line sequentially (no cursor-up).
 fn tool_result_to<W: Write + QueueableCommand>(
     out: &mut W,
     name: &str,
     success: bool,
 ) -> std::io::Result<()> {
     let color = if success { GREEN } else { RED };
-    out.queue(cursor::MoveUp(1))?;
-    out.queue(terminal::Clear(ClearType::CurrentLine))?;
+    out.queue(Print("  "))?;
     out.queue(SetForegroundColor(color))?;
-    out.queue(Print("  ● "))?;
+    out.queue(Print("● "))?;
     out.queue(ResetColor)?;
     out.queue(Print(format!("{name}\n")))?;
     out.flush()
@@ -470,9 +774,12 @@ mod tests {
 
     #[test]
     fn tool_call_long_args_truncates() {
-        let long_args = "a".repeat(100);
+        // Truncation now happens in tool_call(); tool_call_to() receives already-truncated args.
+        let long_args: String = "a".repeat(TOOL_ARGS_MAX + 1);
+        let truncated: String = long_args.chars().take(TOOL_ARGS_MAX).collect();
+        let display_args = format!("{truncated}…");
         let mut buf: Vec<u8> = Vec::new();
-        tool_call_to(&mut buf, "Bash", &long_args).unwrap();
+        tool_call_to(&mut buf, "Bash", &display_args).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("…"), "truncated args must end with ellipsis");
         assert!(
@@ -492,31 +799,36 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_success_emits_cursor_up_and_green() {
+    fn tool_result_non_tty_no_cursor_up_emits_green_dot() {
         let mut buf: Vec<u8> = Vec::new();
         tool_result_to(&mut buf, "Bash", true).unwrap();
         let out = String::from_utf8_lossy(&buf);
-        // Cursor-up escape: ESC [ 1 A
         assert!(
-            buf.windows(4).any(|w| w == b"\x1b[1A"),
-            "cursor-up escape must be emitted; output: {out:?}"
+            !buf.windows(4).any(|w| w == b"\x1b[1A"),
+            "non-TTY tool_result must not emit cursor-up; output: {out:?}"
         );
+        assert!(out.contains("Bash"), "tool name must appear");
+        assert!(out.contains("●"), "dot must appear");
         assert!(
-            out.contains("Bash"),
-            "tool name must appear after overwrite"
+            contains_seq(&buf, GREEN_ANSI),
+            "green escape must be emitted for success; output: {out:?}"
         );
     }
 
     #[test]
-    fn tool_result_failure_emits_cursor_up_and_red() {
+    fn tool_result_non_tty_no_cursor_up_emits_red_dot() {
         let mut buf: Vec<u8> = Vec::new();
         tool_result_to(&mut buf, "Write", false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
-            buf.windows(4).any(|w| w == b"\x1b[1A"),
-            "cursor-up escape must be emitted on failure; output: {out:?}"
+            !buf.windows(4).any(|w| w == b"\x1b[1A"),
+            "non-TTY tool_result must not emit cursor-up on failure; output: {out:?}"
         );
         assert!(out.contains("Write"), "tool name must appear on failure");
+        assert!(
+            contains_seq(&buf, RED_ANSI),
+            "red escape must be emitted for failure; output: {out:?}"
+        );
     }
 
     #[test]
@@ -747,5 +1059,20 @@ mod tests {
     #[test]
     fn format_duration_over_an_hour() {
         assert_eq!(format_duration(Duration::from_secs(3723)), "62:03");
+    }
+
+    #[test]
+    fn init_and_teardown_do_not_panic() {
+        // init() detects non-TTY (test runner has no terminal) and returns early.
+        // teardown() with no active state is a no-op.
+        // Neither must panic.
+        teardown();
+    }
+
+    #[test]
+    fn set_token_warning_with_no_state_does_not_panic() {
+        // No state (non-TTY) — set_token_warning must be a safe no-op.
+        set_token_warning(Some("token expires in 5 min"));
+        set_token_warning(None);
     }
 }

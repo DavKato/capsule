@@ -43,6 +43,12 @@ pub fn post_stream_error(
     None
 }
 
+fn parse_typed_json(line: &str) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    v.get("type")?;
+    Some(v)
+}
+
 fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result<StreamResult> {
     let mut parser = StreamParser::new();
     let mut pending_tool_names: HashMap<String, String> = HashMap::new();
@@ -51,7 +57,12 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         let line = line.context("error reading docker stdout")?;
         let verdict_seen = parser.feed(&line).is_some();
         if verbose {
-            crate::display::info(&line);
+            if let Some(v) = parse_typed_json(&line) {
+                let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| line.clone());
+                crate::display::info(&pretty);
+            } else {
+                crate::display::info(&line);
+            }
         }
         let had_tool_events = !parser.last_tool_events().is_empty();
         for event in parser.last_tool_events() {
@@ -76,7 +87,12 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
                 TextDisplay::Thinking(text) => crate::display::thinking_text(text),
             }
         }
-        if !had_text && !had_tool_events && !verdict_seen && !line.is_empty() {
+        if !had_text
+            && !had_tool_events
+            && !verdict_seen
+            && !line.is_empty()
+            && parse_typed_json(&line).is_none()
+        {
             crate::display::info(&line);
         }
     }
@@ -253,6 +269,41 @@ pub fn run_iteration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_typed_json_returns_some_for_typed_json() {
+        let line = r#"{"type":"system.init","foo":"bar"}"#;
+        assert!(parse_typed_json(line).is_some());
+    }
+
+    #[test]
+    fn parse_typed_json_returns_none_for_json_without_type() {
+        let line = r#"{"foo":"bar"}"#;
+        assert!(parse_typed_json(line).is_none());
+    }
+
+    #[test]
+    fn parse_typed_json_returns_none_for_non_json() {
+        assert!(parse_typed_json("plain text line").is_none());
+        assert!(parse_typed_json("GH_TOKEN: local (.capsule/.env)").is_none());
+        assert!(parse_typed_json("").is_none());
+    }
+
+    #[test]
+    fn parse_typed_json_returns_none_for_rate_limit_adjacent_non_json() {
+        assert!(parse_typed_json("working on: #126").is_none());
+    }
+
+    #[test]
+    fn parse_typed_json_captures_different_type_values() {
+        for ty in &["rate_limit_event", "user", "assistant", "system.init"] {
+            let line = format!(r#"{{"type":"{ty}"}}"#);
+            assert!(
+                parse_typed_json(&line).is_some(),
+                "type={ty} must be recognized"
+            );
+        }
+    }
 
     fn success_status() -> std::process::ExitStatus {
         std::process::Command::new("true")

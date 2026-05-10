@@ -6,7 +6,7 @@ use crossterm::{
     QueueableCommand,
 };
 use std::io::{stderr, stdout, IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -60,6 +60,7 @@ impl DisplayState {
 static STATE: OnceLock<Mutex<Option<DisplayState>>> = OnceLock::new();
 
 static LAST_WAS_TEXT: AtomicBool = AtomicBool::new(false);
+static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
 
 fn get_state() -> &'static Mutex<Option<DisplayState>> {
     STATE.get_or_init(|| Mutex::new(None))
@@ -100,6 +101,7 @@ pub fn is_tty() -> bool {
 }
 
 pub fn teardown() {
+    TIMER_GEN.fetch_add(1, Ordering::Relaxed);
     let had_state = {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         let had = guard.is_some();
@@ -120,6 +122,54 @@ pub fn teardown() {
     }
     out.queue(cursor::MoveTo(0, term_h.saturating_sub(1))).ok();
     out.flush().ok();
+}
+
+fn redraw_info_row() {
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    handle_resize_if_needed(&mut guard);
+    if let Some(state) = guard.as_mut() {
+        let info_text = build_info_text(state);
+        let (tw, info) = (state.term_width, state.info_row());
+        drop(guard);
+        draw_panel_info_row_raw(tw, info, &info_text);
+    }
+}
+
+pub fn set_stage(name: &str, iteration: u32, model: &str) {
+    let in_tty = {
+        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = guard.as_mut() {
+            state.stage_name = name.to_owned();
+            state.iteration = iteration;
+            state.model = model.to_owned();
+            state.start_time = Instant::now();
+            state.token_warning = None;
+        }
+        guard.is_some()
+    };
+    if !in_tty {
+        return;
+    }
+    redraw_info_row();
+    let gen = TIMER_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if TIMER_GEN.load(Ordering::Relaxed) != gen || !is_in_tty_mode() {
+            break;
+        }
+        redraw_info_row();
+    });
+}
+
+pub fn clear_stage() {
+    TIMER_GEN.fetch_add(1, Ordering::Relaxed);
+    let guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.as_ref() {
+        let (info_r, status_r) = (state.info_row(), state.status_row());
+        drop(guard);
+        clear_panel_row(info_r);
+        clear_panel_row(status_r);
+    }
 }
 
 pub fn set_token_warning(msg: Option<&str>) {
@@ -282,29 +332,21 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
     let term_w = terminal_width() as usize;
     render_box(&mut stdout(), &lines, term_w).ok();
 
-    // Update panel state in TTY mode.
-    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_none() {
-        return;
+    // Redraw the separator line before updating panel state so the visual
+    // boundary is refreshed at stage transitions.
+    {
+        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            return;
+        }
+        handle_resize_if_needed(&mut guard);
+        if let Some(state) = guard.as_ref() {
+            let (tw, sep) = (state.term_width, state.separator_row());
+            drop(guard);
+            draw_panel_separator_raw(tw, sep);
+        }
     }
-    handle_resize_if_needed(&mut guard);
-    if let Some(state) = guard.as_mut() {
-        state.stage_name = stage_name.to_owned();
-        state.iteration = iteration;
-        state.model = model.to_owned();
-        state.start_time = Instant::now();
-        let info_text = build_info_text(state);
-        let (tw, sep, info, status_row) = (
-            state.term_width,
-            state.separator_row(),
-            state.info_row(),
-            state.status_row(),
-        );
-        drop(guard);
-        draw_panel_separator_raw(tw, sep);
-        draw_panel_info_row_raw(tw, info, &info_text);
-        clear_panel_row(status_row);
-    }
+    set_stage(stage_name, iteration, model);
 }
 
 fn draw_panel_separator_raw(term_w: u16, sep_row: u16) {
@@ -1089,6 +1131,62 @@ mod tests {
     fn init_does_not_panic_in_non_tty_context() {
         init();
         assert!(!is_tty());
+    }
+
+    #[test]
+    fn set_stage_does_not_panic_in_non_tty() {
+        set_stage("reviewer", 1, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn clear_stage_does_not_panic_in_non_tty() {
+        clear_stage();
+    }
+
+    #[test]
+    fn set_stage_then_clear_stage_does_not_panic() {
+        set_stage("builder", 2, "claude-opus-4-6");
+        clear_stage();
+    }
+
+    #[test]
+    fn build_info_text_includes_stage_iteration_model_duration() {
+        let state = DisplayState {
+            term_width: 80,
+            term_height: 24,
+            stage_name: "reviewer".to_string(),
+            iteration: 3,
+            model: "claude-opus-4-6".to_string(),
+            start_time: Instant::now(),
+            token_warning: None,
+        };
+        let text = build_info_text(&state);
+        assert!(text.contains("reviewer"), "stage name must appear");
+        assert!(text.contains("3"), "iteration must appear");
+        assert!(text.contains("claude-opus-4-6"), "model must appear");
+        assert!(text.contains("00:"), "duration must appear in MM:SS format");
+    }
+
+    #[test]
+    fn timer_gen_increments_on_teardown() {
+        let before = TIMER_GEN.load(Ordering::Relaxed);
+        teardown();
+        let after = TIMER_GEN.load(Ordering::Relaxed);
+        assert!(
+            after > before,
+            "TIMER_GEN must increment on teardown to stop any running timer"
+        );
+    }
+
+    #[test]
+    fn clear_stage_increments_timer_gen() {
+        let before = TIMER_GEN.load(Ordering::Relaxed);
+        clear_stage();
+        let after = TIMER_GEN.load(Ordering::Relaxed);
+        assert!(
+            after > before,
+            "TIMER_GEN must increment on clear_stage to stop any running timer"
+        );
     }
 
     #[test]

@@ -85,6 +85,22 @@ pub fn init() {
         *guard = Some(DisplayState::new(term_w, term_h));
     }
     setup_scroll_region(term_w, term_h);
+
+    // Register a panic hook so the scroll region and cursor state are restored
+    // even when the process panics instead of calling teardown() explicitly.
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        teardown();
+        prev(info);
+    }));
+}
+
+/// Returns `true` when the display module is in TTY mode (scroll-region panel active).
+///
+/// Callers can use this to skip rendering that only makes sense in an interactive
+/// terminal — e.g., progress indicators or cursor-position-dependent output.
+pub fn is_tty() -> bool {
+    is_in_tty_mode()
 }
 
 pub fn teardown() {
@@ -1063,5 +1079,29 @@ mod tests {
         // No state (non-TTY) — set_token_warning must be a safe no-op.
         set_token_warning(Some("token expires in 5 min"));
         set_token_warning(None);
+    }
+
+    #[test]
+    fn is_tty_returns_false_in_non_tty_context() {
+        // Test runner has no TTY, so init() is a no-op and is_tty() must return false.
+        assert!(
+            !is_tty(),
+            "is_tty() must return false when stdout is not a terminal"
+        );
+    }
+
+    #[test]
+    fn init_does_not_panic_in_non_tty_context() {
+        // In test context stdout is not a terminal; init() must return early without panic.
+        init();
+        // is_tty() must still be false since init() detected non-TTY and exited early.
+        assert!(!is_tty());
+    }
+
+    #[test]
+    fn teardown_after_non_tty_init_does_not_panic() {
+        // Calling teardown() after a non-TTY init() (no active state) must be a safe no-op.
+        init();
+        teardown();
     }
 }

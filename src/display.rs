@@ -5,6 +5,7 @@ use crossterm::{
     terminal::ClearType,
     QueueableCommand,
 };
+use std::collections::HashMap;
 use std::io::{stderr, stdout, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -21,6 +22,12 @@ pub const YELLOW: Color = Color::Yellow;
 const PANEL_HEIGHT: u16 = 3;
 const MIN_TERM_HEIGHT: u16 = 12;
 
+struct ToolCallEntry {
+    id: String,
+    name: String,
+    color: Color,
+}
+
 struct DisplayState {
     term_width: u16,
     term_height: u16,
@@ -29,6 +36,7 @@ struct DisplayState {
     model: String,
     start_time: Instant,
     token_warning: Option<String>,
+    active_tool_calls: Vec<ToolCallEntry>,
 }
 
 impl DisplayState {
@@ -41,6 +49,7 @@ impl DisplayState {
             model: String::new(),
             start_time: Instant::now(),
             token_warning: None,
+            active_tool_calls: Vec::new(),
         }
     }
 
@@ -61,6 +70,11 @@ static STATE: OnceLock<Mutex<Option<DisplayState>>> = OnceLock::new();
 
 static LAST_WAS_TEXT: AtomicBool = AtomicBool::new(false);
 static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
+
+fn tool_name_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn get_state() -> &'static Mutex<Option<DisplayState>> {
     STATE.get_or_init(|| Mutex::new(None))
@@ -170,6 +184,7 @@ pub fn clear_stage() {
         state.iteration = 0;
         state.model.clear();
         state.token_warning = None;
+        state.active_tool_calls.clear();
         let (info_r, status_r) = (state.info_row(), state.status_row());
         drop(guard);
         clear_panel_row(info_r);
@@ -416,7 +431,7 @@ fn notice_box_to<W: Write + QueueableCommand>(
 
 const TOOL_ARGS_MAX: usize = 60;
 
-pub fn tool_call(name: &str, args: &str) {
+pub fn tool_call(name: &str, args: &str, id: &str) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
         let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
@@ -426,38 +441,62 @@ pub fn tool_call(name: &str, args: &str) {
     };
 
     if is_in_tty_mode() {
-        // Update panel status row.
-        let label = if display_args.is_empty() {
-            name.to_owned()
-        } else {
-            format!("{name}  {display_args}")
-        };
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         handle_resize_if_needed(&mut guard);
         if let Some(state) = guard.as_mut() {
+            state.active_tool_calls.push(ToolCallEntry {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                color: YELLOW,
+            });
             let info_text = build_info_text(state);
             let (tw, info_r, status_r) = (state.term_width, state.info_row(), state.status_row());
+            let snapshot: Vec<(Color, String)> = state
+                .active_tool_calls
+                .iter()
+                .map(|e| (e.color, e.name.clone()))
+                .collect();
             drop(guard);
-            // Refresh duration on info row too.
             draw_panel_info_row_raw(tw, info_r, &info_text);
-            draw_panel_status_row_raw(tw, status_r, YELLOW, &label);
+            draw_panel_status_row_multi_raw(tw, status_r, &snapshot);
         }
     } else {
+        tool_name_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_owned(), name.to_owned());
         tool_call_to(&mut stdout(), name, &display_args).ok();
     }
 }
 
-fn draw_panel_status_row_raw(term_w: u16, status_row: u16, color: Color, label: &str) {
-    let name_part = pad_or_truncate(label, (term_w as usize).saturating_sub(4));
+fn draw_panel_status_row_multi_raw(term_w: u16, status_row: u16, entries: &[(Color, String)]) {
+    if entries.is_empty() {
+        clear_panel_row(status_row);
+        return;
+    }
     let mut out = stdout();
     out.queue(cursor::SavePosition).ok();
     out.queue(cursor::MoveTo(0, status_row)).ok();
     out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
     out.queue(Print("  ")).ok();
-    out.queue(SetForegroundColor(color)).ok();
-    out.queue(Print("●")).ok();
-    out.queue(ResetColor).ok();
-    out.queue(Print(format!(" {name_part}"))).ok();
+    let max_w = (term_w as usize).saturating_sub(2);
+    let mut used = 0usize;
+    for (i, (color, name)) in entries.iter().enumerate() {
+        let sep = if i == 0 { 0 } else { 2 };
+        let needed = sep + 2 + name.chars().count();
+        if used + needed > max_w {
+            break;
+        }
+        if i > 0 {
+            out.queue(Print("  ")).ok();
+            used += 2;
+        }
+        out.queue(SetForegroundColor(*color)).ok();
+        out.queue(Print("●")).ok();
+        out.queue(ResetColor).ok();
+        out.queue(Print(format!(" {name}"))).ok();
+        used += 2 + name.chars().count();
+    }
     out.queue(cursor::RestorePosition).ok();
     out.flush().ok();
 }
@@ -474,7 +513,7 @@ fn tool_call_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
-pub fn tool_result(name: &str, success: bool) {
+pub fn tool_result(id: &str, success: bool) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let color = if success { GREEN } else { RED };
 
@@ -482,12 +521,25 @@ pub fn tool_result(name: &str, success: bool) {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         handle_resize_if_needed(&mut guard);
         if let Some(state) = guard.as_mut() {
+            if let Some(entry) = state.active_tool_calls.iter_mut().find(|e| e.id == id) {
+                entry.color = color;
+            }
             let (tw, status_r) = (state.term_width, state.status_row());
+            let snapshot: Vec<(Color, String)> = state
+                .active_tool_calls
+                .iter()
+                .map(|e| (e.color, e.name.clone()))
+                .collect();
             drop(guard);
-            draw_panel_status_row_raw(tw, status_r, color, name);
+            draw_panel_status_row_multi_raw(tw, status_r, &snapshot);
         }
     } else {
-        tool_result_to(&mut stdout(), name, success).ok();
+        let name = tool_name_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id)
+            .unwrap_or_else(|| "unknown".to_owned());
+        tool_result_to(&mut stdout(), &name, success).ok();
     }
 }
 
@@ -797,6 +849,46 @@ mod tests {
         assert!(out.contains("Bash"), "tool name must appear in output");
         assert!(out.contains("ls -la"), "args must appear in output");
         assert!(out.contains("●"), "dot must appear in output");
+    }
+
+    #[test]
+    fn tool_call_and_result_with_id_do_not_panic_in_non_tty() {
+        tool_call("Bash", "echo hi", "tc_nopanic_001");
+        tool_result("tc_nopanic_001", true);
+        tool_call("Read", "/path", "tc_nopanic_002");
+        tool_result("tc_nopanic_002", false);
+    }
+
+    #[test]
+    fn tool_result_unknown_id_uses_fallback_name() {
+        let mut buf: Vec<u8> = Vec::new();
+        let name = tool_name_cache()
+            .lock()
+            .unwrap()
+            .remove("no_such_id")
+            .unwrap_or_else(|| "unknown".to_owned());
+        tool_result_to(&mut buf, &name, false).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("unknown"), "fallback name must be 'unknown'");
+        assert!(contains_seq(&buf, RED_ANSI), "red escape for failure");
+    }
+
+    #[test]
+    fn tool_call_with_id_result_prints_correct_name_in_non_tty() {
+        // Register a tool call by id, then verify tool_result looks it up.
+        tool_call("Read", "/some/path", "tc_read_001");
+        // After registration, tool_result with the same id must use "Read".
+        let mut buf: Vec<u8> = Vec::new();
+        let name = tool_name_cache()
+            .lock()
+            .unwrap()
+            .get("tc_read_001")
+            .cloned()
+            .unwrap_or_default();
+        tool_result_to(&mut buf, &name, true).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("Read"), "name from id lookup must appear");
+        assert!(contains_seq(&buf, GREEN_ANSI), "green escape for success");
     }
 
     #[test]
@@ -1164,6 +1256,7 @@ mod tests {
             model: "claude-opus-4-6".to_string(),
             start_time: Instant::now(),
             token_warning: None,
+            active_tool_calls: Vec::new(),
         };
         let text = build_info_text(&state);
         assert!(text.contains("reviewer"), "stage name must appear");

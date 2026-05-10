@@ -3,7 +3,6 @@ use super::infra::{host_token_is_expired, make_mcp_config};
 use super::stream_parser::{StreamParser, TextDisplay, ToolEvent};
 use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -51,7 +50,6 @@ fn parse_typed_json(line: &str) -> Option<serde_json::Value> {
 
 fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result<StreamResult> {
     let mut parser = StreamParser::new();
-    let mut pending_tool_names: HashMap<String, String> = HashMap::new();
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
@@ -69,14 +67,10 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
             match event {
                 ToolEvent::Use(tu) => {
                     let args = format_tool_args(&tu.input);
-                    pending_tool_names.insert(tu.id.clone(), tu.name.clone());
-                    crate::display::tool_call(&tu.name, &args);
+                    crate::display::tool_call(&tu.name, &args, &tu.id);
                 }
                 ToolEvent::Result(tr) => {
-                    let name = pending_tool_names
-                        .remove(&tr.tool_use_id)
-                        .unwrap_or_else(|| "unknown".to_owned());
-                    crate::display::tool_result(&name, !tr.is_error);
+                    crate::display::tool_result(&tr.tool_use_id, !tr.is_error);
                 }
             }
         }

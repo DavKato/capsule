@@ -53,27 +53,35 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         if verbose {
             crate::display::info(&line);
         }
-        if let Some(event) = parser.last_tool_event() {
-            match event {
-                ToolEvent::Use(tu) => {
-                    let args = format_tool_args(&tu.input);
-                    pending_tool_names.insert(tu.id.clone(), tu.name.clone());
-                    crate::display::tool_call(&tu.name, &args);
-                }
-                ToolEvent::Result(tr) => {
-                    let name = pending_tool_names
-                        .remove(&tr.tool_use_id)
-                        .unwrap_or_else(|| "unknown".to_owned());
-                    crate::display::tool_result(&name, !tr.is_error);
+        let tool_events = parser.last_tool_events();
+        if !tool_events.is_empty() {
+            for event in tool_events {
+                match event {
+                    ToolEvent::Use(tu) => {
+                        let args = format_tool_args(&tu.input);
+                        pending_tool_names.insert(tu.id.clone(), tu.name.clone());
+                        crate::display::tool_call(&tu.name, &args);
+                    }
+                    ToolEvent::Result(tr) => {
+                        let name = pending_tool_names
+                            .remove(&tr.tool_use_id)
+                            .unwrap_or_else(|| "unknown".to_owned());
+                        crate::display::tool_result(&name, !tr.is_error);
+                    }
                 }
             }
-        } else if let Some(display) = extract_text_display(&line) {
-            match display {
-                TextDisplay::Content(text) => crate::display::text_content(&text),
-                TextDisplay::Thinking(text) => crate::display::thinking_text(&text),
+        } else {
+            let displays = extract_text_displays(&line);
+            if !displays.is_empty() {
+                for display in displays {
+                    match display {
+                        TextDisplay::Content(text) => crate::display::text_content(&text),
+                        TextDisplay::Thinking(text) => crate::display::thinking_text(&text),
+                    }
+                }
+            } else if !parsed && !line.is_empty() {
+                crate::display::info(&line);
             }
-        } else if !parsed && !line.is_empty() {
-            crate::display::info(&line);
         }
     }
 
@@ -90,28 +98,35 @@ enum TextDisplay {
     Thinking(String),
 }
 
-fn extract_text_display(line: &str) -> Option<TextDisplay> {
-    let msg: serde_json::Value = serde_json::from_str(line).ok()?;
+fn extract_text_displays(line: &str) -> Vec<TextDisplay> {
+    let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
     if msg.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
-        return None;
+        return Vec::new();
     }
-    let content = msg.pointer("/message/content")?.as_array()?;
-    for block in content {
-        match block.get("type").and_then(serde_json::Value::as_str) {
-            Some("text") => {
-                if let Some(text) = block.get("text").and_then(serde_json::Value::as_str) {
-                    return Some(TextDisplay::Content(text.to_owned()));
+    let Some(content) = msg
+        .pointer("/message/content")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    content
+        .iter()
+        .filter_map(
+            |block| match block.get("type").and_then(serde_json::Value::as_str) {
+                Some("text") => {
+                    let text = block.get("text").and_then(serde_json::Value::as_str)?;
+                    Some(TextDisplay::Content(text.to_owned()))
                 }
-            }
-            Some("thinking") => {
-                if let Some(text) = block.get("thinking").and_then(serde_json::Value::as_str) {
-                    return Some(TextDisplay::Thinking(text.to_owned()));
+                Some("thinking") => {
+                    let text = block.get("thinking").and_then(serde_json::Value::as_str)?;
+                    Some(TextDisplay::Thinking(text.to_owned()))
                 }
-            }
-            _ => {}
-        }
-    }
-    None
+                _ => None,
+            },
+        )
+        .collect()
 }
 
 fn format_tool_args(input: &serde_json::Value) -> String {
@@ -401,5 +416,34 @@ mod tests {
             err.to_string().contains("submit_verdict"),
             "submit_verdict_missing must take priority over non-zero exit"
         );
+    }
+
+    #[test]
+    fn extract_text_displays_mixed_thinking_and_text() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm let me think"},{"type":"text","text":"here is my answer"}]}}"#;
+        let displays = extract_text_displays(line);
+        assert_eq!(displays.len(), 2);
+        assert!(matches!(&displays[0], TextDisplay::Thinking(t) if t == "hmm let me think"));
+        assert!(matches!(&displays[1], TextDisplay::Content(t) if t == "here is my answer"));
+    }
+
+    #[test]
+    fn extract_text_displays_single_text() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#;
+        let displays = extract_text_displays(line);
+        assert_eq!(displays.len(), 1);
+        assert!(matches!(&displays[0], TextDisplay::Content(t) if t == "hello"));
+    }
+
+    #[test]
+    fn extract_text_displays_non_assistant_returns_empty() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}"#;
+        assert!(extract_text_displays(line).is_empty());
+    }
+
+    #[test]
+    fn extract_text_displays_no_text_blocks_returns_empty() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}"#;
+        assert!(extract_text_displays(line).is_empty());
     }
 }

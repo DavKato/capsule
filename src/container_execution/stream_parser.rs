@@ -23,7 +23,7 @@ pub struct StreamParser {
     init_seen: bool,
     submit_verdict_registered: bool,
     session_id: Option<String>,
-    last_tool_event: Option<ToolEvent>,
+    last_tool_events: Vec<ToolEvent>,
 }
 
 impl StreamParser {
@@ -34,12 +34,12 @@ impl StreamParser {
             init_seen: false,
             submit_verdict_registered: false,
             session_id: None,
-            last_tool_event: None,
+            last_tool_events: Vec::new(),
         }
     }
 
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
-        self.last_tool_event = None;
+        self.last_tool_events.clear();
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return self.verdict.as_ref();
         };
@@ -62,7 +62,7 @@ impl StreamParser {
             }
             self.verdict = Some(v);
         }
-        self.last_tool_event = extract_tool_event(&msg);
+        self.last_tool_events = extract_tool_events(&msg);
         self.verdict.as_ref()
     }
 
@@ -83,9 +83,9 @@ impl StreamParser {
         self.init_seen && !self.submit_verdict_registered
     }
 
-    /// Returns the tool event extracted from the most recent `feed()` call, if any.
-    pub fn last_tool_event(&self) -> Option<&ToolEvent> {
-        self.last_tool_event.as_ref()
+    /// Returns all tool events extracted from the most recent `feed()` call.
+    pub fn last_tool_events(&self) -> &[ToolEvent] {
+        &self.last_tool_events
     }
 }
 
@@ -127,39 +127,47 @@ fn extract_init_tools(msg: &Value) -> Option<Vec<Value>> {
     Some(msg.get("tools")?.as_array()?.clone())
 }
 
-fn extract_tool_event(msg: &Value) -> Option<ToolEvent> {
-    let msg_type = msg.get("type")?.as_str()?;
+fn extract_tool_events(msg: &Value) -> Vec<ToolEvent> {
+    let Some(msg_type) = msg.get("type").and_then(Value::as_str) else {
+        return Vec::new();
+    };
     match msg_type {
         "assistant" => {
-            let content = msg.pointer("/message/content")?.as_array()?;
-            for block in content {
-                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+            let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
+                return Vec::new();
+            };
+            content
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+                .filter_map(|block| {
                     let name = block.get("name")?.as_str()?.to_owned();
                     let id = block.get("id")?.as_str()?.to_owned();
                     let input = block.get("input")?.clone();
-                    return Some(ToolEvent::Use(ToolUseEvent { id, name, input }));
-                }
-            }
-            None
+                    Some(ToolEvent::Use(ToolUseEvent { id, name, input }))
+                })
+                .collect()
         }
         "user" => {
-            let content = msg.pointer("/message/content")?.as_array()?;
-            for block in content {
-                if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+            let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
+                return Vec::new();
+            };
+            content
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+                .filter_map(|block| {
                     let tool_use_id = block.get("tool_use_id")?.as_str()?.to_owned();
                     let is_error = block
                         .get("is_error")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
-                    return Some(ToolEvent::Result(ToolResultEvent {
+                    Some(ToolEvent::Result(ToolResultEvent {
                         tool_use_id,
                         is_error,
-                    }));
-                }
-            }
-            None
+                    }))
+                })
+                .collect()
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -446,8 +454,9 @@ mod tests {
     fn tool_use_event_is_extracted() {
         let mut p = StreamParser::new();
         p.feed(TOOL_USE_LINE);
-        let event = p.last_tool_event().unwrap();
-        let ToolEvent::Use(use_event) = event else {
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Use(use_event) = &events[0] else {
             panic!("expected ToolEvent::Use");
         };
         assert_eq!(use_event.id, "toolu_bash01");
@@ -459,8 +468,9 @@ mod tests {
     fn tool_result_success_event_is_extracted() {
         let mut p = StreamParser::new();
         p.feed(TOOL_RESULT_LINE);
-        let event = p.last_tool_event().unwrap();
-        let ToolEvent::Result(result_event) = event else {
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Result(result_event) = &events[0] else {
             panic!("expected ToolEvent::Result");
         };
         assert_eq!(result_event.tool_use_id, "toolu_bash01");
@@ -471,8 +481,9 @@ mod tests {
     fn tool_result_error_event_is_extracted() {
         let mut p = StreamParser::new();
         p.feed(TOOL_RESULT_ERROR_LINE);
-        let event = p.last_tool_event().unwrap();
-        let ToolEvent::Result(result_event) = event else {
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Result(result_event) = &events[0] else {
             panic!("expected ToolEvent::Result");
         };
         assert_eq!(result_event.tool_use_id, "toolu_bash01");
@@ -484,12 +495,12 @@ mod tests {
         let mut p = StreamParser::new();
 
         p.feed(TOOL_USE_LINE);
-        let event = p.last_tool_event().unwrap();
-        assert!(matches!(event, ToolEvent::Use(_)));
+        assert_eq!(p.last_tool_events().len(), 1);
+        assert!(matches!(&p.last_tool_events()[0], ToolEvent::Use(_)));
 
         p.feed(TOOL_RESULT_LINE);
-        let event = p.last_tool_event().unwrap();
-        let ToolEvent::Result(result_event) = event else {
+        assert_eq!(p.last_tool_events().len(), 1);
+        let ToolEvent::Result(result_event) = &p.last_tool_events()[0] else {
             panic!("expected ToolEvent::Result");
         };
         assert_eq!(result_event.tool_use_id, "toolu_bash01");
@@ -499,8 +510,9 @@ mod tests {
     fn mcp_prefixed_tool_use_is_extracted() {
         let mut p = StreamParser::new();
         p.feed(MCP_TOOL_USE_LINE);
-        let event = p.last_tool_event().unwrap();
-        let ToolEvent::Use(use_event) = event else {
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Use(use_event) = &events[0] else {
             panic!("expected ToolEvent::Use");
         };
         assert_eq!(use_event.name, "mcp__capsule__run_task");
@@ -509,29 +521,67 @@ mod tests {
     }
 
     #[test]
-    fn non_tool_line_clears_last_tool_event() {
+    fn non_tool_line_clears_last_tool_events() {
         let mut p = StreamParser::new();
         p.feed(TOOL_USE_LINE);
-        assert!(p.last_tool_event().is_some());
+        assert!(!p.last_tool_events().is_empty());
         p.feed(TEXT_LINE);
-        assert!(p.last_tool_event().is_none());
+        assert!(p.last_tool_events().is_empty());
     }
 
     #[test]
-    fn no_tool_event_before_any_feed() {
+    fn no_tool_events_before_any_feed() {
         let p = StreamParser::new();
-        assert!(p.last_tool_event().is_none());
+        assert!(p.last_tool_events().is_empty());
     }
 
     #[test]
     fn submit_verdict_tool_use_also_emits_tool_event() {
         let mut p = StreamParser::new();
         p.feed(PASS_LINE);
-        // submit_verdict is a tool_use and should also appear as a ToolEvent::Use
-        let event = p.last_tool_event().unwrap();
-        let ToolEvent::Use(use_event) = event else {
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Use(use_event) = &events[0] else {
             panic!("expected ToolEvent::Use");
         };
         assert_eq!(use_event.name, "submit_verdict");
+    }
+
+    #[test]
+    fn parallel_tool_calls_extracted() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"toolu_02","name":"Read","input":{"path":"/tmp/foo"}}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 2);
+        let ToolEvent::Use(first) = &events[0] else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert_eq!(first.name, "Bash");
+        assert_eq!(first.id, "toolu_01");
+        let ToolEvent::Use(second) = &events[1] else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert_eq!(second.name, "Read");
+        assert_eq!(second.id, "toolu_02");
+    }
+
+    #[test]
+    fn multiple_tool_results_extracted() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","is_error":false},{"type":"tool_result","tool_use_id":"toolu_02","is_error":true}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 2);
+        let ToolEvent::Result(first) = &events[0] else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(first.tool_use_id, "toolu_01");
+        assert!(!first.is_error);
+        let ToolEvent::Result(second) = &events[1] else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(second.tool_use_id, "toolu_02");
+        assert!(second.is_error);
     }
 }

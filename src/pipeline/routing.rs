@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
+use super::RetryInfo;
 use crate::config::{LoopConfig, OnFail, OnPass, StageConfig};
-use crate::display::RetryInfo;
 use crate::verdict::{Verdict, VerdictStatus};
 
 use super::prompt::{inject_input, inject_note_block};

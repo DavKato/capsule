@@ -82,10 +82,10 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         }
         let had_text = !parser.last_text_displays().is_empty();
         for display in parser.last_text_displays() {
-            match display {
-                TextDisplay::Content(text) => crate::display::text_content(text),
-                TextDisplay::Thinking(text) => crate::display::thinking_text(text),
-            }
+            let text = match display {
+                TextDisplay::Content(t) | TextDisplay::Thinking(t) => t,
+            };
+            crate::display::agent_text(text);
         }
         if !had_text
             && !had_tool_events

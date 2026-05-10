@@ -6,6 +6,7 @@ use crossterm::{
     QueueableCommand,
 };
 use std::io::{stderr, stdout, IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -57,6 +58,8 @@ impl DisplayState {
 }
 
 static STATE: OnceLock<Mutex<Option<DisplayState>>> = OnceLock::new();
+
+static LAST_WAS_TEXT: AtomicBool = AtomicBool::new(false);
 
 fn get_state() -> &'static Mutex<Option<DisplayState>> {
     STATE.get_or_init(|| Mutex::new(None))
@@ -262,6 +265,7 @@ fn render_box<W: Write + QueueableCommand>(
 /// └─────────────────────────────────┘
 /// ```
 pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option<&RetryInfo>) {
+    LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let lines = header_content_lines(stage_name, iteration, model, retry);
     let term_w = terminal_width() as usize;
     render_box(&mut stdout(), &lines, term_w).ok();
@@ -354,6 +358,7 @@ fn notice_box_to<W: Write + QueueableCommand>(
 const TOOL_ARGS_MAX: usize = 60;
 
 pub fn tool_call(name: &str, args: &str) {
+    LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
         let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
         format!("{s}…")
@@ -411,6 +416,7 @@ fn tool_call_to<W: Write + QueueableCommand>(
 }
 
 pub fn tool_result(name: &str, success: bool) {
+    LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let color = if success { GREEN } else { RED };
 
     if is_in_tty_mode() {
@@ -440,28 +446,31 @@ fn tool_result_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
-/// Print agent thinking text at normal weight (not dimmed).
-pub fn thinking_text(text: &str) {
-    thinking_text_to(&mut stdout(), text).ok();
+/// Print agent text (thinking or content) with a dim-white block dot on the first
+/// line of each new block, and indented continuation lines within the same block.
+pub fn agent_text(text: &str) {
+    let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
+    agent_text_to(&mut stdout(), text, &mut last).ok();
+    LAST_WAS_TEXT.store(last, Ordering::Relaxed);
 }
 
-fn thinking_text_to<W: Write + QueueableCommand>(out: &mut W, text: &str) -> std::io::Result<()> {
+fn agent_text_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    text: &str,
+    last_was_text: &mut bool,
+) -> std::io::Result<()> {
+    if *last_was_text {
+        out.queue(Print("    "))?;
+    } else {
+        out.queue(SetForegroundColor(Color::DarkGrey))?;
+        out.queue(Print("  · "))?;
+        out.queue(ResetColor)?;
+    }
     out.queue(Print(text))?;
     out.queue(Print("\n"))?;
-    out.flush()
-}
-
-/// Print assistant text-content in white.
-pub fn text_content(text: &str) {
-    text_content_to(&mut stdout(), text).ok();
-}
-
-fn text_content_to<W: Write + QueueableCommand>(out: &mut W, text: &str) -> std::io::Result<()> {
-    out.queue(SetForegroundColor(Color::White))?;
-    out.queue(Print(text))?;
-    out.queue(ResetColor)?;
-    out.queue(Print("\n"))?;
-    out.flush()
+    out.flush()?;
+    *last_was_text = true;
+    Ok(())
 }
 
 const NOTES_MAX: usize = 60;
@@ -500,6 +509,7 @@ fn format_duration(d: Duration) -> String {
 ///
 /// `verdict` is `None` for an implicit fail (stage exited without emitting a verdict).
 pub fn session_footer(verdict: Option<&Verdict>, duration: Duration, session_id: Option<&str>) {
+    LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     session_footer_to(&mut stdout(), verdict, duration, session_id).ok();
 }
 
@@ -788,25 +798,47 @@ mod tests {
         );
     }
 
+    const DARK_GREY_ANSI: &[u8] = b"\x1b[38;5;8m";
+
     #[test]
-    fn thinking_text_not_dimmed() {
+    fn agent_text_first_call_emits_dot_and_text() {
         let mut buf: Vec<u8> = Vec::new();
-        thinking_text_to(&mut buf, "some thought").unwrap();
+        let mut last = false;
+        agent_text_to(&mut buf, "hello world", &mut last).unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("some thought"), "text must appear");
-        // dim ANSI code is ESC[2m — must not appear
+        assert!(out.contains("hello world"), "text must appear");
+        assert!(out.contains('·'), "dot must appear on first line");
         assert!(
-            !buf.windows(4).any(|w| w == b"\x1b[2m"),
-            "thinking_text must not emit dim escape code"
+            contains_seq(&buf, DARK_GREY_ANSI),
+            "dot must use dark grey color; output: {out:?}"
+        );
+        assert!(last, "last_was_text must be true after call");
+    }
+
+    #[test]
+    fn agent_text_continuation_indents_without_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last = true;
+        agent_text_to(&mut buf, "second line", &mut last).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("second line"), "text must appear");
+        assert!(!out.contains('·'), "no dot on continuation line");
+        assert!(
+            out.starts_with("    "),
+            "continuation must be indented with 4 spaces"
         );
     }
 
     #[test]
-    fn text_content_renders_text() {
+    fn agent_text_body_not_dimmed() {
         let mut buf: Vec<u8> = Vec::new();
-        text_content_to(&mut buf, "hello world").unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("hello world"), "text must appear in output");
+        let mut last = false;
+        agent_text_to(&mut buf, "body text", &mut last).unwrap();
+        // ESC[2m is the dim attribute — must not appear anywhere in the output
+        assert!(
+            !buf.windows(4).any(|w| w == b"\x1b[2m"),
+            "agent_text must not emit dim escape code on body text"
+        );
     }
 
     // Crossterm emits 256-color (8-bit) SGR sequences on non-tty buffers.

@@ -17,6 +17,11 @@ pub enum ToolEvent {
     Result(ToolResultEvent),
 }
 
+pub enum TextDisplay {
+    Content(String),
+    Thinking(String),
+}
+
 pub struct StreamParser {
     verdict: Option<Verdict>,
     auth_failed: bool,
@@ -24,6 +29,7 @@ pub struct StreamParser {
     submit_verdict_registered: bool,
     session_id: Option<String>,
     last_tool_events: Vec<ToolEvent>,
+    last_text_displays: Vec<TextDisplay>,
 }
 
 impl StreamParser {
@@ -35,11 +41,13 @@ impl StreamParser {
             submit_verdict_registered: false,
             session_id: None,
             last_tool_events: Vec::new(),
+            last_text_displays: Vec::new(),
         }
     }
 
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
         self.last_tool_events.clear();
+        self.last_text_displays.clear();
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return self.verdict.as_ref();
         };
@@ -62,7 +70,9 @@ impl StreamParser {
             }
             self.verdict = Some(v);
         }
-        self.last_tool_events = extract_tool_events(&msg);
+        let (tool_events, text_displays) = extract_assistant_content(&msg);
+        self.last_tool_events = tool_events;
+        self.last_text_displays = text_displays;
         self.verdict.as_ref()
     }
 
@@ -86,6 +96,11 @@ impl StreamParser {
     /// Returns all tool events extracted from the most recent `feed()` call.
     pub fn last_tool_events(&self) -> &[ToolEvent] {
         &self.last_tool_events
+    }
+
+    /// Returns text/thinking display items extracted from the most recent `feed()` call.
+    pub fn last_text_displays(&self) -> &[TextDisplay] {
+        &self.last_text_displays
     }
 }
 
@@ -127,31 +142,54 @@ fn extract_init_tools(msg: &Value) -> Option<Vec<Value>> {
     Some(msg.get("tools")?.as_array()?.clone())
 }
 
-fn extract_tool_events(msg: &Value) -> Vec<ToolEvent> {
+fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) {
     let Some(msg_type) = msg.get("type").and_then(Value::as_str) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     match msg_type {
         "assistant" => {
             let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
-                return Vec::new();
+                return (Vec::new(), Vec::new());
             };
-            content
-                .iter()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
-                .filter_map(|block| {
-                    let name = block.get("name")?.as_str()?.to_owned();
-                    let id = block.get("id")?.as_str()?.to_owned();
-                    let input = block.get("input")?.clone();
-                    Some(ToolEvent::Use(ToolUseEvent { id, name, input }))
-                })
-                .collect()
+            let mut tool_events = Vec::new();
+            let mut text_displays = Vec::new();
+            for block in content {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("tool_use") => {
+                        if let (Some(name), Some(id), Some(input)) = (
+                            block.get("name").and_then(Value::as_str).map(str::to_owned),
+                            block.get("id").and_then(Value::as_str).map(str::to_owned),
+                            block.get("input").cloned(),
+                        ) {
+                            tool_events.push(ToolEvent::Use(ToolUseEvent { id, name, input }));
+                        }
+                    }
+                    Some("text") => {
+                        if let Some(text) =
+                            block.get("text").and_then(Value::as_str).map(str::to_owned)
+                        {
+                            text_displays.push(TextDisplay::Content(text));
+                        }
+                    }
+                    Some("thinking") => {
+                        if let Some(text) = block
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                        {
+                            text_displays.push(TextDisplay::Thinking(text));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (tool_events, text_displays)
         }
         "user" => {
             let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
-                return Vec::new();
+                return (Vec::new(), Vec::new());
             };
-            content
+            let tool_events = content
                 .iter()
                 .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
                 .filter_map(|block| {
@@ -165,9 +203,10 @@ fn extract_tool_events(msg: &Value) -> Vec<ToolEvent> {
                         is_error,
                     }))
                 })
-                .collect()
+                .collect();
+            (tool_events, Vec::new())
         }
-        _ => Vec::new(),
+        _ => (Vec::new(), Vec::new()),
     }
 }
 
@@ -583,5 +622,82 @@ mod tests {
         };
         assert_eq!(second.tool_use_id, "toolu_02");
         assert!(second.is_error);
+    }
+
+    // Text display extraction tests
+    #[test]
+    fn text_content_extracted_from_assistant_message() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        let displays = p.last_text_displays();
+        assert_eq!(displays.len(), 1);
+        assert!(matches!(&displays[0], TextDisplay::Content(t) if t == "thinking..."));
+    }
+
+    #[test]
+    fn thinking_content_extracted_from_assistant_message() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm let me think"}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let displays = p.last_text_displays();
+        assert_eq!(displays.len(), 1);
+        assert!(matches!(&displays[0], TextDisplay::Thinking(t) if t == "hmm let me think"));
+    }
+
+    #[test]
+    fn mixed_thinking_and_text_blocks_both_extracted() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm let me think"},{"type":"text","text":"here is my answer"}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let displays = p.last_text_displays();
+        assert_eq!(displays.len(), 2);
+        assert!(matches!(&displays[0], TextDisplay::Thinking(t) if t == "hmm let me think"));
+        assert!(matches!(&displays[1], TextDisplay::Content(t) if t == "here is my answer"));
+    }
+
+    #[test]
+    fn mixed_text_and_tool_use_both_extracted() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I'll run this"},{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let tool_events = p.last_tool_events();
+        assert_eq!(tool_events.len(), 1);
+        let ToolEvent::Use(tu) = &tool_events[0] else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert_eq!(tu.name, "Bash");
+        let text_displays = p.last_text_displays();
+        assert_eq!(text_displays.len(), 1);
+        assert!(matches!(&text_displays[0], TextDisplay::Content(t) if t == "I'll run this"));
+    }
+
+    #[test]
+    fn user_message_has_no_text_displays() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","is_error":false}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert!(p.last_text_displays().is_empty());
+    }
+
+    #[test]
+    fn tool_only_message_has_no_text_displays() {
+        let mut p = StreamParser::new();
+        p.feed(TOOL_USE_LINE);
+        assert!(p.last_text_displays().is_empty());
+    }
+
+    #[test]
+    fn text_displays_cleared_between_feeds() {
+        let mut p = StreamParser::new();
+        p.feed(TEXT_LINE);
+        assert!(!p.last_text_displays().is_empty());
+        p.feed(TOOL_USE_LINE);
+        assert!(p.last_text_displays().is_empty());
+    }
+
+    #[test]
+    fn no_text_displays_before_any_feed() {
+        let p = StreamParser::new();
+        assert!(p.last_text_displays().is_empty());
     }
 }

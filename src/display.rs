@@ -73,7 +73,7 @@ fn is_in_tty_mode() -> bool {
 }
 
 pub fn init() {
-    if !stdout().is_terminal() {
+    if is_in_tty_mode() || !stdout().is_terminal() {
         return;
     }
     let (term_w, term_h) = terminal::size().unwrap_or((80, 24));
@@ -95,10 +95,6 @@ pub fn init() {
     }));
 }
 
-/// Returns `true` when the display module is in TTY mode (scroll-region panel active).
-///
-/// Callers can use this to skip rendering that only makes sense in an interactive
-/// terminal — e.g., progress indicators or cursor-position-dependent output.
 pub fn is_tty() -> bool {
     is_in_tty_mode()
 }
@@ -1083,7 +1079,6 @@ mod tests {
 
     #[test]
     fn is_tty_returns_false_in_non_tty_context() {
-        // Test runner has no TTY, so init() is a no-op and is_tty() must return false.
         assert!(
             !is_tty(),
             "is_tty() must return false when stdout is not a terminal"
@@ -1092,15 +1087,12 @@ mod tests {
 
     #[test]
     fn init_does_not_panic_in_non_tty_context() {
-        // In test context stdout is not a terminal; init() must return early without panic.
         init();
-        // is_tty() must still be false since init() detected non-TTY and exited early.
         assert!(!is_tty());
     }
 
     #[test]
     fn teardown_after_non_tty_init_does_not_panic() {
-        // Calling teardown() after a non-TTY init() (no active state) must be a safe no-op.
         init();
         teardown();
     }

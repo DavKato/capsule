@@ -1,6 +1,6 @@
 use super::docker_args::{build_docker_args, container_name_for};
 use super::infra::{host_token_is_expired, make_mcp_config};
-use super::stream_parser::{StreamParser, ToolEvent};
+use super::stream_parser::{StreamParser, TextDisplay, ToolEvent};
 use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -49,39 +49,35 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
-        let parsed = parser.feed(&line).is_some();
+        let verdict_seen = parser.feed(&line).is_some();
         if verbose {
             crate::display::info(&line);
         }
-        let tool_events = parser.last_tool_events();
-        if !tool_events.is_empty() {
-            for event in tool_events {
-                match event {
-                    ToolEvent::Use(tu) => {
-                        let args = format_tool_args(&tu.input);
-                        pending_tool_names.insert(tu.id.clone(), tu.name.clone());
-                        crate::display::tool_call(&tu.name, &args);
-                    }
-                    ToolEvent::Result(tr) => {
-                        let name = pending_tool_names
-                            .remove(&tr.tool_use_id)
-                            .unwrap_or_else(|| "unknown".to_owned());
-                        crate::display::tool_result(&name, !tr.is_error);
-                    }
+        let had_tool_events = !parser.last_tool_events().is_empty();
+        for event in parser.last_tool_events() {
+            match event {
+                ToolEvent::Use(tu) => {
+                    let args = format_tool_args(&tu.input);
+                    pending_tool_names.insert(tu.id.clone(), tu.name.clone());
+                    crate::display::tool_call(&tu.name, &args);
+                }
+                ToolEvent::Result(tr) => {
+                    let name = pending_tool_names
+                        .remove(&tr.tool_use_id)
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    crate::display::tool_result(&name, !tr.is_error);
                 }
             }
-        } else {
-            let displays = extract_text_displays(&line);
-            if !displays.is_empty() {
-                for display in displays {
-                    match display {
-                        TextDisplay::Content(text) => crate::display::text_content(&text),
-                        TextDisplay::Thinking(text) => crate::display::thinking_text(&text),
-                    }
-                }
-            } else if !parsed && !line.is_empty() {
-                crate::display::info(&line);
+        }
+        let had_text = !parser.last_text_displays().is_empty();
+        for display in parser.last_text_displays() {
+            match display {
+                TextDisplay::Content(text) => crate::display::text_content(text),
+                TextDisplay::Thinking(text) => crate::display::thinking_text(text),
             }
+        }
+        if !had_text && !had_tool_events && !verdict_seen && !line.is_empty() {
+            crate::display::info(&line);
         }
     }
 
@@ -91,42 +87,6 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         verdict: parser.verdict().cloned(),
         session_id: parser.session_id().map(str::to_owned),
     })
-}
-
-enum TextDisplay {
-    Content(String),
-    Thinking(String),
-}
-
-fn extract_text_displays(line: &str) -> Vec<TextDisplay> {
-    let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
-        return Vec::new();
-    };
-    if msg.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
-        return Vec::new();
-    }
-    let Some(content) = msg
-        .pointer("/message/content")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return Vec::new();
-    };
-    content
-        .iter()
-        .filter_map(
-            |block| match block.get("type").and_then(serde_json::Value::as_str) {
-                Some("text") => {
-                    let text = block.get("text").and_then(serde_json::Value::as_str)?;
-                    Some(TextDisplay::Content(text.to_owned()))
-                }
-                Some("thinking") => {
-                    let text = block.get("thinking").and_then(serde_json::Value::as_str)?;
-                    Some(TextDisplay::Thinking(text.to_owned()))
-                }
-                _ => None,
-            },
-        )
-        .collect()
 }
 
 fn format_tool_args(input: &serde_json::Value) -> String {
@@ -416,34 +376,5 @@ mod tests {
             err.to_string().contains("submit_verdict"),
             "submit_verdict_missing must take priority over non-zero exit"
         );
-    }
-
-    #[test]
-    fn extract_text_displays_mixed_thinking_and_text() {
-        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm let me think"},{"type":"text","text":"here is my answer"}]}}"#;
-        let displays = extract_text_displays(line);
-        assert_eq!(displays.len(), 2);
-        assert!(matches!(&displays[0], TextDisplay::Thinking(t) if t == "hmm let me think"));
-        assert!(matches!(&displays[1], TextDisplay::Content(t) if t == "here is my answer"));
-    }
-
-    #[test]
-    fn extract_text_displays_single_text() {
-        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#;
-        let displays = extract_text_displays(line);
-        assert_eq!(displays.len(), 1);
-        assert!(matches!(&displays[0], TextDisplay::Content(t) if t == "hello"));
-    }
-
-    #[test]
-    fn extract_text_displays_non_assistant_returns_empty() {
-        let line = r#"{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}"#;
-        assert!(extract_text_displays(line).is_empty());
-    }
-
-    #[test]
-    fn extract_text_displays_no_text_blocks_returns_empty() {
-        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}"#;
-        assert!(extract_text_displays(line).is_empty());
     }
 }

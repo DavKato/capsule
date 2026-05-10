@@ -1,6 +1,6 @@
 use crossterm::{
     cursor,
-    style::{Color, Print, ResetColor, SetForegroundColor},
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal,
     terminal::ClearType,
     QueueableCommand,
@@ -278,27 +278,49 @@ fn terminal_width() -> u16 {
     terminal::size().map(|(w, _)| w).unwrap_or(80)
 }
 
-/// Build the plain-text content lines for a stage header box.
-/// Returns strings without box borders or ANSI codes.
-fn header_content_lines(
+fn render_stage_header_to<W: Write + QueueableCommand>(
+    out: &mut W,
     stage_name: &str,
     iteration: u32,
     model: &str,
     retry: Option<&RetryInfo>,
-) -> Vec<String> {
-    let mut lines = vec![
-        format!("Stage: {stage_name}"),
-        format!("Iteration: {iteration}"),
-        format!("Model: {model}"),
-    ];
-    if let Some(r) = retry {
-        let max_str = match r.max {
-            Some(m) => m.to_string(),
-            None => "∞".to_string(),
-        };
-        lines.push(format!("Retry: {} / {}", r.current, max_str));
-    }
-    lines
+    term_w: usize,
+) -> std::io::Result<()> {
+    let content = match retry {
+        Some(r) => {
+            let max_str = match r.max {
+                Some(m) => m.to_string(),
+                None => "∞".to_string(),
+            };
+            format!(
+                "{stage_name} · iter {iteration} · {model} · retry {}/{}",
+                r.current, max_str
+            )
+        }
+        None => format!("{stage_name} · iter {iteration} · {model}"),
+    };
+
+    // "══ {content} " + trailing ═ to fill terminal width
+    let prefix = "══ ";
+    let suffix = " ";
+    let prefix_len = prefix.chars().count();
+    let content_len = content.chars().count();
+    let suffix_len = suffix.chars().count();
+    let used = prefix_len + content_len + suffix_len;
+    let trailing_len = term_w.saturating_sub(used);
+
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print(prefix))?;
+    out.queue(SetForegroundColor(Color::White))?;
+    out.queue(SetAttribute(Attribute::Bold))?;
+    out.queue(Print(&content))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print(suffix))?;
+    out.queue(Print("═".repeat(trailing_len)))?;
+    out.queue(Print("\n"))?;
+    out.queue(ResetColor)?;
+    out.flush()
 }
 
 /// Pad `text` to `width` characters, or truncate with a trailing space if too long.
@@ -336,21 +358,16 @@ fn render_box<W: Write + QueueableCommand>(
     out.flush()
 }
 
-/// Render a bordered stage-header box to stdout.
+/// Render a stage header rule line to stdout.
 ///
 /// ```text
-/// ┌─────────────────────────────────┐
-/// │ Stage: implementer              │
-/// │ Iteration: 1                    │
-/// │ Model: claude-opus-4-6          │
-/// │ Retry: 2 / 3                   │  ← only when retrying
-/// └─────────────────────────────────┘
+/// ══ stage · iter N · model ════════════════
+/// ══ stage · iter N · model · retry 2/3 ═══  ← when retrying
 /// ```
 pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option<&RetryInfo>) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-    let lines = header_content_lines(stage_name, iteration, model, retry);
     let term_w = terminal_width() as usize;
-    render_box(&mut stdout(), &lines, term_w).ok();
+    render_stage_header_to(&mut stdout(), stage_name, iteration, model, retry, term_w).ok();
 
     // Redraw the separator line before updating panel state so the visual
     // boundary is refreshed at stage transitions.
@@ -584,7 +601,6 @@ fn agent_text_to<W: Write + QueueableCommand>(
     Ok(())
 }
 
-const NOTES_MAX: usize = 60;
 const SESSION_ID_MAX: usize = 32;
 
 fn verdict_color_label(status: &VerdictStatus) -> (Color, &'static str) {
@@ -616,12 +632,61 @@ fn format_duration(d: Duration) -> String {
     format!("{:02}:{:02}", total / 60, total % 60)
 }
 
-/// Render a bordered session-footer box to stdout after a stage completes.
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    for word in text.split_whitespace() {
+        let word_len = word.chars().count();
+        if current_len == 0 {
+            current.push_str(word);
+            current_len = word_len;
+        } else if current_len + 1 + word_len <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_len += 1 + word_len;
+        } else {
+            lines.push(current.clone());
+            current = word.to_string();
+            current_len = word_len;
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn render_gutter_line<W: Write + QueueableCommand>(out: &mut W, text: &str) -> std::io::Result<()> {
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print("│ "))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!("{text}\n")))?;
+    Ok(())
+}
+
+/// Render a session footer to stdout after a stage completes.
+///
+/// ```text
+/// ── PASS · 09:12 ──────────────────────────
+/// │ session: abc123
+/// │ notes: full notes text here, wrapped at
+/// │        terminal width
+/// ──────────────────────────────────────────
+/// ```
 ///
 /// `verdict` is `None` for an implicit fail (stage exited without emitting a verdict).
-pub fn session_footer(verdict: Option<&Verdict>, duration: Duration, session_id: Option<&str>) {
+pub fn session_footer(
+    verdict: Option<&Verdict>,
+    duration: Duration,
+    session_id: Option<&str>,
+    context_usage: Option<&str>,
+) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-    session_footer_to(&mut stdout(), verdict, duration, session_id).ok();
+    session_footer_to(&mut stdout(), verdict, duration, session_id, context_usage).ok();
 }
 
 fn session_footer_to<W: Write + QueueableCommand>(
@@ -629,6 +694,7 @@ fn session_footer_to<W: Write + QueueableCommand>(
     verdict: Option<&Verdict>,
     duration: Duration,
     session_id: Option<&str>,
+    context_usage: Option<&str>,
 ) -> std::io::Result<()> {
     let term_w = terminal_width() as usize;
 
@@ -636,99 +702,72 @@ fn session_footer_to<W: Write + QueueableCommand>(
         Some(v) => verdict_color_label(&v.status),
         None => (RED, "fail"),
     };
+    let status_upper = status_label.to_uppercase();
+    let duration_str = format_duration(duration);
 
-    let notes_text = verdict.and_then(|v| v.notes.as_deref()).map(|n| {
-        if n.chars().count() > NOTES_MAX {
-            let s: String = n.chars().take(NOTES_MAX).collect();
-            format!("{s}…")
-        } else {
-            n.to_string()
-        }
-    });
+    // Title line: "── STATUS · MM:SS " + trailing ─ to fill terminal width
+    let prefix = "── ";
+    let mid = " · ";
+    let space = " ";
+    let title_fixed_len = prefix.chars().count()
+        + status_upper.chars().count()
+        + mid.chars().count()
+        + duration_str.chars().count()
+        + space.chars().count();
+    let trailing_len = term_w.saturating_sub(title_fixed_len);
 
-    let session_text = session_id.map(|id| {
-        if id.chars().count() > SESSION_ID_MAX {
+    out.queue(Print(prefix))?;
+    out.queue(SetForegroundColor(status_color))?;
+    out.queue(SetAttribute(Attribute::Bold))?;
+    out.queue(Print(&status_upper))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!("{mid}{duration_str}{space}")))?;
+    out.queue(SetForegroundColor(CYAN))?;
+    out.queue(Print("─".repeat(trailing_len)))?;
+    out.queue(ResetColor)?;
+    out.queue(Print("\n"))?;
+
+    // Gutter content: session ID, context usage, notes
+    // "│ " prefix = 2 chars; gutter_width is the usable content area
+    let gutter_width = term_w.saturating_sub(2);
+
+    if let Some(id) = session_id {
+        let truncated_id = if id.chars().count() > SESSION_ID_MAX {
             let s: String = id.chars().take(SESSION_ID_MAX).collect();
             format!("{s}…")
         } else {
             id.to_string()
-        }
-    });
-
-    let status_plain = format!("Status: {status_label}");
-    let duration_line = format!("Duration: {}", format_duration(duration));
-    let notes_line = notes_text.as_deref().map(|n| format!("Notes: {n}"));
-    let session_line = session_text.as_deref().map(|s| format!("Session: {s}"));
-
-    let plain_lines: Vec<&str> = {
-        let mut v: Vec<&str> = vec![&status_plain, &duration_line];
-        if let Some(ref nl) = notes_line {
-            v.push(nl.as_str());
-        }
-        if let Some(ref sl) = session_line {
-            v.push(sl.as_str());
-        }
-        v
-    };
-
-    let max_content = plain_lines
-        .iter()
-        .map(|l| l.chars().count())
-        .max()
-        .unwrap_or(0);
-    let box_w = (max_content + 4).min(term_w);
-    let inner_w = box_w.saturating_sub(2);
-    let horiz = "─".repeat(box_w.saturating_sub(2));
-
-    out.queue(SetForegroundColor(CYAN))?;
-    out.queue(Print(format!("┌{horiz}┐\n")))?;
-
-    render_footer_status_line(out, status_label, status_color, inner_w)?;
-
-    for line in &plain_lines[1..] {
-        render_footer_plain_line(out, line, inner_w)?;
+        };
+        render_gutter_line(out, &format!("session: {truncated_id}"))?;
     }
 
+    if let Some(ctx) = context_usage {
+        render_gutter_line(out, &format!("context: {ctx}"))?;
+    }
+
+    if let Some(notes) = verdict.and_then(|v| v.notes.as_deref()) {
+        let notes_prefix = "notes: ";
+        let notes_prefix_len = notes_prefix.chars().count();
+        let wrap_width = gutter_width.saturating_sub(notes_prefix_len);
+        let wrapped = wrap_text(notes, wrap_width);
+        for (i, line) in wrapped.iter().enumerate() {
+            if i == 0 {
+                render_gutter_line(out, &format!("{notes_prefix}{line}"))?;
+            } else {
+                render_gutter_line(
+                    out,
+                    &format!("{:>width$}{line}", "", width = notes_prefix_len),
+                )?;
+            }
+        }
+    }
+
+    // Bottom rule
     out.queue(SetForegroundColor(CYAN))?;
-    out.queue(Print(format!("└{horiz}┘\n")))?;
+    out.queue(Print(format!("{}\n", "─".repeat(term_w))))?;
     out.queue(ResetColor)?;
     out.flush()
-}
-
-fn render_footer_status_line<W: Write + QueueableCommand>(
-    out: &mut W,
-    label: &str,
-    color: Color,
-    inner_w: usize,
-) -> std::io::Result<()> {
-    let prefix = " Status: ";
-    let prefix_len = prefix.chars().count();
-    let value_w = inner_w.saturating_sub(prefix_len.min(inner_w));
-    let value_display = pad_or_truncate(label, value_w);
-
-    out.queue(SetForegroundColor(CYAN))?;
-    out.queue(Print("│"))?;
-    out.queue(ResetColor)?;
-    out.queue(Print(prefix))?;
-    out.queue(SetForegroundColor(color))?;
-    out.queue(Print(&value_display))?;
-    out.queue(SetForegroundColor(CYAN))?;
-    out.queue(Print("│\n"))?;
-    out.queue(ResetColor)?;
-    Ok(())
-}
-
-fn render_footer_plain_line<W: Write + QueueableCommand>(
-    out: &mut W,
-    line: &str,
-    inner_w: usize,
-) -> std::io::Result<()> {
-    let padded = format!(" {line}");
-    let cell = pad_or_truncate(&padded, inner_w);
-    out.queue(SetForegroundColor(CYAN))?;
-    out.queue(Print(format!("│{cell}│\n")))?;
-    out.queue(ResetColor)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -736,63 +775,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn header_without_retry_has_three_lines() {
-        let lines = header_content_lines("builder", 1, "claude-opus-4-6", None);
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "Stage: builder");
-        assert_eq!(lines[1], "Iteration: 1");
-        assert_eq!(lines[2], "Model: claude-opus-4-6");
+    fn stage_header_renders_double_rule_with_content() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_stage_header_to(&mut buf, "builder", 1, "claude-opus-4-6", None, 80).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("══"), "header must use double rule characters");
+        assert!(out.contains("builder"), "stage name must appear");
+        assert!(out.contains("iter 1"), "iteration must appear");
+        assert!(out.contains("claude-opus-4-6"), "model must appear");
+        assert!(!out.contains("┌"), "no bordered box");
+        assert!(!out.contains("└"), "no bordered box");
     }
 
     #[test]
-    fn header_with_finite_retry_shows_retry_line() {
+    fn stage_header_with_finite_retry_shows_inline() {
         let retry = RetryInfo {
             current: 2,
             max: Some(3),
         };
-        let lines = header_content_lines("builder", 2, "claude-opus-4-6", Some(&retry));
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[3], "Retry: 2 / 3");
+        let mut buf: Vec<u8> = Vec::new();
+        render_stage_header_to(&mut buf, "builder", 2, "claude-opus-4-6", Some(&retry), 80)
+            .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("retry 2/3"), "retry info must appear inline");
     }
 
     #[test]
-    fn header_with_unlimited_retry_shows_infinity() {
+    fn stage_header_with_unlimited_retry_shows_infinity() {
         let retry = RetryInfo {
             current: 1,
             max: None,
         };
-        let lines = header_content_lines("builder", 1, "claude-opus-4-6", Some(&retry));
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[3], "Retry: 1 / ∞");
+        let mut buf: Vec<u8> = Vec::new();
+        render_stage_header_to(&mut buf, "builder", 1, "claude-opus-4-6", Some(&retry), 80)
+            .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("retry 1/∞"), "unlimited retry must show ∞");
     }
 
     #[test]
-    fn narrow_terminal_truncates_content() {
-        let content = ["Stage: implementer_long_name".to_string()];
+    fn stage_header_fills_to_terminal_width() {
         let mut buf: Vec<u8> = Vec::new();
-        let _ = render_box(&mut buf, &content, 20);
-        let output = String::from_utf8_lossy(&buf);
-        assert!(output.contains("┌"), "output must contain top-left corner");
-        assert!(
-            !output.contains("implementer_long_name"),
-            "long content must be truncated"
+        render_stage_header_to(&mut buf, "s", 1, "m", None, 40).unwrap();
+        // Strip ANSI codes and check the visible line length
+        let out = String::from_utf8_lossy(&buf);
+        // The output contains ANSI escapes; strip them to count visible chars
+        let visible: String = strip_ansi(&out);
+        let line = visible.lines().next().unwrap_or("");
+        assert_eq!(
+            line.chars().count(),
+            40,
+            "header line must fill terminal width; line: {line:?}"
         );
     }
 
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut in_esc = false;
+        for ch in s.chars() {
+            if in_esc {
+                if ch == 'm' {
+                    in_esc = false;
+                }
+            } else if ch == '\x1b' {
+                in_esc = true;
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
     #[test]
-    fn box_renders_without_error() {
-        let lines = header_content_lines(
-            "implementer",
-            1,
-            "claude-opus-4-6",
-            Some(&RetryInfo {
-                current: 2,
-                max: Some(3),
-            }),
-        );
+    fn notice_box_renders_without_error() {
+        let lines = vec!["Hello".to_string(), "World".to_string()];
         let mut buf: Vec<u8> = Vec::new();
-        // render_box may fail if crossterm's queue fails on a non-tty buffer;
-        // we only assert it doesn't panic.
         let _ = render_box(&mut buf, &lines, 80);
     }
 
@@ -1045,12 +1102,13 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(83), None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(83), None, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("pass"), "pass label must appear in footer");
+        assert!(out.contains("PASS"), "PASS label must appear in footer");
         assert!(out.contains("01:23"), "duration must be formatted as MM:SS");
-        assert!(out.contains("┌"), "top border must appear");
-        assert!(out.contains("└"), "bottom border must appear");
+        assert!(out.contains("──"), "horizontal rule must appear");
+        assert!(!out.contains("┌"), "no bordered box");
+        assert!(!out.contains("└"), "no bordered box");
     }
 
     #[test]
@@ -1060,9 +1118,9 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(5), None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(5), None, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("fail"), "fail label must appear");
+        assert!(out.contains("FAIL"), "FAIL label must appear");
         assert!(
             contains_seq(&buf, RED_ANSI),
             "red escape must be emitted for fail status; output: {out:?}"
@@ -1076,17 +1134,17 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("done"), "done label must appear");
+        assert!(out.contains("DONE"), "DONE label must appear");
     }
 
     #[test]
     fn session_footer_none_verdict_is_implicit_fail() {
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, None, Duration::from_secs(10), None).unwrap();
+        session_footer_to(&mut buf, None, Duration::from_secs(10), None, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("fail"), "implicit fail must show 'fail'");
+        assert!(out.contains("FAIL"), "implicit fail must show 'FAIL'");
         assert!(
             contains_seq(&buf, RED_ANSI),
             "red escape must be emitted for implicit fail; output: {out:?}"
@@ -1094,22 +1152,20 @@ mod tests {
     }
 
     #[test]
-    fn session_footer_notes_truncated_when_long() {
-        let long_notes = "x".repeat(100);
+    fn session_footer_notes_render_in_full() {
+        let long_notes = "word ".repeat(20).trim().to_string();
         let v = Verdict {
             status: VerdictStatus::Pass,
-            notes: Some(long_notes),
+            notes: Some(long_notes.clone()),
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
+        // All words must appear (notes are not truncated)
+        assert!(out.contains("word"), "notes must appear in full");
         assert!(
-            out.contains("…"),
-            "long notes must be truncated with ellipsis"
-        );
-        assert!(
-            !out.contains(&"x".repeat(100)),
-            "full long notes must not appear verbatim"
+            !out.contains("…"),
+            "notes must not be truncated with ellipsis"
         );
     }
 
@@ -1125,6 +1181,7 @@ mod tests {
             Some(&v),
             Duration::from_secs(0),
             Some("sess_abc123"),
+            None,
         )
         .unwrap();
         let out = String::from_utf8_lossy(&buf);
@@ -1142,13 +1199,39 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), Some(&long_id)).unwrap();
+        session_footer_to(
+            &mut buf,
+            Some(&v),
+            Duration::from_secs(0),
+            Some(&long_id),
+            None,
+        )
+        .unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("…"), "long session id must be truncated");
         assert!(
             !out.contains(&long_id),
             "full long session id must not appear"
         );
+    }
+
+    #[test]
+    fn session_footer_context_usage_displayed() {
+        let v = Verdict {
+            status: VerdictStatus::Pass,
+            notes: None,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        session_footer_to(
+            &mut buf,
+            Some(&v),
+            Duration::from_secs(0),
+            None,
+            Some("45%"),
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("context: 45%"), "context usage must appear");
     }
 
     #[test]

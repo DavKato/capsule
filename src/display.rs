@@ -43,12 +43,23 @@ fn header_content_lines(
     lines
 }
 
+/// Pad `text` to `width` characters, or truncate with a trailing space if too long.
+fn pad_or_truncate(text: &str, width: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count + 1 > width {
+        let truncated: String = text.chars().take(width.saturating_sub(1)).collect();
+        format!("{truncated} ")
+    } else {
+        format!("{:<width$}", text, width = width)
+    }
+}
+
 fn render_box<W: Write + QueueableCommand>(
     out: &mut W,
     content: &[String],
     term_w: usize,
 ) -> std::io::Result<()> {
-    let max_content = content.iter().map(|l| l.len()).max().unwrap_or(0);
+    let max_content = content.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     // box width includes two border chars; inner holds the padded content
     let box_w = (max_content + 4).min(term_w);
     let inner_w = box_w.saturating_sub(2);
@@ -60,13 +71,7 @@ fn render_box<W: Write + QueueableCommand>(
     out.queue(Print(format!("{top}\n")))?;
     for line in content {
         let padded = format!(" {line}");
-        let char_count = padded.chars().count();
-        let cell = if char_count + 1 > inner_w {
-            let truncated: String = padded.chars().take(inner_w.saturating_sub(1)).collect();
-            format!("{truncated} ")
-        } else {
-            format!("{:<width$}", padded, width = inner_w)
-        };
+        let cell = pad_or_truncate(&padded, inner_w);
         out.queue(Print(format!("│{cell}│\n")))?;
     }
     out.queue(Print(format!("{bot}\n")))?;
@@ -118,8 +123,15 @@ fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Resu
 /// Accepts plain content lines (without borders); the box is sized to fit
 /// the widest line and capped at terminal width.
 pub fn notice_box(lines: &[String]) {
-    let term_w = terminal_width() as usize;
-    render_box(&mut stdout(), lines, term_w).ok();
+    notice_box_to(&mut stdout(), lines, terminal_width() as usize).ok();
+}
+
+fn notice_box_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    lines: &[String],
+    term_w: usize,
+) -> std::io::Result<()> {
+    render_box(out, lines, term_w)
 }
 
 const TOOL_ARGS_MAX: usize = 60;
@@ -277,7 +289,11 @@ fn session_footer_to<W: Write + QueueableCommand>(
         v
     };
 
-    let max_content = plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    let max_content = plain_lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
     let box_w = (max_content + 4).min(term_w);
     let inner_w = box_w.saturating_sub(2);
     let horiz = "─".repeat(box_w.saturating_sub(2));
@@ -304,14 +320,9 @@ fn render_footer_status_line<W: Write + QueueableCommand>(
     inner_w: usize,
 ) -> std::io::Result<()> {
     let prefix = " Status: ";
-    let prefix_len = prefix.len();
+    let prefix_len = prefix.chars().count();
     let value_w = inner_w.saturating_sub(prefix_len.min(inner_w));
-    let value_display: String = if label.chars().count() > value_w {
-        let s: String = label.chars().take(value_w.saturating_sub(1)).collect();
-        format!("{s}…")
-    } else {
-        format!("{:<width$}", label, width = value_w)
-    };
+    let value_display = pad_or_truncate(label, value_w);
 
     out.queue(SetForegroundColor(CYAN))?;
     out.queue(Print("│"))?;
@@ -331,13 +342,7 @@ fn render_footer_plain_line<W: Write + QueueableCommand>(
     inner_w: usize,
 ) -> std::io::Result<()> {
     let padded = format!(" {line}");
-    let char_count = padded.chars().count();
-    let cell = if char_count + 1 > inner_w {
-        let truncated: String = padded.chars().take(inner_w.saturating_sub(1)).collect();
-        format!("{truncated} ")
-    } else {
-        format!("{:<width$}", padded, width = inner_w)
-    };
+    let cell = pad_or_truncate(&padded, inner_w);
     out.queue(SetForegroundColor(CYAN))?;
     out.queue(Print(format!("│{cell}│\n")))?;
     out.queue(ResetColor)?;
@@ -695,6 +700,41 @@ mod tests {
         assert!(
             !out.contains(&long_id),
             "full long session id must not appear"
+        );
+    }
+
+    #[test]
+    fn notice_box_contains_content_in_bordered_box() {
+        let lines = vec!["Hello, notice!".to_string(), "Second line".to_string()];
+        let mut buf: Vec<u8> = Vec::new();
+        notice_box_to(&mut buf, &lines, 80).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("Hello, notice!"),
+            "notice_box must include first line"
+        );
+        assert!(
+            out.contains("Second line"),
+            "notice_box must include second line"
+        );
+        assert!(out.contains("┌"), "notice_box must have top border");
+        assert!(out.contains("└"), "notice_box must have bottom border");
+    }
+
+    #[test]
+    fn notice_box_multibyte_char_correct_width() {
+        // ∞ is 3 bytes but 1 display column; box width must be based on char count
+        let line = "Retry: 1 / ∞".to_string();
+        let char_count = line.chars().count(); // 12
+        let mut buf: Vec<u8> = Vec::new();
+        notice_box_to(&mut buf, &[line], 80).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        // box_w = char_count + 4, dashes = box_w - 2 = char_count + 2
+        // The exact top border must appear; with .len() it would have char_count + 4 dashes
+        let expected_top = format!("┌{}┐", "─".repeat(char_count + 2));
+        assert!(
+            out.contains(&expected_top),
+            "box width must be based on char count, not byte length; out: {out:?}"
         );
     }
 

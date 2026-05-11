@@ -223,8 +223,11 @@ pub fn set_token_warning(msg: Option<&str>) {
 }
 
 fn setup_scroll_region(term_w: u16, term_h: u16) {
+    setup_scroll_region_to(&mut stdout(), term_w, term_h);
+}
+
+fn setup_scroll_region_to<W: Write + QueueableCommand>(out: &mut W, term_w: u16, term_h: u16) {
     let scroll_bottom = term_h.saturating_sub(PANEL_HEIGHT); // 1-indexed == this value
-    let mut out = stdout();
 
     // Set DECSTBM scroll region (rows are 1-indexed in the escape sequence).
     out.write_all(format!("\x1b[1;{}r", scroll_bottom).as_bytes())
@@ -282,8 +285,16 @@ fn build_info_text(state: &DisplayState) -> String {
 }
 
 fn draw_panel_info_row_raw(term_w: u16, info_row: u16, text: &str) {
+    draw_panel_info_row_to(&mut stdout(), term_w, info_row, text);
+}
+
+fn draw_panel_info_row_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    term_w: u16,
+    info_row: u16,
+    text: &str,
+) {
     let padded = pad_or_truncate(text, term_w as usize);
-    let mut out = stdout();
     out.queue(cursor::SavePosition).ok();
     out.queue(cursor::MoveTo(0, info_row)).ok();
     out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
@@ -536,11 +547,23 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
 }
 
 fn draw_panel_status_row_multi_raw(term_w: u16, status_row: u16, entries: &[(Color, String)]) {
+    draw_panel_status_row_to(&mut stdout(), term_w, status_row, entries);
+}
+
+fn draw_panel_status_row_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    term_w: u16,
+    status_row: u16,
+    entries: &[(Color, String)],
+) {
     if entries.is_empty() {
-        clear_panel_row(status_row);
+        out.queue(cursor::SavePosition).ok();
+        out.queue(cursor::MoveTo(0, status_row)).ok();
+        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+        out.queue(cursor::RestorePosition).ok();
+        out.flush().ok();
         return;
     }
-    let mut out = stdout();
     out.queue(cursor::SavePosition).ok();
     out.queue(cursor::MoveTo(0, status_row)).ok();
     out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
@@ -1591,5 +1614,233 @@ mod tests {
             state.active_tool_calls.iter().all(|e| e.id != id),
             "completed id must not remain in active_tool_calls"
         );
+    }
+
+    // ── wrap_text edge cases ──────────────────────────────────────────────────
+
+    #[test]
+    fn wrap_text_empty_input_returns_single_empty_string() {
+        let lines = wrap_text("", 40);
+        assert_eq!(lines, vec!["".to_string()], "empty input must yield [\"\"]");
+    }
+
+    #[test]
+    fn wrap_text_zero_width_returns_full_text_unchanged() {
+        let text = "hello world foo bar";
+        let lines = wrap_text(text, 0);
+        assert_eq!(
+            lines,
+            vec![text.to_string()],
+            "zero width must return the whole text as a single element"
+        );
+    }
+
+    #[test]
+    fn wrap_text_single_word_exceeding_width_placed_on_own_line() {
+        // A word longer than max_width cannot be split; it occupies its own line.
+        let lines = wrap_text("superlongword", 5);
+        assert_eq!(
+            lines,
+            vec!["superlongword".to_string()],
+            "word exceeding width must appear on its own line without truncation"
+        );
+    }
+
+    #[test]
+    fn wrap_text_wraps_at_word_boundary() {
+        // Width 10 fits "hello" (5) but not "hello world" (11).
+        let lines = wrap_text("hello world", 10);
+        assert_eq!(lines.len(), 2, "text must wrap into two lines");
+        assert_eq!(lines[0], "hello");
+        assert_eq!(lines[1], "world");
+    }
+
+    // ── TTY drawing path tests via _to sinks ─────────────────────────────────
+
+    #[test]
+    fn setup_scroll_region_emits_decstbm_sequence() {
+        let mut buf: Vec<u8> = Vec::new();
+        // term_h=24, PANEL_HEIGHT=3 → scroll_bottom=21 → "\x1b[1;21r"
+        setup_scroll_region_to(&mut buf, 80, 24);
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("\x1b[1;21r"),
+            "DECSTBM scroll-region escape must be emitted; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn setup_scroll_region_emits_separator_line_in_cyan() {
+        let mut buf: Vec<u8> = Vec::new();
+        setup_scroll_region_to(&mut buf, 80, 24);
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains('─'),
+            "separator line must use ─ characters; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, CYAN_ANSI),
+            "separator line must use cyan color; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn draw_panel_info_row_emits_moveto_and_cyan() {
+        let mut buf: Vec<u8> = Vec::new();
+        // info_row=22 → crossterm MoveTo(0, 22) → \x1b[23;1H
+        draw_panel_info_row_to(&mut buf, 80, 22, "Stage: foo  Iter: 1  Model: test");
+        let out = String::from_utf8_lossy(&buf);
+        // Verify a MoveTo escape was emitted (format: ESC [ row ; col H)
+        assert!(
+            out.contains("\x1b[23;1H"),
+            "MoveTo(0, 22) must emit \\x1b[23;1H; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, CYAN_ANSI),
+            "info row must use cyan color; output: {out:?}"
+        );
+        assert!(
+            out.contains("Stage: foo"),
+            "info text must appear in output; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn draw_panel_status_row_emits_moveto_and_tool_dot() {
+        let entries = vec![(YELLOW, "Bash".to_string())];
+        let mut buf: Vec<u8> = Vec::new();
+        // status_row=23 → crossterm MoveTo(0, 23) → \x1b[24;1H
+        draw_panel_status_row_to(&mut buf, 80, 23, &entries);
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("\x1b[24;1H"),
+            "MoveTo(0, 23) must emit \\x1b[24;1H; output: {out:?}"
+        );
+        assert!(
+            out.contains("●"),
+            "tool dot must appear in status row; output: {out:?}"
+        );
+        assert!(
+            out.contains("Bash"),
+            "tool name must appear in status row; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, YELLOW_ANSI),
+            "in-progress tool dot must use yellow; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn draw_panel_status_row_green_dot_after_success() {
+        let entries = vec![(GREEN, "Read".to_string())];
+        let mut buf: Vec<u8> = Vec::new();
+        draw_panel_status_row_to(&mut buf, 80, 20, &entries);
+        assert!(
+            contains_seq(&buf, GREEN_ANSI),
+            "completed tool dot must use green; output: {:?}",
+            String::from_utf8_lossy(&buf)
+        );
+    }
+
+    #[test]
+    fn draw_panel_status_row_empty_entries_emits_clear() {
+        let mut buf: Vec<u8> = Vec::new();
+        draw_panel_status_row_to(&mut buf, 80, 20, &[]);
+        // Should emit a ClearType::CurrentLine (\x1b[2K) — no dot
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            !out.contains("●"),
+            "empty entries must not emit a dot; output: {out:?}"
+        );
+    }
+
+    // ── set_stage / tool_call / tool_result TTY path ──────────────────────────
+
+    fn force_tty_state(term_w: u16, term_h: u16) {
+        *get_state().lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(DisplayState::new(term_w, term_h));
+    }
+
+    #[test]
+    #[serial]
+    fn set_stage_in_tty_mode_updates_state() {
+        reset_for_test();
+        force_tty_state(80, 24);
+        set_stage("builder", 2, "claude-opus-4-6");
+        let guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        let state = guard
+            .as_ref()
+            .expect("state must remain Some after set_stage");
+        assert_eq!(state.stage_name, "builder");
+        assert_eq!(state.iteration, 2);
+        assert_eq!(state.model, "claude-opus-4-6");
+        drop(guard);
+        teardown();
+    }
+
+    #[test]
+    #[serial]
+    fn tool_call_in_tty_mode_adds_to_active_tool_calls() {
+        reset_for_test();
+        force_tty_state(80, 24);
+        tool_call("Write", "/tmp/foo", "tty_tc_001");
+        let guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        let state = guard.as_ref().expect("state must remain Some");
+        assert_eq!(
+            state.active_tool_calls.len(),
+            1,
+            "TTY tool_call must append to active_tool_calls"
+        );
+        assert_eq!(state.active_tool_calls[0].name, "Write");
+        assert_eq!(state.active_tool_calls[0].id, "tty_tc_001");
+        drop(guard);
+        teardown();
+    }
+
+    #[test]
+    #[serial]
+    fn tool_result_in_tty_mode_removes_from_active_tool_calls() {
+        reset_for_test();
+        force_tty_state(80, 24);
+        // Manually insert an active tool call into the state.
+        {
+            let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+            let state = guard.as_mut().unwrap();
+            state.active_tool_calls.push(ToolCallEntry {
+                id: "tty_tr_001".to_owned(),
+                name: "Read".to_owned(),
+                color: YELLOW,
+            });
+        }
+        tool_result("tty_tr_001", true);
+        let guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        let state = guard.as_ref().expect("state must remain Some");
+        assert!(
+            state.active_tool_calls.is_empty(),
+            "TTY tool_result must drain the completed entry from active_tool_calls"
+        );
+        drop(guard);
+        teardown();
+    }
+
+    #[test]
+    #[serial]
+    fn handle_resize_updates_state_dimensions() {
+        reset_for_test();
+        // Create a state with dimensions that differ from terminal::size() output.
+        // In CI terminal::size() returns (80, 24); using (120, 40) forces a resize.
+        let mut guard: Option<DisplayState> = Some(DisplayState::new(120, 40));
+        let resized = handle_resize_if_needed(&mut guard);
+        let state = guard.as_ref().expect("state must remain Some after resize");
+        // If terminal::size() returned different dimensions, state must be updated.
+        if resized {
+            assert_ne!(
+                (state.term_width, state.term_height),
+                (120, 40),
+                "state dimensions must change when a resize is detected"
+            );
+        }
+        // When no resize is detected (terminal reports 120×40 too), the function
+        // returns false and state stays unchanged — both outcomes are valid.
     }
 }

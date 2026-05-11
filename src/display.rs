@@ -674,7 +674,7 @@ fn agent_text_to<W: Write + QueueableCommand>(
     Ok(())
 }
 
-const SESSION_ID_MAX: usize = 32;
+const SESSION_ID_MAX: usize = 40;
 
 fn verdict_color_label(status: &VerdictStatus) -> (Color, &'static str) {
     match status {

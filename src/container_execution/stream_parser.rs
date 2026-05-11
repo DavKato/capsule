@@ -137,11 +137,8 @@ fn extract_session_id(msg: &Value) -> Option<String> {
 }
 
 fn is_valid_session_id(id: &str) -> bool {
-    let Some(rest) = id.strip_prefix("sess_") else {
-        return false;
-    };
-    !rest.is_empty()
-        && rest
+    !id.is_empty()
+        && id
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
@@ -517,11 +514,19 @@ mod tests {
     }
 
     #[test]
-    fn session_id_rejected_without_sess_prefix() {
+    fn session_id_accepted_without_sess_prefix() {
         let line = r#"{"type":"system","subtype":"init","session_id":"abc123","tools":["Bash"]}"#;
         let mut p = StreamParser::new();
         p.feed(line);
-        assert_eq!(p.session_id(), None);
+        assert_eq!(p.session_id(), Some("abc123"));
+    }
+
+    #[test]
+    fn session_id_accepted_uuid_format() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"01f202b4-9b8e-44f8-a811-f1d0b75094db","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), Some("01f202b4-9b8e-44f8-a811-f1d0b75094db"));
     }
 
     #[test]
@@ -534,8 +539,8 @@ mod tests {
     }
 
     #[test]
-    fn session_id_rejected_if_only_prefix() {
-        let line = r#"{"type":"system","subtype":"init","session_id":"sess_","tools":["Bash"]}"#;
+    fn session_id_rejected_if_empty() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"","tools":["Bash"]}"#;
         let mut p = StreamParser::new();
         p.feed(line);
         assert_eq!(p.session_id(), None);

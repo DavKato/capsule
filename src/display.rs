@@ -157,6 +157,7 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
             state.model = model.to_owned();
             state.start_time = Instant::now();
             state.token_warning = None;
+            state.active_tool_calls.clear();
         }
         guard.is_some()
     };

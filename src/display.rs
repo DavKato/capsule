@@ -240,6 +240,10 @@ fn setup_scroll_region(term_w: u16, term_h: u16) {
     out.flush().ok();
 }
 
+// Resize detection uses polling rather than SIGWINCH. Each display interaction
+// calls this function, and the 1-second timer tick ensures the scroll region
+// adjusts within ≤1 s of a resize — acceptable latency that avoids the unsafe
+// signal-handler machinery a SIGWINCH approach would require.
 fn handle_resize_if_needed(guard: &mut Option<DisplayState>) -> bool {
     let current = terminal::size().unwrap_or((80, 24));
     if let Some(state) = guard.as_mut() {

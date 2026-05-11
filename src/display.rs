@@ -70,6 +70,7 @@ static STATE: OnceLock<Mutex<Option<DisplayState>>> = OnceLock::new();
 
 static LAST_WAS_TEXT: AtomicBool = AtomicBool::new(false);
 static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
+static PANIC_HOOK_SET: AtomicBool = AtomicBool::new(false);
 static TIMER_WAKE: OnceLock<(Mutex<()>, Condvar)> = OnceLock::new();
 
 fn timer_wake() -> &'static (Mutex<()>, Condvar) {
@@ -108,11 +109,14 @@ pub fn init() {
 
     // Register a panic hook so the scroll region and cursor state are restored
     // even when the process panics instead of calling teardown() explicitly.
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        teardown();
-        prev(info);
-    }));
+    // Guard with a flag so repeated init() → teardown() → init() cycles don't stack hooks.
+    if !PANIC_HOOK_SET.swap(true, Ordering::SeqCst) {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            teardown();
+            prev(info);
+        }));
+    }
 }
 
 pub fn is_tty() -> bool {
@@ -187,6 +191,10 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
 pub fn clear_stage() {
     TIMER_GEN.fetch_add(1, Ordering::Relaxed);
     timer_wake().1.notify_all();
+    tool_name_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard);
     if let Some(state) = guard.as_mut() {
@@ -1507,6 +1515,46 @@ mod tests {
             "active_tool_calls must be empty after all tool_call/tool_result cycles; len={}",
             state.active_tool_calls.len()
         );
+    }
+
+    #[test]
+    #[serial]
+    fn clear_stage_drains_tool_name_cache_in_non_tty() {
+        reset_for_test();
+        // Simulate orphaned tool call (no matching tool_result).
+        tool_name_cache()
+            .lock()
+            .unwrap()
+            .insert("orphan_001".to_owned(), "Bash".to_owned());
+        tool_name_cache()
+            .lock()
+            .unwrap()
+            .insert("orphan_002".to_owned(), "Read".to_owned());
+        assert_eq!(tool_name_cache().lock().unwrap().len(), 2);
+        clear_stage();
+        assert!(
+            tool_name_cache().lock().unwrap().is_empty(),
+            "clear_stage must drain tool_name_cache to prevent unbounded growth"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn panic_hook_registered_only_once_across_multiple_inits() {
+        reset_for_test();
+        PANIC_HOOK_SET.store(false, Ordering::SeqCst);
+        // First init (non-TTY) won't enter the TTY branch, so hook isn't set.
+        // Force the flag directly to simulate the TTY path registering it once.
+        PANIC_HOOK_SET.store(false, Ordering::SeqCst);
+        let was_set = PANIC_HOOK_SET.swap(true, Ordering::SeqCst);
+        assert!(!was_set, "flag must be false on first swap");
+        // Subsequent swap must return true — hook was already registered.
+        let was_set2 = PANIC_HOOK_SET.swap(true, Ordering::SeqCst);
+        assert!(
+            was_set2,
+            "flag must be true on second swap, preventing double registration"
+        );
+        PANIC_HOOK_SET.store(false, Ordering::SeqCst);
     }
 
     #[test]

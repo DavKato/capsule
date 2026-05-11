@@ -699,14 +699,9 @@ fn render_gutter_line<W: Write + QueueableCommand>(out: &mut W, text: &str) -> s
 /// ```
 ///
 /// `verdict` is `None` for an implicit fail (stage exited without emitting a verdict).
-pub fn session_footer(
-    verdict: Option<&Verdict>,
-    duration: Duration,
-    session_id: Option<&str>,
-    context_usage: Option<&str>,
-) {
+pub fn session_footer(verdict: Option<&Verdict>, duration: Duration, session_id: Option<&str>) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-    session_footer_to(&mut stdout(), verdict, duration, session_id, context_usage).ok();
+    session_footer_to(&mut stdout(), verdict, duration, session_id).ok();
 }
 
 fn session_footer_to<W: Write + QueueableCommand>(
@@ -714,7 +709,6 @@ fn session_footer_to<W: Write + QueueableCommand>(
     verdict: Option<&Verdict>,
     duration: Duration,
     session_id: Option<&str>,
-    context_usage: Option<&str>,
 ) -> std::io::Result<()> {
     let term_w = terminal_width() as usize;
 
@@ -758,10 +752,6 @@ fn session_footer_to<W: Write + QueueableCommand>(
             id.to_string()
         };
         render_gutter_line(out, &format!("session: {truncated_id}"))?;
-    }
-
-    if let Some(ctx) = context_usage {
-        render_gutter_line(out, &format!("context: {ctx}"))?;
     }
 
     if let Some(notes) = verdict.and_then(|v| v.notes.as_deref()) {
@@ -1119,7 +1109,7 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(83), None, None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(83), None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("PASS"), "PASS label must appear in footer");
         assert!(out.contains("01:23"), "duration must be formatted as MM:SS");
@@ -1135,7 +1125,7 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(5), None, None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(5), None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("FAIL"), "FAIL label must appear");
         assert!(
@@ -1151,7 +1141,7 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None, None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("DONE"), "DONE label must appear");
     }
@@ -1159,7 +1149,7 @@ mod tests {
     #[test]
     fn session_footer_none_verdict_is_implicit_fail() {
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, None, Duration::from_secs(10), None, None).unwrap();
+        session_footer_to(&mut buf, None, Duration::from_secs(10), None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("FAIL"), "implicit fail must show 'FAIL'");
         assert!(
@@ -1176,7 +1166,7 @@ mod tests {
             notes: Some(long_notes.clone()),
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None, None).unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         // All words must appear (notes are not truncated)
         assert!(out.contains("word"), "notes must appear in full");
@@ -1198,7 +1188,6 @@ mod tests {
             Some(&v),
             Duration::from_secs(0),
             Some("sess_abc123"),
-            None,
         )
         .unwrap();
         let out = String::from_utf8_lossy(&buf);
@@ -1216,39 +1205,13 @@ mod tests {
             notes: None,
         };
         let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(
-            &mut buf,
-            Some(&v),
-            Duration::from_secs(0),
-            Some(&long_id),
-            None,
-        )
-        .unwrap();
+        session_footer_to(&mut buf, Some(&v), Duration::from_secs(0), Some(&long_id)).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("…"), "long session id must be truncated");
         assert!(
             !out.contains(&long_id),
             "full long session id must not appear"
         );
-    }
-
-    #[test]
-    fn session_footer_context_usage_displayed() {
-        let v = Verdict {
-            status: VerdictStatus::Pass,
-            notes: None,
-        };
-        let mut buf: Vec<u8> = Vec::new();
-        session_footer_to(
-            &mut buf,
-            Some(&v),
-            Duration::from_secs(0),
-            None,
-            Some("45%"),
-        )
-        .unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("context: 45%"), "context usage must appear");
     }
 
     #[test]

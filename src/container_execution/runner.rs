@@ -144,7 +144,6 @@ impl StageRunner for DockerStageRunner {
                     verdict.as_ref(),
                     duration,
                     self.session_id.as_deref(),
-                    None,
                 );
             }
             Err(e) => {
@@ -156,7 +155,6 @@ impl StageRunner for DockerStageRunner {
                     Some(&error_verdict),
                     duration,
                     self.session_id.as_deref(),
-                    None,
                 );
             }
         }

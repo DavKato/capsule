@@ -417,8 +417,6 @@ fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
     out.flush()
 }
 
-/// Print a yellow-prefixed `capsule: {msg}` line to stderr.
-/// Used for one-shot orchestrator advisory messages in the scrolling area.
 pub fn capsule_info(msg: &str) {
     capsule_info_to(&mut stderr(), msg).ok();
 }

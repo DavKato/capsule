@@ -784,6 +784,17 @@ fn session_footer_to<W: Write + QueueableCommand>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    fn reset_for_test() {
+        LAST_WAS_TEXT.store(false, Ordering::SeqCst);
+        TIMER_GEN.store(0, Ordering::SeqCst);
+        *get_state().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        tool_name_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
 
     #[test]
     fn stage_header_renders_double_rule_with_content() {
@@ -918,7 +929,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tool_call_and_result_with_id_do_not_panic_in_non_tty() {
+        reset_for_test();
         tool_call("Bash", "echo hi", "tc_nopanic_001");
         tool_result("tc_nopanic_001", true);
         tool_call("Read", "/path", "tc_nopanic_002");
@@ -926,7 +939,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tool_result_unknown_id_uses_fallback_name() {
+        reset_for_test();
         let mut buf: Vec<u8> = Vec::new();
         let name = tool_name_cache()
             .lock()
@@ -940,7 +955,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tool_call_with_id_result_prints_correct_name_in_non_tty() {
+        reset_for_test();
         // Register a tool call by id, then verify tool_result looks it up.
         tool_call("Read", "/some/path", "tc_read_001");
         // After registration, tool_result with the same id must use "Read".
@@ -1301,7 +1318,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn init_and_teardown_do_not_panic() {
+        reset_for_test();
         // init() detects non-TTY (test runner has no terminal) and returns early.
         // teardown() with no active state is a no-op.
         // Neither must panic.
@@ -1309,14 +1328,18 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn set_token_warning_with_no_state_does_not_panic() {
+        reset_for_test();
         // No state (non-TTY) — set_token_warning must be a safe no-op.
         set_token_warning(Some("token expires in 5 min"));
         set_token_warning(None);
     }
 
     #[test]
+    #[serial]
     fn is_tty_returns_false_in_non_tty_context() {
+        reset_for_test();
         assert!(
             !is_tty(),
             "is_tty() must return false when stdout is not a terminal"
@@ -1324,23 +1347,31 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn init_does_not_panic_in_non_tty_context() {
+        reset_for_test();
         init();
         assert!(!is_tty());
     }
 
     #[test]
+    #[serial]
     fn set_stage_does_not_panic_in_non_tty() {
+        reset_for_test();
         set_stage("reviewer", 1, "claude-sonnet-4-6");
     }
 
     #[test]
+    #[serial]
     fn clear_stage_does_not_panic_in_non_tty() {
+        reset_for_test();
         clear_stage();
     }
 
     #[test]
+    #[serial]
     fn set_stage_then_clear_stage_does_not_panic() {
+        reset_for_test();
         set_stage("builder", 2, "claude-opus-4-6");
         clear_stage();
     }
@@ -1365,35 +1396,41 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn timer_gen_increments_on_teardown() {
-        let before = TIMER_GEN.load(Ordering::Relaxed);
+        reset_for_test();
         teardown();
-        let after = TIMER_GEN.load(Ordering::Relaxed);
-        assert!(
-            after > before,
-            "TIMER_GEN must increment on teardown to stop any running timer"
+        assert_eq!(
+            TIMER_GEN.load(Ordering::Relaxed),
+            1,
+            "TIMER_GEN must increment by exactly 1 on teardown to stop any running timer"
         );
     }
 
     #[test]
+    #[serial]
     fn clear_stage_increments_timer_gen() {
-        let before = TIMER_GEN.load(Ordering::Relaxed);
+        reset_for_test();
         clear_stage();
-        let after = TIMER_GEN.load(Ordering::Relaxed);
-        assert!(
-            after > before,
-            "TIMER_GEN must increment on clear_stage to stop any running timer"
+        assert_eq!(
+            TIMER_GEN.load(Ordering::Relaxed),
+            1,
+            "TIMER_GEN must increment by exactly 1 on clear_stage to stop any running timer"
         );
     }
 
     #[test]
+    #[serial]
     fn teardown_after_non_tty_init_does_not_panic() {
+        reset_for_test();
         init();
         teardown();
     }
 
     #[test]
+    #[serial]
     fn rapid_set_stage_does_not_panic() {
+        reset_for_test();
         // Verifies rapid set_stage calls are safe in non-TTY (no threads spawned).
         // In TTY mode the condvar notify_all wakes old timer threads immediately so
         // the overlap shrinks to microseconds rather than up to one full second.

@@ -400,6 +400,7 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
     {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
+            drop(out);
             return;
         }
         handle_resize_if_needed(&mut guard, &mut out);
@@ -508,25 +509,23 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
 
     let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_some() {
-        handle_resize_if_needed(&mut guard, &mut out);
-        if let Some(state) = guard.as_mut() {
-            state.active_tool_calls.push(ToolCallEntry {
-                id: id.to_owned(),
-                name: name.to_owned(),
-                color: YELLOW,
-            });
-            let info_text = build_info_text(state);
-            let (tw, info_r, status_r) = (state.term_width, state.info_row(), state.status_row());
-            let snapshot: Vec<(Color, String)> = state
-                .active_tool_calls
-                .iter()
-                .map(|e| (e.color, e.name.clone()))
-                .collect();
-            drop(guard);
-            draw_panel_info_row_to(&mut out, tw, info_r, &info_text);
-            draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
-        }
+    handle_resize_if_needed(&mut guard, &mut out);
+    if let Some(state) = guard.as_mut() {
+        state.active_tool_calls.push(ToolCallEntry {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            color: YELLOW,
+        });
+        let info_text = build_info_text(state);
+        let (tw, info_r, status_r) = (state.term_width, state.info_row(), state.status_row());
+        let snapshot: Vec<(Color, String)> = state
+            .active_tool_calls
+            .iter()
+            .map(|e| (e.color, e.name.clone()))
+            .collect();
+        drop(guard);
+        draw_panel_info_row_to(&mut out, tw, info_r, &info_text);
+        draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
     } else {
         drop(guard);
         let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
@@ -601,22 +600,20 @@ pub fn tool_result(id: &str, success: bool) {
 
     let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_some() {
-        handle_resize_if_needed(&mut guard, &mut out);
-        if let Some(state) = guard.as_mut() {
-            if let Some(entry) = state.active_tool_calls.iter_mut().find(|e| e.id == id) {
-                entry.color = color;
-            }
-            let (tw, status_r) = (state.term_width, state.status_row());
-            let snapshot: Vec<(Color, String)> = state
-                .active_tool_calls
-                .iter()
-                .map(|e| (e.color, e.name.clone()))
-                .collect();
-            state.active_tool_calls.retain(|e| e.id != id);
-            drop(guard);
-            draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
+    handle_resize_if_needed(&mut guard, &mut out);
+    if let Some(state) = guard.as_mut() {
+        if let Some(entry) = state.active_tool_calls.iter_mut().find(|e| e.id == id) {
+            entry.color = color;
         }
+        let (tw, status_r) = (state.term_width, state.status_row());
+        let snapshot: Vec<(Color, String)> = state
+            .active_tool_calls
+            .iter()
+            .map(|e| (e.color, e.name.clone()))
+            .collect();
+        state.active_tool_calls.retain(|e| e.id != id);
+        drop(guard);
+        draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
     } else {
         drop(guard);
         let name = tool_name_cache()

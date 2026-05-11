@@ -1542,13 +1542,10 @@ mod tests {
     #[serial]
     fn panic_hook_registered_only_once_across_multiple_inits() {
         reset_for_test();
-        PANIC_HOOK_SET.store(false, Ordering::SeqCst);
-        // First init (non-TTY) won't enter the TTY branch, so hook isn't set.
-        // Force the flag directly to simulate the TTY path registering it once.
+        // init() requires a real TTY, so we test the flag-guard directly.
         PANIC_HOOK_SET.store(false, Ordering::SeqCst);
         let was_set = PANIC_HOOK_SET.swap(true, Ordering::SeqCst);
         assert!(!was_set, "flag must be false on first swap");
-        // Subsequent swap must return true — hook was already registered.
         let was_set2 = PANIC_HOOK_SET.swap(true, Ordering::SeqCst);
         assert!(
             was_set2,

@@ -473,12 +473,6 @@ const TOOL_ARGS_MAX: usize = 60;
 
 pub fn tool_call(name: &str, args: &str, id: &str) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-    let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
-        let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
-        format!("{s}…")
-    } else {
-        args.to_owned()
-    };
 
     if is_in_tty_mode() {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -501,6 +495,12 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
             draw_panel_status_row_multi_raw(tw, status_r, &snapshot);
         }
     } else {
+        let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
+            let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
+            format!("{s}…")
+        } else {
+            args.to_owned()
+        };
         tool_name_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())

@@ -54,9 +54,10 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
         let verdict_seen = parser.feed(&line).is_some();
+        let parsed = parse_typed_json(&line);
         if verbose {
-            if let Some(v) = parse_typed_json(&line) {
-                let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| line.clone());
+            if let Some(v) = &parsed {
+                let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| line.clone());
                 crate::display::info(&pretty);
             } else {
                 crate::display::info(&line);
@@ -81,12 +82,7 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
             };
             crate::display::agent_text(text);
         }
-        if !had_text
-            && !had_tool_events
-            && !verdict_seen
-            && !line.is_empty()
-            && parse_typed_json(&line).is_none()
-        {
+        if !had_text && !had_tool_events && !verdict_seen && !line.is_empty() && parsed.is_none() {
             crate::display::info(&line);
         }
     }

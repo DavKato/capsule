@@ -8,7 +8,7 @@ use crossterm::{
 use std::collections::HashMap;
 use std::io::{stderr, stdout, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::pipeline::RetryInfo;
@@ -70,6 +70,11 @@ static STATE: OnceLock<Mutex<Option<DisplayState>>> = OnceLock::new();
 
 static LAST_WAS_TEXT: AtomicBool = AtomicBool::new(false);
 static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
+static TIMER_WAKE: OnceLock<(Mutex<()>, Condvar)> = OnceLock::new();
+
+fn timer_wake() -> &'static (Mutex<()>, Condvar) {
+    TIMER_WAKE.get_or_init(|| (Mutex::new(()), Condvar::new()))
+}
 
 fn tool_name_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -116,6 +121,7 @@ pub fn is_tty() -> bool {
 
 pub fn teardown() {
     TIMER_GEN.fetch_add(1, Ordering::Relaxed);
+    timer_wake().1.notify_all();
     let had_state = {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         let had = guard.is_some();
@@ -166,8 +172,13 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
     }
     redraw_info_row();
     let gen = TIMER_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    // notify_all wakes any previous timer threads so they exit without waiting the full second
+    timer_wake().1.notify_all();
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(1));
+        let (lock, cvar) = timer_wake();
+        let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        // wait_timeout returns early when notified; either way we then check the generation
+        let _ = cvar.wait_timeout(guard, Duration::from_secs(1));
         if TIMER_GEN.load(Ordering::Relaxed) != gen || !is_in_tty_mode() {
             break;
         }
@@ -177,6 +188,7 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
 
 pub fn clear_stage() {
     TIMER_GEN.fetch_add(1, Ordering::Relaxed);
+    timer_wake().1.notify_all();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard);
     if let Some(state) = guard.as_mut() {
@@ -1415,5 +1427,15 @@ mod tests {
     fn teardown_after_non_tty_init_does_not_panic() {
         init();
         teardown();
+    }
+
+    #[test]
+    fn rapid_set_stage_does_not_panic() {
+        // Verifies rapid set_stage calls are safe in non-TTY (no threads spawned).
+        // In TTY mode the condvar notify_all wakes old timer threads immediately so
+        // the overlap shrinks to microseconds rather than up to one full second.
+        set_stage("builder", 1, "claude-sonnet-4-6");
+        set_stage("reviewer", 2, "claude-sonnet-4-6");
+        set_stage("builder", 3, "claude-sonnet-4-6");
     }
 }

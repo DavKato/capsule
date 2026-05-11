@@ -30,6 +30,7 @@ pub struct StreamParser {
     session_id: Option<String>,
     last_tool_events: Vec<ToolEvent>,
     last_text_displays: Vec<TextDisplay>,
+    last_parsed_value: Option<Value>,
 }
 
 impl StreamParser {
@@ -42,12 +43,14 @@ impl StreamParser {
             session_id: None,
             last_tool_events: Vec::new(),
             last_text_displays: Vec::new(),
+            last_parsed_value: None,
         }
     }
 
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
         self.last_tool_events.clear();
         self.last_text_displays.clear();
+        self.last_parsed_value = None;
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return self.verdict.as_ref();
         };
@@ -73,6 +76,9 @@ impl StreamParser {
         let (tool_events, text_displays) = extract_assistant_content(&msg);
         self.last_tool_events = tool_events;
         self.last_text_displays = text_displays;
+        if msg.get("type").is_some() {
+            self.last_parsed_value = Some(msg);
+        }
         self.verdict.as_ref()
     }
 
@@ -101,6 +107,12 @@ impl StreamParser {
     /// Returns text/thinking display items extracted from the most recent `feed()` call.
     pub fn last_text_displays(&self) -> &[TextDisplay] {
         &self.last_text_displays
+    }
+
+    /// Returns the parsed JSON value from the most recent `feed()` call, if the line
+    /// was valid JSON containing a `"type"` field.
+    pub fn last_parsed_value(&self) -> Option<&Value> {
+        self.last_parsed_value.as_ref()
     }
 }
 
@@ -248,6 +260,60 @@ mod tests {
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking..."}]}}"#;
     const RESULT_LINE: &str = r#"{"type":"result","subtype":"success","result":"done"}"#;
     const AUTH_FAIL_LINE: &str = r#"{"type":"result","subtype":"error","error":{"type":"authentication_failed","message":"invalid token"}}"#;
+
+    #[test]
+    fn last_parsed_value_some_for_typed_json() {
+        let mut p = StreamParser::new();
+        p.feed(r#"{"type":"system.init","foo":"bar"}"#);
+        assert!(p.last_parsed_value().is_some());
+    }
+
+    #[test]
+    fn last_parsed_value_none_for_json_without_type() {
+        let mut p = StreamParser::new();
+        p.feed(r#"{"foo":"bar"}"#);
+        assert!(p.last_parsed_value().is_none());
+    }
+
+    #[test]
+    fn last_parsed_value_none_for_non_json() {
+        let mut p = StreamParser::new();
+        p.feed("plain text line");
+        assert!(p.last_parsed_value().is_none());
+        p.feed("GH_TOKEN: local (.capsule/.env)");
+        assert!(p.last_parsed_value().is_none());
+        p.feed("");
+        assert!(p.last_parsed_value().is_none());
+    }
+
+    #[test]
+    fn last_parsed_value_none_for_rate_limit_adjacent_non_json() {
+        let mut p = StreamParser::new();
+        p.feed("working on: #126");
+        assert!(p.last_parsed_value().is_none());
+    }
+
+    #[test]
+    fn last_parsed_value_some_for_different_type_values() {
+        let mut p = StreamParser::new();
+        for ty in &["rate_limit_event", "user", "assistant", "system.init"] {
+            let line = format!(r#"{{"type":"{ty}"}}"#);
+            p.feed(&line);
+            assert!(
+                p.last_parsed_value().is_some(),
+                "type={ty} must yield last_parsed_value"
+            );
+        }
+    }
+
+    #[test]
+    fn last_parsed_value_cleared_between_feeds() {
+        let mut p = StreamParser::new();
+        p.feed(r#"{"type":"assistant","foo":"bar"}"#);
+        assert!(p.last_parsed_value().is_some());
+        p.feed("plain text");
+        assert!(p.last_parsed_value().is_none());
+    }
 
     #[test]
     fn non_json_returns_none() {

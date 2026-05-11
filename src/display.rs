@@ -453,7 +453,6 @@ fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Resu
     out.flush()
 }
 
-/// Write `msg` followed by a newline to stdout.
 pub fn println(msg: &str) {
     println_to(&mut stdout(), msg).ok();
 }
@@ -463,7 +462,6 @@ fn println_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
     out.flush()
 }
 
-/// Write `msg` to stdout without a trailing newline, then flush.
 pub fn print(msg: &str) {
     print_to(&mut stdout(), msg).ok();
 }
@@ -917,6 +915,24 @@ mod tests {
         let icon_pos = out.find('⚠').expect("icon must be present");
         let msg_pos = out.find("bad news").expect("message must be present");
         assert!(icon_pos < msg_pos, "icon must appear before message");
+    }
+
+    #[test]
+    fn println_to_writes_msg_with_newline() {
+        let mut buf: Vec<u8> = Vec::new();
+        println_to(&mut buf, "hello world").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("hello world"), "message must appear");
+        assert!(out.ends_with('\n'), "output must end with newline");
+    }
+
+    #[test]
+    fn print_to_writes_msg_without_newline() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_to(&mut buf, "no newline").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("no newline"), "message must appear");
+        assert!(!out.ends_with('\n'), "output must not end with newline");
     }
 
     #[test]

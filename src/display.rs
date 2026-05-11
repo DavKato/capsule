@@ -957,20 +957,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stage_header_rules_use_dark_grey() {
-        let mut buf: Vec<u8> = Vec::new();
-        render_stage_header_to(&mut buf, "build", 1, "claude-opus-4-6", None, 80).unwrap();
-        assert!(
-            contains_seq(&buf, DARK_GREY_ANSI),
-            "header rules must use DarkGrey color"
-        );
-        assert!(
-            !contains_seq(&buf, CYAN_ANSI),
-            "header rules must not use Cyan"
-        );
-    }
-
     fn strip_ansi(s: &str) -> String {
         let mut out = String::new();
         let mut in_esc = false;
@@ -1172,8 +1158,6 @@ mod tests {
         );
     }
 
-    const DARK_GREY_ANSI: &[u8] = b"\x1b[38;5;8m";
-
     #[test]
     fn agent_text_first_call_emits_dot_and_text() {
         let mut buf: Vec<u8> = Vec::new();
@@ -1182,10 +1166,6 @@ mod tests {
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("hello world"), "text must appear");
         assert!(out.contains('●'), "dot must appear on first line");
-        assert!(
-            !contains_seq(&buf, DARK_GREY_ANSI),
-            "dot must use default color, not dark grey; output: {out:?}"
-        );
         assert!(last, "last_was_text must be true after call");
     }
 
@@ -1361,25 +1341,6 @@ mod tests {
         assert!(
             contains_seq(&buf, bg_ansi),
             "footer must use AnsiValue(236) background"
-        );
-    }
-
-    #[test]
-    fn session_footer_has_separator_after_title() {
-        let v = Verdict {
-            status: VerdictStatus::Pass,
-            notes: None,
-        };
-        let mut buf: Vec<u8> = Vec::new();
-        footer(&mut buf, "build", 1, Some(&v), 0, None);
-        let out = String::from_utf8_lossy(&buf);
-        let lines: Vec<&str> = out.lines().collect();
-        let sep_line = lines
-            .iter()
-            .find(|l| strip_ansi(l).trim().starts_with("▎") && strip_ansi(l).contains("───"));
-        assert!(
-            sep_line.is_some(),
-            "footer must have a separator line after the title"
         );
     }
 

@@ -235,9 +235,9 @@ fn print_report(report: &CheckReport) {
             Severity::Error => "[ERROR]",
             Severity::Hint => "[HINT]",
         };
-        println!("{tag} {}: {}", issue.location, issue.message);
+        capsule::display::println(&format!("{tag} {}: {}", issue.location, issue.message));
         if let Some(ref hint) = issue.fix_hint {
-            println!("  hint: {hint}");
+            capsule::display::println(&format!("  hint: {hint}"));
         }
     }
 }
@@ -295,12 +295,11 @@ fn format_template_line(
 fn pick_template_interactive() -> Result<String> {
     let entries = templates::list();
     let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
-    println!("Available templates:");
+    capsule::display::println("Available templates:");
     for (i, entry) in entries.iter().enumerate() {
-        println!("{}", format_template_line(entry, name_width, Some(i + 1)));
+        capsule::display::println(&format_template_line(entry, name_width, Some(i + 1)));
     }
-    print!("Select template (1-{}): ", entries.len());
-    io::Write::flush(&mut io::stdout())?;
+    capsule::display::print(&format!("Select template (1-{}): ", entries.len()));
     let mut line = String::new();
     io::BufRead::read_line(&mut io::stdin().lock(), &mut line)?;
     let n: usize = line
@@ -364,10 +363,12 @@ fn main() -> Result<()> {
             let entries = templates::list();
             let name_width = entries.iter().map(|e| e.name.len()).max().unwrap_or(0);
             for entry in &entries {
-                println!("{}", format_template_line(entry, name_width, None));
+                capsule::display::println(&format_template_line(entry, name_width, None));
             }
-            println!();
-            println!("For guidance on choosing a shape: capsule explain pipeline-shapes");
+            capsule::display::println("");
+            capsule::display::println(
+                "For guidance on choosing a shape: capsule explain pipeline-shapes",
+            );
             Ok(())
         }
         Commands::Check { capsule_dir } => {
@@ -380,13 +381,13 @@ fn main() -> Result<()> {
         }
         Commands::Explain { topics, all } => {
             if all {
-                print!("{}", explain::load_all());
+                capsule::display::print(&explain::load_all());
             } else if topics.is_empty() {
-                print!("{}", explain::index());
+                capsule::display::print(explain::index());
             } else {
                 let refs: Vec<&str> = topics.iter().map(String::as_str).collect();
                 match explain::load(&refs) {
-                    Ok(content) => print!("{content}"),
+                    Ok(content) => capsule::display::print(&content),
                     Err(e) => {
                         eprintln!("{e}");
                         std::process::exit(1);

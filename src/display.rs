@@ -453,6 +453,26 @@ fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Resu
     out.flush()
 }
 
+/// Write `msg` followed by a newline to stdout.
+pub fn println(msg: &str) {
+    println_to(&mut stdout(), msg).ok();
+}
+
+fn println_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
+    out.queue(Print(format!("{msg}\n")))?;
+    out.flush()
+}
+
+/// Write `msg` to stdout without a trailing newline, then flush.
+pub fn print(msg: &str) {
+    print_to(&mut stdout(), msg).ok();
+}
+
+fn print_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
+    out.queue(Print(msg))?;
+    out.flush()
+}
+
 /// Render a bordered notice box using the standard `┌┐└┘` character set.
 ///
 /// Accepts plain content lines (without borders); the box is sized to fit

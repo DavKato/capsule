@@ -27,7 +27,7 @@ pub fn init(template: &str, dest: &Path, force: bool) -> Result<()> {
     } else {
         templates::copy_to(template, dest)?;
     }
-    crate::display::info(&format!("Wrote .capsule/ from template \"{template}\"."));
+    crate::display::capsule_info(&format!("Wrote .capsule/ from template \"{template}\"."));
     crate::display::info("");
     crate::display::info("Next:");
     crate::display::info("  - Read the agent guide:        capsule explain --all");

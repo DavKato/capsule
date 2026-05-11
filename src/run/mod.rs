@@ -241,7 +241,8 @@ impl RunSession {
             result.summary.session_id.as_deref(),
             &result.summary.terminal_reason,
         ) {
-            capsule::display::info(&format!("\n{hint}"));
+            eprintln!();
+            capsule::display::capsule_info(&hint);
         }
         update_check::maybe_print_notice(update_rx);
         Ok(summary::exit_decision_from_summary(&result.summary))

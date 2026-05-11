@@ -417,6 +417,20 @@ fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
     out.flush()
 }
 
+/// Print a yellow-prefixed `capsule: {msg}` line to stderr.
+/// Used for one-shot orchestrator advisory messages in the scrolling area.
+pub fn capsule_info(msg: &str) {
+    capsule_info_to(&mut stderr(), msg).ok();
+}
+
+fn capsule_info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
+    out.queue(SetForegroundColor(YELLOW))?;
+    out.queue(Print("capsule: "))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!("{msg}\n")))?;
+    out.flush()
+}
+
 /// Print a neutral informational line to stderr.
 pub fn info(msg: &str) {
     info_to(&mut stderr(), msg).ok();
@@ -1244,6 +1258,40 @@ mod tests {
         );
         assert!(out.contains("┌"), "notice_box must have top border");
         assert!(out.contains("└"), "notice_box must have bottom border");
+    }
+
+    #[test]
+    fn capsule_info_renders_yellow_prefix_and_message() {
+        let mut buf: Vec<u8> = Vec::new();
+        capsule_info_to(&mut buf, "GitHub token loaded from .capsule/.env").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("capsule:"),
+            "must contain 'capsule:' prefix; output: {out:?}"
+        );
+        assert!(
+            out.contains("GitHub token loaded from .capsule/.env"),
+            "must contain the message; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, YELLOW_ANSI),
+            "prefix must use yellow color; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn capsule_info_prefix_precedes_message() {
+        let mut buf: Vec<u8> = Vec::new();
+        capsule_info_to(&mut buf, "something happened").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        let prefix_pos = out.find("capsule:").expect("prefix must be present");
+        let msg_pos = out
+            .find("something happened")
+            .expect("message must be present");
+        assert!(
+            prefix_pos < msg_pos,
+            "prefix must appear before message text"
+        );
     }
 
     #[test]

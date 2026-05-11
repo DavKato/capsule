@@ -172,12 +172,10 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
     }
     redraw_info_row();
     let gen = TIMER_GEN.fetch_add(1, Ordering::Relaxed) + 1;
-    // notify_all wakes any previous timer threads so they exit without waiting the full second
     timer_wake().1.notify_all();
     std::thread::spawn(move || loop {
         let (lock, cvar) = timer_wake();
         let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        // wait_timeout returns early when notified; either way we then check the generation
         let _ = cvar.wait_timeout(guard, Duration::from_secs(1));
         if TIMER_GEN.load(Ordering::Relaxed) != gen || !is_in_tty_mode() {
             break;

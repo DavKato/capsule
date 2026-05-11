@@ -141,6 +141,8 @@ impl StageRunner for DockerStageRunner {
         match &result {
             Ok(verdict) => {
                 crate::display::session_footer(
+                    stage_name,
+                    self.iteration,
                     verdict.as_ref(),
                     duration,
                     self.session_id.as_deref(),
@@ -152,6 +154,8 @@ impl StageRunner for DockerStageRunner {
                     notes: Some(format!("{e:#}")),
                 };
                 crate::display::session_footer(
+                    stage_name,
+                    self.iteration,
                     Some(&error_verdict),
                     duration,
                     self.session_id.as_deref(),

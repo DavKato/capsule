@@ -323,12 +323,8 @@ fn main() -> Result<()> {
             let result = session.execute();
             capsule::display::teardown();
             match result? {
-                run::ExitDecision::Success => {
-                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Pass);
-                    Ok(())
-                }
+                run::ExitDecision::Success => Ok(()),
                 run::ExitDecision::Failure(notes) => {
-                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Fail);
                     if !notes.is_empty() {
                         capsule::display::info(&notes);
                     }
@@ -457,12 +453,8 @@ fn main() -> Result<()> {
             let result = session.execute();
             capsule::display::teardown();
             match result? {
-                run::ExitDecision::Success => {
-                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Pass);
-                    Ok(())
-                }
+                run::ExitDecision::Success => Ok(()),
                 run::ExitDecision::Failure(notes) => {
-                    capsule::display::verdict(&capsule::verdict::VerdictStatus::Fail);
                     if !notes.is_empty() {
                         capsule::display::info(&notes);
                     }

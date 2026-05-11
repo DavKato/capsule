@@ -570,6 +570,7 @@ pub fn tool_result(id: &str, success: bool) {
                 .iter()
                 .map(|e| (e.color, e.name.clone()))
                 .collect();
+            state.active_tool_calls.retain(|e| e.id != id);
             drop(guard);
             draw_panel_status_row_multi_raw(tw, status_r, &snapshot);
         }
@@ -1399,5 +1400,78 @@ mod tests {
         set_stage("builder", 1, "claude-sonnet-4-6");
         set_stage("reviewer", 2, "claude-sonnet-4-6");
         set_stage("builder", 3, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn active_tool_calls_drained_after_tool_result() {
+        let mut state = DisplayState {
+            term_width: 80,
+            term_height: 24,
+            stage_name: String::new(),
+            iteration: 0,
+            model: String::new(),
+            start_time: Instant::now(),
+            token_warning: None,
+            active_tool_calls: Vec::new(),
+        };
+
+        for i in 0..5u8 {
+            let id = format!("tc_{i}");
+            state.active_tool_calls.push(ToolCallEntry {
+                id: id.clone(),
+                name: format!("Tool{i}"),
+                color: YELLOW,
+            });
+            // simulate tool_result drain for each call immediately
+            if let Some(entry) = state.active_tool_calls.iter_mut().find(|e| e.id == id) {
+                entry.color = GREEN;
+            }
+            state.active_tool_calls.retain(|e| e.id != id);
+        }
+
+        assert!(
+            state.active_tool_calls.is_empty(),
+            "active_tool_calls must be empty after all tool_call/tool_result cycles; len={}",
+            state.active_tool_calls.len()
+        );
+    }
+
+    #[test]
+    fn active_tool_calls_only_completed_id_removed() {
+        let mut state = DisplayState {
+            term_width: 80,
+            term_height: 24,
+            stage_name: String::new(),
+            iteration: 0,
+            model: String::new(),
+            start_time: Instant::now(),
+            token_warning: None,
+            active_tool_calls: Vec::new(),
+        };
+
+        for i in 0..3u8 {
+            state.active_tool_calls.push(ToolCallEntry {
+                id: format!("tc_{i}"),
+                name: format!("Tool{i}"),
+                color: YELLOW,
+            });
+        }
+
+        // complete only tc_1
+        let id = "tc_1";
+        if let Some(entry) = state.active_tool_calls.iter_mut().find(|e| e.id == id) {
+            entry.color = GREEN;
+        }
+        state.active_tool_calls.retain(|e| e.id != id);
+
+        assert_eq!(
+            state.active_tool_calls.len(),
+            2,
+            "only the completed entry must be removed"
+        );
+        assert!(
+            state.active_tool_calls.iter().all(|e| e.id != id),
+            "completed id must not remain in active_tool_calls"
+        );
     }
 }

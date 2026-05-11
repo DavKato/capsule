@@ -105,7 +105,7 @@ pub fn init() {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(DisplayState::new(term_w, term_h));
     }
-    setup_scroll_region(term_w, term_h);
+    setup_scroll_region_to(&mut stdout().lock(), term_w, term_h);
 
     // Register a panic hook so the scroll region and cursor state are restored
     // even when the process panics instead of calling teardown() explicitly.
@@ -135,7 +135,7 @@ pub fn teardown() {
     if !had_state {
         return;
     }
-    let mut out = stdout();
+    let mut out = stdout().lock();
     // Reset scroll region to full screen.
     out.write_all(b"\x1b[r").ok();
     let (_, term_h) = terminal::size().unwrap_or((80, 24));
@@ -148,13 +148,14 @@ pub fn teardown() {
 }
 
 fn redraw_info_row() {
+    let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-    handle_resize_if_needed(&mut guard);
+    handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
         let info_text = build_info_text(state);
         let (tw, info) = (state.term_width, state.info_row());
         drop(guard);
-        draw_panel_info_row_raw(tw, info, &info_text);
+        draw_panel_info_row_to(&mut out, tw, info, &info_text);
     }
 }
 
@@ -195,8 +196,9 @@ pub fn clear_stage() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-    handle_resize_if_needed(&mut guard);
+    handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
         state.stage_name.clear();
         state.iteration = 0;
@@ -205,25 +207,21 @@ pub fn clear_stage() {
         state.active_tool_calls.clear();
         let (info_r, status_r) = (state.info_row(), state.status_row());
         drop(guard);
-        clear_panel_row(info_r);
-        clear_panel_row(status_r);
+        clear_panel_row_to(&mut out, info_r);
+        clear_panel_row_to(&mut out, status_r);
     }
 }
 
 pub fn set_token_warning(msg: Option<&str>) {
+    let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
         state.token_warning = msg.map(str::to_owned);
-        // Collect the values needed for drawing before dropping the guard.
         let (tw, info) = (state.term_width, state.info_row());
         let info_text = build_info_text(state);
         drop(guard);
-        draw_panel_info_row_raw(tw, info, &info_text);
+        draw_panel_info_row_to(&mut out, tw, info, &info_text);
     }
-}
-
-fn setup_scroll_region(term_w: u16, term_h: u16) {
-    setup_scroll_region_to(&mut stdout(), term_w, term_h);
 }
 
 fn setup_scroll_region_to<W: Write + QueueableCommand>(out: &mut W, term_w: u16, term_h: u16) {
@@ -255,13 +253,16 @@ fn setup_scroll_region_to<W: Write + QueueableCommand>(out: &mut W, term_w: u16,
 // calls this function, and the 1-second timer tick ensures the scroll region
 // adjusts within ≤1 s of a resize — acceptable latency that avoids the unsafe
 // signal-handler machinery a SIGWINCH approach would require.
-fn handle_resize_if_needed(guard: &mut Option<DisplayState>) -> bool {
+fn handle_resize_if_needed<W: Write + QueueableCommand>(
+    guard: &mut Option<DisplayState>,
+    out: &mut W,
+) -> bool {
     let current = terminal::size().unwrap_or((80, 24));
     if let Some(state) = guard.as_mut() {
         if state.term_width != current.0 || state.term_height != current.1 {
             state.term_width = current.0;
             state.term_height = current.1;
-            setup_scroll_region(current.0, current.1);
+            setup_scroll_region_to(out, current.0, current.1);
             return true;
         }
     }
@@ -282,10 +283,6 @@ fn build_info_text(state: &DisplayState) -> String {
     } else {
         base
     }
-}
-
-fn draw_panel_info_row_raw(term_w: u16, info_row: u16, text: &str) {
-    draw_panel_info_row_to(&mut stdout(), term_w, info_row, text);
 }
 
 fn draw_panel_info_row_to<W: Write + QueueableCommand>(
@@ -397,28 +394,27 @@ fn render_box<W: Write + QueueableCommand>(
 pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option<&RetryInfo>) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let term_w = terminal_width() as usize;
-    render_stage_header_to(&mut stdout(), stage_name, iteration, model, retry, term_w).ok();
+    let mut out = stdout().lock();
+    render_stage_header_to(&mut out, stage_name, iteration, model, retry, term_w).ok();
 
-    // Redraw the separator line before updating panel state so the visual
-    // boundary is refreshed at stage transitions.
     {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             return;
         }
-        handle_resize_if_needed(&mut guard);
+        handle_resize_if_needed(&mut guard, &mut out);
         if let Some(state) = guard.as_ref() {
             let (tw, sep) = (state.term_width, state.separator_row());
             drop(guard);
-            draw_panel_separator_raw(tw, sep);
+            draw_panel_separator_to(&mut out, tw, sep);
         }
     }
+    drop(out);
     set_stage(stage_name, iteration, model);
 }
 
-fn draw_panel_separator_raw(term_w: u16, sep_row: u16) {
+fn draw_panel_separator_to<W: Write + QueueableCommand>(out: &mut W, term_w: u16, sep_row: u16) {
     let dashes = "─".repeat(term_w as usize);
-    let mut out = stdout();
     out.queue(cursor::SavePosition).ok();
     out.queue(cursor::MoveTo(0, sep_row)).ok();
     out.queue(SetForegroundColor(CYAN)).ok();
@@ -428,8 +424,7 @@ fn draw_panel_separator_raw(term_w: u16, sep_row: u16) {
     out.flush().ok();
 }
 
-fn clear_panel_row(row: u16) {
-    let mut out = stdout();
+fn clear_panel_row_to<W: Write + QueueableCommand>(out: &mut W, row: u16) {
     out.queue(cursor::SavePosition).ok();
     out.queue(cursor::MoveTo(0, row)).ok();
     out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
@@ -473,7 +468,7 @@ fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Resu
 }
 
 pub fn println(msg: &str) {
-    println_to(&mut stdout(), msg).ok();
+    println_to(&mut stdout().lock(), msg).ok();
 }
 
 fn println_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -482,7 +477,7 @@ fn println_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
 }
 
 pub fn print(msg: &str) {
-    print_to(&mut stdout(), msg).ok();
+    print_to(&mut stdout().lock(), msg).ok();
 }
 
 fn print_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -495,7 +490,7 @@ fn print_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Res
 /// Accepts plain content lines (without borders); the box is sized to fit
 /// the widest line and capped at terminal width.
 pub fn notice_box(lines: &[String]) {
-    notice_box_to(&mut stdout(), lines, terminal_width() as usize).ok();
+    notice_box_to(&mut stdout().lock(), lines, terminal_width() as usize).ok();
 }
 
 fn notice_box_to<W: Write + QueueableCommand>(
@@ -511,9 +506,10 @@ const TOOL_ARGS_MAX: usize = 60;
 pub fn tool_call(name: &str, args: &str, id: &str) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
 
-    if is_in_tty_mode() {
-        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-        handle_resize_if_needed(&mut guard);
+    let mut out = stdout().lock();
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_some() {
+        handle_resize_if_needed(&mut guard, &mut out);
         if let Some(state) = guard.as_mut() {
             state.active_tool_calls.push(ToolCallEntry {
                 id: id.to_owned(),
@@ -528,10 +524,11 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
                 .map(|e| (e.color, e.name.clone()))
                 .collect();
             drop(guard);
-            draw_panel_info_row_raw(tw, info_r, &info_text);
-            draw_panel_status_row_multi_raw(tw, status_r, &snapshot);
+            draw_panel_info_row_to(&mut out, tw, info_r, &info_text);
+            draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
         }
     } else {
+        drop(guard);
         let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
             let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
             format!("{s}…")
@@ -542,12 +539,8 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id.to_owned(), name.to_owned());
-        tool_call_to(&mut stdout(), name, &display_args).ok();
+        tool_call_to(&mut out, name, &display_args).ok();
     }
-}
-
-fn draw_panel_status_row_multi_raw(term_w: u16, status_row: u16, entries: &[(Color, String)]) {
-    draw_panel_status_row_to(&mut stdout(), term_w, status_row, entries);
 }
 
 fn draw_panel_status_row_to<W: Write + QueueableCommand>(
@@ -606,9 +599,10 @@ pub fn tool_result(id: &str, success: bool) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let color = if success { GREEN } else { RED };
 
-    if is_in_tty_mode() {
-        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-        handle_resize_if_needed(&mut guard);
+    let mut out = stdout().lock();
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_some() {
+        handle_resize_if_needed(&mut guard, &mut out);
         if let Some(state) = guard.as_mut() {
             if let Some(entry) = state.active_tool_calls.iter_mut().find(|e| e.id == id) {
                 entry.color = color;
@@ -621,15 +615,16 @@ pub fn tool_result(id: &str, success: bool) {
                 .collect();
             state.active_tool_calls.retain(|e| e.id != id);
             drop(guard);
-            draw_panel_status_row_multi_raw(tw, status_r, &snapshot);
+            draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
         }
     } else {
+        drop(guard);
         let name = tool_name_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id)
             .unwrap_or_else(|| "unknown".to_owned());
-        tool_result_to(&mut stdout(), &name, success).ok();
+        tool_result_to(&mut out, &name, success).ok();
     }
 }
 
@@ -651,7 +646,7 @@ fn tool_result_to<W: Write + QueueableCommand>(
 /// line of each new block, and indented continuation lines within the same block.
 pub fn agent_text(text: &str) {
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
-    agent_text_to(&mut stdout(), text, &mut last).ok();
+    agent_text_to(&mut stdout().lock(), text, &mut last).ok();
     LAST_WAS_TEXT.store(last, Ordering::Relaxed);
 }
 
@@ -686,7 +681,7 @@ fn verdict_color_label(status: &VerdictStatus) -> (Color, &'static str) {
 
 /// Render a color-coded single-line verdict label to stdout.
 pub fn verdict(status: &VerdictStatus) {
-    verdict_to(&mut stdout(), status).ok();
+    verdict_to(&mut stdout().lock(), status).ok();
 }
 
 fn verdict_to<W: Write + QueueableCommand>(
@@ -754,7 +749,7 @@ fn render_gutter_line<W: Write + QueueableCommand>(out: &mut W, text: &str) -> s
 /// `verdict` is `None` for an implicit fail (stage exited without emitting a verdict).
 pub fn session_footer(verdict: Option<&Verdict>, duration: Duration, session_id: Option<&str>) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-    session_footer_to(&mut stdout(), verdict, duration, session_id).ok();
+    session_footer_to(&mut stdout().lock(), verdict, duration, session_id).ok();
 }
 
 fn session_footer_to<W: Write + QueueableCommand>(
@@ -1830,7 +1825,8 @@ mod tests {
         // Create a state with dimensions that differ from terminal::size() output.
         // In CI terminal::size() returns (80, 24); using (120, 40) forces a resize.
         let mut guard: Option<DisplayState> = Some(DisplayState::new(120, 40));
-        let resized = handle_resize_if_needed(&mut guard);
+        let mut buf = Vec::new();
+        let resized = handle_resize_if_needed(&mut guard, &mut buf);
         let state = guard.as_ref().expect("state must remain Some after resize");
         // If terminal::size() returned different dimensions, state must be updated.
         if resized {

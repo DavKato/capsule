@@ -714,6 +714,32 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
+fn local_timestamp() -> String {
+    unsafe {
+        let mut t: libc::time_t = 0;
+        libc::time(&mut t);
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour,
+            tm.tm_min,
+        )
+    }
+}
+
+struct FooterData<'a> {
+    stage_name: &'a str,
+    iteration: u32,
+    verdict: Option<&'a Verdict>,
+    duration: Duration,
+    session_id: Option<&'a str>,
+    timestamp: &'a str,
+}
+
 /// Render a session footer to stdout after a stage completes.
 ///
 /// `verdict` is `None` for an implicit fail (stage exited without emitting a verdict).
@@ -725,15 +751,17 @@ pub fn session_footer(
     session_id: Option<&str>,
 ) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-    let now = chrono::Local::now();
+    let ts = local_timestamp();
     session_footer_to(
         &mut stdout().lock(),
-        stage_name,
-        iteration,
-        verdict,
-        duration,
-        session_id,
-        &now.format("%Y-%m-%d %H:%M").to_string(),
+        &FooterData {
+            stage_name,
+            iteration,
+            verdict,
+            duration,
+            session_id,
+            timestamp: &ts,
+        },
         terminal_width() as usize,
     )
     .ok();
@@ -742,90 +770,85 @@ pub fn session_footer(
 const FOOTER_BG: Color = Color::AnsiValue(236);
 const FOOTER_BAR: Color = Color::DarkGrey;
 
-fn card_line<W: Write + QueueableCommand>(
+fn card_line_styled<W, F>(
     out: &mut W,
-    text: &str,
     block_w: usize,
-) -> std::io::Result<()> {
-    let content = format!(" {text}");
-    let pad = block_w.saturating_sub(content.chars().count() + 1);
+    content_width: usize,
+    render_content: F,
+) -> std::io::Result<()>
+where
+    W: Write + QueueableCommand,
+    F: FnOnce(&mut W) -> std::io::Result<()>,
+{
     out.queue(SetBackgroundColor(FOOTER_BG))?;
     out.queue(SetForegroundColor(FOOTER_BAR))?;
     out.queue(Print("▎"))?;
     out.queue(ResetColor)?;
     out.queue(SetBackgroundColor(FOOTER_BG))?;
-    out.queue(Print(&content))?;
+    render_content(out)?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.queue(SetBackgroundColor(FOOTER_BG))?;
+    let pad = block_w.saturating_sub(1 + content_width);
     out.queue(Print(" ".repeat(pad)))?;
     out.queue(ResetColor)?;
     out.queue(Print("\n"))?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+fn card_line<W: Write + QueueableCommand>(
+    out: &mut W,
+    text: &str,
+    block_w: usize,
+) -> std::io::Result<()> {
+    let content = format!(" {text}");
+    let w = content.chars().count();
+    card_line_styled(out, block_w, w, |out| {
+        out.queue(Print(content))?;
+        Ok(())
+    })
+}
+
 fn session_footer_to<W: Write + QueueableCommand>(
     out: &mut W,
-    stage_name: &str,
-    iteration: u32,
-    verdict: Option<&Verdict>,
-    duration: Duration,
-    session_id: Option<&str>,
-    timestamp: &str,
+    data: &FooterData,
     term_w: usize,
 ) -> std::io::Result<()> {
     let block_w = term_w.min(MAX_DISPLAY_WIDTH);
 
-    let (status_color, status_label) = match verdict {
+    let (status_color, status_label) = match data.verdict {
         Some(v) => verdict_color_label(&v.status),
         None => (RED, "fail"),
     };
     let status_upper = status_label.to_uppercase();
-    let duration_str = format_duration(duration);
+    let duration_str = format_duration(data.duration);
 
-    let title = format!("{stage_name} · iter {iteration} completed at {timestamp}");
+    let title = format!(
+        " {} · iter {} completed at {}",
+        data.stage_name, data.iteration, data.timestamp
+    );
 
-    // Margin-top
     out.queue(Print("\n"))?;
 
-    // Title line (bold white)
-    out.queue(SetBackgroundColor(FOOTER_BG))?;
-    out.queue(SetForegroundColor(FOOTER_BAR))?;
-    out.queue(Print("▎"))?;
-    out.queue(ResetColor)?;
-    out.queue(SetBackgroundColor(FOOTER_BG))?;
-    out.queue(SetForegroundColor(Color::White))?;
-    out.queue(SetAttribute(Attribute::Bold))?;
-    out.queue(Print(format!(" {title}")))?;
-    out.queue(SetAttribute(Attribute::Reset))?;
-    let pad = block_w.saturating_sub(title.chars().count() + 2);
-    out.queue(SetBackgroundColor(FOOTER_BG))?;
-    out.queue(Print(" ".repeat(pad)))?;
-    out.queue(ResetColor)?;
-    out.queue(Print("\n"))?;
+    card_line_styled(out, block_w, title.chars().count(), |out| {
+        out.queue(SetForegroundColor(Color::White))?;
+        out.queue(SetAttribute(Attribute::Bold))?;
+        out.queue(Print(&title))?;
+        Ok(())
+    })?;
 
-    // Status line (color-coded)
-    let label = "Status:   ";
-    out.queue(SetBackgroundColor(FOOTER_BG))?;
-    out.queue(SetForegroundColor(FOOTER_BAR))?;
-    out.queue(Print("▎"))?;
-    out.queue(ResetColor)?;
-    out.queue(SetBackgroundColor(FOOTER_BG))?;
-    out.queue(Print(format!(" {label}")))?;
-    out.queue(SetForegroundColor(status_color))?;
-    out.queue(SetAttribute(Attribute::Bold))?;
-    out.queue(Print(&status_upper))?;
-    out.queue(SetAttribute(Attribute::Reset))?;
-    let used = 1 + 1 + label.chars().count() + status_upper.chars().count();
-    let pad = block_w.saturating_sub(used);
-    out.queue(SetBackgroundColor(FOOTER_BG))?;
-    out.queue(Print(" ".repeat(pad)))?;
-    out.queue(ResetColor)?;
-    out.queue(Print("\n"))?;
+    let label = " Status:   ";
+    let status_w = label.chars().count() + status_upper.chars().count();
+    card_line_styled(out, block_w, status_w, |out| {
+        out.queue(Print(label))?;
+        out.queue(SetForegroundColor(status_color))?;
+        out.queue(SetAttribute(Attribute::Bold))?;
+        out.queue(Print(&status_upper))?;
+        Ok(())
+    })?;
 
-    // Duration line
     card_line(out, &format!("Duration: {duration_str}"), block_w)?;
 
-    // Session line (only when present)
-    if let Some(id) = session_id {
+    if let Some(id) = data.session_id {
         let truncated_id = if id.chars().count() > SESSION_ID_MAX {
             let s: String = id.chars().take(SESSION_ID_MAX).collect();
             format!("{s}…")
@@ -835,8 +858,7 @@ fn session_footer_to<W: Write + QueueableCommand>(
         card_line(out, &format!("Session:  {truncated_id}"), block_w)?;
     }
 
-    // Notes section
-    if let Some(notes) = verdict.and_then(|v| v.notes.as_deref()) {
+    if let Some(notes) = data.verdict.and_then(|v| v.notes.as_deref()) {
         card_line(out, "Notes:", block_w)?;
         let wrap_width = block_w.saturating_sub(5);
         let wrapped = wrap_text(notes, wrap_width);
@@ -1207,12 +1229,14 @@ mod tests {
     ) {
         session_footer_to(
             buf,
-            stage,
-            iter,
-            verdict,
-            Duration::from_secs(secs),
-            session,
-            "2026-05-11 14:32",
+            &FooterData {
+                stage_name: stage,
+                iteration: iter,
+                verdict,
+                duration: Duration::from_secs(secs),
+                session_id: session,
+                timestamp: "2026-05-11 14:32",
+            },
             80,
         )
         .unwrap();
@@ -1419,12 +1443,14 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         session_footer_to(
             &mut buf,
-            "build",
-            1,
-            Some(&v),
-            Duration::from_secs(0),
-            None,
-            "2026-05-11 14:32",
+            &FooterData {
+                stage_name: "build",
+                iteration: 1,
+                verdict: Some(&v),
+                duration: Duration::from_secs(0),
+                session_id: None,
+                timestamp: "2026-05-11 14:32",
+            },
             200,
         )
         .unwrap();

@@ -43,8 +43,16 @@ fn main() {
     display::agent_text("The codebase uses a pipeline model with stages.");
     pause(200);
 
+    // --- tool call states side by side ---
+    section("Tool call states");
+    display::tool_call("Read", "src/main.rs", "s-1");
+    display::tool_call("Read", "src/main.rs", "s-2");
+    display::tool_result("s-2", true);
+    display::tool_call("Read", "src/main.rs", "s-3");
+    display::tool_result("s-3", false);
+
     // --- tool calls (overlapping) ---
-    section("Tool calls");
+    section("Tool calls — overlapping");
     display::tool_call("Read", "src/main.rs", "tc-1");
     pause(500);
     display::tool_call("Bash", "cargo test --lib", "tc-2");

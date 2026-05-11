@@ -344,10 +344,8 @@ fn render_stage_header_to<W: Write + QueueableCommand>(
 
     out.queue(SetForegroundColor(Color::DarkGrey))?;
     out.queue(Print(prefix))?;
-    out.queue(SetForegroundColor(Color::White))?;
-    out.queue(SetAttribute(Attribute::Bold))?;
+    out.queue(ResetColor)?;
     out.queue(Print(&content))?;
-    out.queue(SetAttribute(Attribute::Reset))?;
     out.queue(SetForegroundColor(Color::DarkGrey))?;
     out.queue(Print(suffix))?;
     out.queue(Print("═".repeat(trailing_len)))?;
@@ -660,9 +658,7 @@ fn agent_text_to<W: Write + QueueableCommand>(
     if *last_was_text {
         out.queue(Print("    "))?;
     } else {
-        out.queue(SetForegroundColor(Color::DarkGrey))?;
-        out.queue(Print("  · "))?;
-        out.queue(ResetColor)?;
+        out.queue(Print("  ● "))?;
     }
     out.queue(Print(text))?;
     out.queue(Print("\n"))?;
@@ -829,10 +825,18 @@ fn session_footer_to<W: Write + QueueableCommand>(
 
     out.queue(Print("\n"))?;
 
+    card_line(out, "", block_w)?;
+
     card_line_styled(out, block_w, title.chars().count(), |out| {
-        out.queue(SetForegroundColor(Color::White))?;
-        out.queue(SetAttribute(Attribute::Bold))?;
+        out.queue(SetForegroundColor(Color::Reset))?;
         out.queue(Print(&title))?;
+        Ok(())
+    })?;
+
+    let sep = format!(" {}", "─".repeat(block_w.saturating_sub(4)));
+    card_line_styled(out, block_w, sep.chars().count(), |out| {
+        out.queue(SetForegroundColor(FOOTER_BAR))?;
+        out.queue(Print(&sep))?;
         Ok(())
     })?;
 
@@ -866,6 +870,8 @@ fn session_footer_to<W: Write + QueueableCommand>(
             card_line(out, &format!("  {line}"), block_w)?;
         }
     }
+
+    card_line(out, "", block_w)?;
 
     out.flush()
 }
@@ -1175,10 +1181,10 @@ mod tests {
         agent_text_to(&mut buf, "hello world", &mut last).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("hello world"), "text must appear");
-        assert!(out.contains('·'), "dot must appear on first line");
+        assert!(out.contains('●'), "dot must appear on first line");
         assert!(
-            contains_seq(&buf, DARK_GREY_ANSI),
-            "dot must use dark grey color; output: {out:?}"
+            !contains_seq(&buf, DARK_GREY_ANSI),
+            "dot must use default color, not dark grey; output: {out:?}"
         );
         assert!(last, "last_was_text must be true after call");
     }
@@ -1359,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn session_footer_has_no_bottom_border() {
+    fn session_footer_has_separator_after_title() {
         let v = Verdict {
             status: VerdictStatus::Pass,
             notes: None,
@@ -1367,9 +1373,13 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         footer(&mut buf, "build", 1, Some(&v), 0, None);
         let out = String::from_utf8_lossy(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        let sep_line = lines
+            .iter()
+            .find(|l| strip_ansi(l).trim().starts_with("▎") && strip_ansi(l).contains("───"));
         assert!(
-            !out.contains("──"),
-            "footer must not have bottom border rule"
+            sep_line.is_some(),
+            "footer must have a separator line after the title"
         );
     }
 

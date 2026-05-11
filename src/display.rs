@@ -335,7 +335,6 @@ fn render_stage_header_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
-/// Pad `text` to `width` characters, or truncate with a trailing space if too long.
 fn pad_or_truncate(text: &str, width: usize) -> String {
     let char_count = text.chars().count();
     if char_count + 1 > width {
@@ -828,9 +827,7 @@ mod tests {
     fn stage_header_fills_to_terminal_width() {
         let mut buf: Vec<u8> = Vec::new();
         render_stage_header_to(&mut buf, "s", 1, "m", None, 40).unwrap();
-        // Strip ANSI codes and check the visible line length
         let out = String::from_utf8_lossy(&buf);
-        // The output contains ANSI escapes; strip them to count visible chars
         let visible: String = strip_ansi(&out);
         let line = visible.lines().next().unwrap_or("");
         assert_eq!(

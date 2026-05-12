@@ -85,7 +85,7 @@ struct ToolCallInfo {
     started_at: Instant,
 }
 
-fn tool_name_cache() -> &'static Mutex<HashMap<String, ToolCallInfo>> {
+fn tool_call_cache() -> &'static Mutex<HashMap<String, ToolCallInfo>> {
     static CACHE: OnceLock<Mutex<HashMap<String, ToolCallInfo>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -200,7 +200,7 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
 pub fn clear_stage() {
     TIMER_GEN.fetch_add(1, Ordering::Relaxed);
     timer_wake().1.notify_all();
-    tool_name_cache()
+    tool_call_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -543,7 +543,7 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
         } else {
             args.to_owned()
         };
-        tool_name_cache()
+        tool_call_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(
@@ -632,7 +632,7 @@ pub fn tool_result(id: &str, success: bool) {
         draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
     } else {
         drop(guard);
-        let info = tool_name_cache()
+        let info = tool_call_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
@@ -1158,6 +1158,7 @@ mod tests {
         assert!(out.contains("Bash"), "tool name must appear");
         assert!(out.contains("ls -la"), "args must appear");
         assert!(out.contains("Done"), "done label must appear on success");
+        assert!(out.contains("0.1s"), "duration must appear formatted");
         assert!(out.contains("●"), "dot must appear");
         assert!(
             contains_seq(&buf, GREEN_ANSI),
@@ -1187,6 +1188,7 @@ mod tests {
             out.contains("Failed"),
             "failed label must appear on failure"
         );
+        assert!(out.contains("0.5s"), "duration must appear formatted");
         assert!(
             contains_seq(&buf, RED_ANSI),
             "red escape must be emitted for failure; output: {out:?}"

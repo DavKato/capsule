@@ -1678,13 +1678,10 @@ mod tests {
         );
     }
 
-    // OffsetTracker tests
-
     #[test]
     fn offset_tracker_register_and_increment() {
         let mut tracker = OffsetTracker::new();
         tracker.register("tool1", 1);
-        // visible_width=20, term_width=80 → ceil(20/80)=1 → offset becomes 1+1=2
         tracker.increment_all(20, 80);
         assert_eq!(tracker.get_offset("tool1", 100), Some(2));
     }
@@ -1693,7 +1690,6 @@ mod tests {
     fn offset_tracker_increment_line_wrapping() {
         let mut tracker = OffsetTracker::new();
         tracker.register("tool1", 0);
-        // visible_width=100, term_width=80 → ceil(100/80)=2 → offset becomes 2
         tracker.increment_all(100, 80);
         assert_eq!(tracker.get_offset("tool1", 100), Some(2));
     }
@@ -1702,7 +1698,6 @@ mod tests {
     fn offset_tracker_off_screen_returns_none() {
         let mut tracker = OffsetTracker::new();
         tracker.register("tool1", 10);
-        // scroll_height=5 < offset=10 → None
         assert_eq!(tracker.get_offset("tool1", 5), None);
     }
 
@@ -1725,9 +1720,9 @@ mod tests {
     fn offset_tracker_multiple_concurrent_entries() {
         let mut tracker = OffsetTracker::new();
         tracker.register("tool1", 1);
-        tracker.increment_all(80, 80); // +1 each → tool1=2
+        tracker.increment_all(80, 80);
         tracker.register("tool2", 1);
-        tracker.increment_all(80, 80); // +1 each → tool1=3, tool2=2
+        tracker.increment_all(80, 80);
         assert_eq!(tracker.get_offset("tool1", 100), Some(3));
         assert_eq!(tracker.get_offset("tool2", 100), Some(2));
         tracker.remove("tool1");
@@ -1739,7 +1734,6 @@ mod tests {
     fn offset_tracker_recalculate_on_resize() {
         let mut tracker = OffsetTracker::new();
         tracker.register("tool1", 2);
-        // old_width=80, new_width=40 → ceil(2*80/40) = ceil(160/40) = 4
         tracker.recalculate(80, 40);
         assert_eq!(tracker.get_offset("tool1", 100), Some(4));
     }

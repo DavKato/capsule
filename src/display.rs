@@ -876,6 +876,61 @@ fn session_footer_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
+#[allow(dead_code)]
+struct OffsetTracker {
+    entries: HashMap<String, u16>,
+}
+
+#[allow(dead_code)]
+impl OffsetTracker {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn register(&mut self, id: &str, initial_lines: u16) {
+        self.entries.insert(id.to_string(), initial_lines);
+    }
+
+    fn increment_all(&mut self, visible_width: usize, term_width: u16) {
+        let term_width = term_width as usize;
+        let delta = if term_width == 0 {
+            0u16
+        } else {
+            visible_width.div_ceil(term_width) as u16
+        };
+        for offset in self.entries.values_mut() {
+            *offset = offset.saturating_add(delta);
+        }
+    }
+
+    fn get_offset(&self, id: &str, scroll_height: u16) -> Option<u16> {
+        let &offset = self.entries.get(id)?;
+        if offset > scroll_height {
+            None
+        } else {
+            Some(offset)
+        }
+    }
+
+    fn remove(&mut self, id: &str) {
+        self.entries.remove(id);
+    }
+
+    fn recalculate(&mut self, old_width: u16, new_width: u16) {
+        if new_width == 0 {
+            return;
+        }
+        let old_width = old_width as usize;
+        let new_width = new_width as usize;
+        for offset in self.entries.values_mut() {
+            let raw = (*offset as usize) * old_width;
+            *offset = raw.div_ceil(new_width) as u16;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1621,5 +1676,71 @@ mod tests {
             !out.contains("●"),
             "empty entries must not emit a dot; output: {out:?}"
         );
+    }
+
+    // OffsetTracker tests
+
+    #[test]
+    fn offset_tracker_register_and_increment() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 1);
+        // visible_width=20, term_width=80 → ceil(20/80)=1 → offset becomes 1+1=2
+        tracker.increment_all(20, 80);
+        assert_eq!(tracker.get_offset("tool1", 100), Some(2));
+    }
+
+    #[test]
+    fn offset_tracker_increment_line_wrapping() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 0);
+        // visible_width=100, term_width=80 → ceil(100/80)=2 → offset becomes 2
+        tracker.increment_all(100, 80);
+        assert_eq!(tracker.get_offset("tool1", 100), Some(2));
+    }
+
+    #[test]
+    fn offset_tracker_off_screen_returns_none() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 10);
+        // scroll_height=5 < offset=10 → None
+        assert_eq!(tracker.get_offset("tool1", 5), None);
+    }
+
+    #[test]
+    fn offset_tracker_on_screen_returns_some() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 3);
+        assert_eq!(tracker.get_offset("tool1", 10), Some(3));
+    }
+
+    #[test]
+    fn offset_tracker_remove_makes_get_return_none() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 1);
+        tracker.remove("tool1");
+        assert_eq!(tracker.get_offset("tool1", 100), None);
+    }
+
+    #[test]
+    fn offset_tracker_multiple_concurrent_entries() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 1);
+        tracker.increment_all(80, 80); // +1 each → tool1=2
+        tracker.register("tool2", 1);
+        tracker.increment_all(80, 80); // +1 each → tool1=3, tool2=2
+        assert_eq!(tracker.get_offset("tool1", 100), Some(3));
+        assert_eq!(tracker.get_offset("tool2", 100), Some(2));
+        tracker.remove("tool1");
+        assert_eq!(tracker.get_offset("tool1", 100), None);
+        assert_eq!(tracker.get_offset("tool2", 100), Some(2));
+    }
+
+    #[test]
+    fn offset_tracker_recalculate_on_resize() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 2);
+        // old_width=80, new_width=40 → ceil(2*80/40) = ceil(160/40) = 4
+        tracker.recalculate(80, 40);
+        assert_eq!(tracker.get_offset("tool1", 100), Some(4));
     }
 }

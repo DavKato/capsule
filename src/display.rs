@@ -79,8 +79,14 @@ fn timer_wake() -> &'static (Mutex<()>, Condvar) {
     TIMER_WAKE.get_or_init(|| (Mutex::new(()), Condvar::new()))
 }
 
-fn tool_name_cache() -> &'static Mutex<HashMap<String, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+struct ToolCallInfo {
+    name: String,
+    args: String,
+    started_at: Instant,
+}
+
+fn tool_name_cache() -> &'static Mutex<HashMap<String, ToolCallInfo>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, ToolCallInfo>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -540,7 +546,14 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
         tool_name_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id.to_owned(), name.to_owned());
+            .insert(
+                id.to_owned(),
+                ToolCallInfo {
+                    name: name.to_owned(),
+                    args: display_args.clone(),
+                    started_at: Instant::now(),
+                },
+            );
         tool_call_to(&mut out, name, &display_args).ok();
     }
 }
@@ -619,26 +632,36 @@ pub fn tool_result(id: &str, success: bool) {
         draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
     } else {
         drop(guard);
-        let name = tool_name_cache()
+        let info = tool_name_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(id)
-            .unwrap_or_else(|| "unknown".to_owned());
-        tool_result_to(&mut out, &name, success).ok();
+            .remove(id);
+        let (name, args, duration) = match info {
+            Some(i) => (i.name, i.args, i.started_at.elapsed()),
+            None => ("unknown".to_owned(), String::new(), Duration::ZERO),
+        };
+        tool_result_to(&mut out, &name, &args, duration, success).ok();
     }
 }
 
 fn tool_result_to<W: Write + QueueableCommand>(
     out: &mut W,
     name: &str,
+    args: &str,
+    duration: Duration,
     success: bool,
 ) -> std::io::Result<()> {
     let color = if success { GREEN } else { RED };
+    let status = if success { "Done" } else { "Failed" };
     out.queue(Print("  "))?;
     out.queue(SetForegroundColor(color))?;
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
-    out.queue(Print(format!("{name}\n")))?;
+    out.queue(Print(format!("{name}  {args}\n")))?;
+    out.queue(Print(format!(
+        "    {status} ({:.1}s)\n",
+        duration.as_secs_f64()
+    )))?;
     out.flush()
 }
 
@@ -1126,13 +1149,15 @@ mod tests {
     #[test]
     fn tool_result_non_tty_no_cursor_up_emits_green_dot() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(&mut buf, "Bash", true).unwrap();
+        tool_result_to(&mut buf, "Bash", "ls -la", Duration::from_millis(123), true).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[1A"),
             "non-TTY tool_result must not emit cursor-up; output: {out:?}"
         );
         assert!(out.contains("Bash"), "tool name must appear");
+        assert!(out.contains("ls -la"), "args must appear");
+        assert!(out.contains("Done"), "done label must appear on success");
         assert!(out.contains("●"), "dot must appear");
         assert!(
             contains_seq(&buf, GREEN_ANSI),
@@ -1143,13 +1168,25 @@ mod tests {
     #[test]
     fn tool_result_non_tty_no_cursor_up_emits_red_dot() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(&mut buf, "Write", false).unwrap();
+        tool_result_to(
+            &mut buf,
+            "Write",
+            "path/to/file",
+            Duration::from_millis(456),
+            false,
+        )
+        .unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[1A"),
             "non-TTY tool_result must not emit cursor-up on failure; output: {out:?}"
         );
         assert!(out.contains("Write"), "tool name must appear on failure");
+        assert!(out.contains("path/to/file"), "args must appear on failure");
+        assert!(
+            out.contains("Failed"),
+            "failed label must appear on failure"
+        );
         assert!(
             contains_seq(&buf, RED_ANSI),
             "red escape must be emitted for failure; output: {out:?}"

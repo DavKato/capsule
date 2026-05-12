@@ -413,6 +413,13 @@ fn entrypoint_runs_before_each_without_executable_bit() {
 
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
+    // Workaround: container runs as uid 1000 which may differ from the host uid.
+    // Drop once `docker run` passes `--user $(id -u):$(id -g)`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&prompt, std::fs::Permissions::from_mode(0o666)).unwrap();
+    }
 
     let _output = std::process::Command::new("docker")
         .args([

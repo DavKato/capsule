@@ -27,7 +27,8 @@ const MIN_TERM_HEIGHT: u16 = 12;
 struct ToolCallEntry {
     id: String,
     name: String,
-    color: Color,
+    args: String,
+    start_time: Instant,
 }
 
 struct DisplayState {
@@ -39,6 +40,7 @@ struct DisplayState {
     start_time: Instant,
     token_warning: Option<String>,
     active_tool_calls: Vec<ToolCallEntry>,
+    offset_tracker: OffsetTracker,
 }
 
 impl DisplayState {
@@ -52,6 +54,7 @@ impl DisplayState {
             start_time: Instant::now(),
             token_warning: None,
             active_tool_calls: Vec::new(),
+            offset_tracker: OffsetTracker::new(),
         }
     }
 
@@ -177,6 +180,7 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
             state.start_time = Instant::now();
             state.token_warning = None;
             state.active_tool_calls.clear();
+            state.offset_tracker.clear();
         }
         guard.is_some()
     };
@@ -213,6 +217,7 @@ pub fn clear_stage() {
         state.model.clear();
         state.token_warning = None;
         state.active_tool_calls.clear();
+        state.offset_tracker.clear();
         let (info_r, status_r) = (state.info_row(), state.status_row());
         drop(guard);
         clear_panel_row_to(&mut out, info_r);
@@ -268,8 +273,10 @@ fn handle_resize_if_needed<W: Write + QueueableCommand>(
     let current = terminal::size().unwrap_or((80, 24));
     if let Some(state) = guard.as_mut() {
         if state.term_width != current.0 || state.term_height != current.1 {
+            let old_width = state.term_width;
             state.term_width = current.0;
             state.term_height = current.1;
+            state.offset_tracker.recalculate(old_width, current.0);
             setup_scroll_region_to(out, current.0, current.1);
             return true;
         }
@@ -513,36 +520,89 @@ fn notice_box_to<W: Write + QueueableCommand>(
 
 const TOOL_ARGS_MAX: usize = 60;
 
+fn render_tty_tool_call_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    display_args: &str,
+) -> std::io::Result<()> {
+    out.queue(Print("  "))?;
+    out.queue(SetAttribute(Attribute::SlowBlink))?;
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
+    out.queue(Print("●"))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.queue(Print(format!(" {name}  {display_args}\n")))?;
+    out.flush()
+}
+
+fn render_tty_tool_result_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    args: &str,
+    duration: Duration,
+    success: bool,
+    offset: Option<u16>,
+) -> std::io::Result<()> {
+    let color = if success { GREEN } else { RED };
+    let label = if success { "Done" } else { "Failed" };
+
+    match offset {
+        Some(n) => {
+            out.queue(cursor::SavePosition)?;
+            out.queue(cursor::MoveUp(n))?;
+            out.queue(cursor::MoveToColumn(0))?;
+            out.queue(terminal::Clear(ClearType::CurrentLine))?;
+            out.queue(Print("  "))?;
+            out.queue(SetForegroundColor(color))?;
+            out.queue(Print("●"))?;
+            out.queue(ResetColor)?;
+            out.queue(Print(format!(" {name}  {args}")))?;
+            out.queue(cursor::RestorePosition)?;
+        }
+        None => {
+            out.queue(Print("  "))?;
+            out.queue(SetForegroundColor(color))?;
+            out.queue(Print("●"))?;
+            out.queue(ResetColor)?;
+            out.queue(Print(format!(" {name}  {args}\n")))?;
+        }
+    }
+    out.queue(Print(format!(
+        "    {label} ({:.1}s)\n",
+        duration.as_secs_f64()
+    )))?;
+    out.flush()
+}
+
 pub fn tool_call(name: &str, args: &str, id: &str) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
+
+    let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
+        let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
+        format!("{s}…")
+    } else {
+        args.to_owned()
+    };
 
     let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
+        // Increment existing entries before registering this one.
+        let visible_width = 4 + name.chars().count() + 2 + display_args.chars().count();
+        state
+            .offset_tracker
+            .increment_all(visible_width, state.term_width);
+        state.offset_tracker.register(id, 1);
         state.active_tool_calls.push(ToolCallEntry {
             id: id.to_owned(),
             name: name.to_owned(),
-            color: YELLOW,
+            args: display_args.clone(),
+            start_time: Instant::now(),
         });
-        let info_text = build_info_text(state);
-        let (tw, info_r, status_r) = (state.term_width, state.info_row(), state.status_row());
-        let snapshot: Vec<(Color, String)> = state
-            .active_tool_calls
-            .iter()
-            .map(|e| (e.color, e.name.clone()))
-            .collect();
         drop(guard);
-        draw_panel_info_row_to(&mut out, tw, info_r, &info_text);
-        draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
+        render_tty_tool_call_to(&mut out, name, &display_args).ok();
     } else {
         drop(guard);
-        let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
-            let s: String = args.chars().take(TOOL_ARGS_MAX).collect();
-            format!("{s}…")
-        } else {
-            args.to_owned()
-        };
         tool_call_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -558,6 +618,7 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
     }
 }
 
+#[allow(dead_code)]
 fn draw_panel_status_row_to<W: Write + QueueableCommand>(
     out: &mut W,
     term_w: u16,
@@ -612,24 +673,39 @@ fn tool_call_to<W: Write + QueueableCommand>(
 
 pub fn tool_result(id: &str, success: bool) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-    let color = if success { GREEN } else { RED };
 
     let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
-        if let Some(entry) = state.active_tool_calls.iter_mut().find(|e| e.id == id) {
-            entry.color = color;
-        }
-        let (tw, status_r) = (state.term_width, state.status_row());
-        let snapshot: Vec<(Color, String)> = state
-            .active_tool_calls
-            .iter()
-            .map(|e| (e.color, e.name.clone()))
-            .collect();
-        state.active_tool_calls.retain(|e| e.id != id);
+        let entry_pos = state.active_tool_calls.iter().position(|e| e.id == id);
+        let entry = entry_pos.map(|i| state.active_tool_calls.remove(i));
+        let (name, args, duration) = match entry {
+            Some(e) => (e.name, e.args, e.start_time.elapsed()),
+            None => ("unknown".to_owned(), String::new(), Duration::ZERO),
+        };
+        let scroll_height = state.separator_row();
+        let offset = state.offset_tracker.get_offset(id, scroll_height);
+        state.offset_tracker.remove(id);
+        let tw = state.term_width;
         drop(guard);
-        draw_panel_status_row_to(&mut out, tw, status_r, &snapshot);
+
+        render_tty_tool_result_to(&mut out, &name, &args, duration, success, offset).ok();
+
+        // Account for the sub-line (and the solid-dot line in the off-screen case).
+        let label = if success { "Done" } else { "Failed" };
+        let sub_visible = format!("    {label} ({:.1}s)", duration.as_secs_f64())
+            .chars()
+            .count();
+        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = guard.as_mut() {
+            if offset.is_none() {
+                // Off-screen path wrote 2 lines: solid dot + sub-line.
+                let line1_visible = 4 + name.chars().count() + 2 + args.chars().count();
+                state.offset_tracker.increment_all(line1_visible, tw);
+            }
+            state.offset_tracker.increment_all(sub_visible, tw);
+        }
     } else {
         drop(guard);
         let info = tool_call_cache()
@@ -669,8 +745,17 @@ fn tool_result_to<W: Write + QueueableCommand>(
 /// line of each new block, and indented continuation lines within the same block.
 pub fn agent_text(text: &str) {
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
-    agent_text_to(&mut stdout().lock(), text, &mut last).ok();
+    let visible_width = 4 + text.chars().count(); // "  ● " or "    " (4 chars) + text
+    let mut out = stdout().lock();
+    agent_text_to(&mut out, text, &mut last).ok();
     LAST_WAS_TEXT.store(last, Ordering::Relaxed);
+
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.as_mut() {
+        state
+            .offset_tracker
+            .increment_all(visible_width, state.term_width);
+    }
 }
 
 fn agent_text_to<W: Write + QueueableCommand>(
@@ -899,17 +984,19 @@ fn session_footer_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
-#[allow(dead_code)]
 struct OffsetTracker {
     entries: HashMap<String, u16>,
 }
 
-#[allow(dead_code)]
 impl OffsetTracker {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
         }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
     }
 
     fn register(&mut self, id: &str, initial_lines: u16) {
@@ -1571,6 +1658,7 @@ mod tests {
             start_time: Instant::now(),
             token_warning: None,
             active_tool_calls: Vec::new(),
+            offset_tracker: OffsetTracker::new(),
         };
         let text = build_info_text(&state);
         assert!(text.contains("reviewer"), "stage name must appear");
@@ -1775,5 +1863,196 @@ mod tests {
         tracker.register("tool1", 2);
         tracker.recalculate(80, 40);
         assert_eq!(tracker.get_offset("tool1", 100), Some(4));
+    }
+
+    // Crossterm emits ESC[5m for SlowBlink attribute.
+    const BLINK_ANSI: &[u8] = b"\x1b[5m";
+    // Color::DarkGrey → AnsiValue(8) → ESC[38;5;8m
+    const DARK_GREY_ANSI: &[u8] = b"\x1b[38;5;8m";
+
+    #[test]
+    fn tty_tool_call_emits_slow_blink_and_dark_grey_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_call_to(&mut buf, "Bash", "ls -la").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            contains_seq(&buf, BLINK_ANSI),
+            "TTY tool call dot must use SlowBlink attribute; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, DARK_GREY_ANSI),
+            "TTY tool call dot must use DarkGrey color; output: {out:?}"
+        );
+        assert!(
+            out.contains("●"),
+            "dot character must appear; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tty_tool_call_includes_name_and_args() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_call_to(&mut buf, "Read", "src/main.rs").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("Read"),
+            "tool name must appear; output: {out:?}"
+        );
+        assert!(
+            out.contains("src/main.rs"),
+            "args must appear; output: {out:?}"
+        );
+        assert!(out.ends_with('\n'), "output must end with newline");
+    }
+
+    #[test]
+    fn tty_tool_result_in_place_emits_cursor_up() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_result_to(
+            &mut buf,
+            "Bash",
+            "ls -la",
+            Duration::from_millis(200),
+            true,
+            Some(3),
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        // cursor::MoveUp(3) → ESC[3A
+        assert!(
+            buf.windows(4).any(|w| w == b"\x1b[3A"),
+            "in-place update must emit cursor-up(3); output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tty_tool_result_in_place_emits_green_dot_and_sub_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_result_to(
+            &mut buf,
+            "Read",
+            "foo.rs",
+            Duration::from_millis(200),
+            true,
+            Some(2),
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            contains_seq(&buf, GREEN_ANSI),
+            "success result must use green dot; output: {out:?}"
+        );
+        assert!(
+            out.contains("Done"),
+            "Done label must appear; output: {out:?}"
+        );
+        assert!(
+            out.contains("0.2s"),
+            "duration must appear; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tty_tool_result_in_place_red_dot_on_failure() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_result_to(
+            &mut buf,
+            "Write",
+            "out.rs",
+            Duration::from_millis(300),
+            false,
+            Some(1),
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            contains_seq(&buf, RED_ANSI),
+            "failure result must use red dot; output: {out:?}"
+        );
+        assert!(
+            out.contains("Failed"),
+            "Failed label must appear; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tty_tool_result_off_screen_no_cursor_up() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_result_to(
+            &mut buf,
+            "Bash",
+            "ls",
+            Duration::from_millis(100),
+            true,
+            None,
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            !buf.windows(3).any(|w| w == b"\x1b[A" || {
+                w.len() >= 4 && w[0] == b'\x1b' && w[1] == b'[' && w[w.len() - 1] == b'A'
+            }),
+            "off-screen result must not emit cursor-up; output: {out:?}"
+        );
+        assert!(
+            out.contains("Bash"),
+            "tool name must appear in off-screen result; output: {out:?}"
+        );
+        assert!(
+            out.contains("Done"),
+            "Done label must appear; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tty_tool_result_off_screen_emits_dot_and_sub_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_result_to(
+            &mut buf,
+            "Grep",
+            "pattern",
+            Duration::from_millis(450),
+            true,
+            None,
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("●"), "dot must appear; output: {out:?}");
+        assert!(
+            out.contains("Grep"),
+            "tool name must appear; output: {out:?}"
+        );
+        assert!(out.contains("pattern"), "args must appear; output: {out:?}");
+        assert!(
+            out.contains("Done"),
+            "Done label must appear; output: {out:?}"
+        );
+        assert!(
+            out.contains("0.5s"),
+            "duration must appear; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, GREEN_ANSI),
+            "green must be emitted for success; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tty_tool_result_args_preserved_in_updated_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_tool_result_to(
+            &mut buf,
+            "Read",
+            "my/special/path.rs",
+            Duration::from_millis(50),
+            true,
+            Some(5),
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("my/special/path.rs"),
+            "args must be preserved in the in-place updated line; output: {out:?}"
+        );
     }
 }

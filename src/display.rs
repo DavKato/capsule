@@ -587,7 +587,6 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
-        // Increment existing entries before registering this one.
         let visible_width = 4 + name.chars().count() + 2 + display_args.chars().count();
         state
             .offset_tracker
@@ -1865,9 +1864,7 @@ mod tests {
         assert_eq!(tracker.get_offset("tool1", 100), Some(4));
     }
 
-    // Crossterm emits ESC[5m for SlowBlink attribute.
     const BLINK_ANSI: &[u8] = b"\x1b[5m";
-    // Color::DarkGrey → AnsiValue(8) → ESC[38;5;8m
     const DARK_GREY_ANSI: &[u8] = b"\x1b[38;5;8m";
 
     #[test]

@@ -591,7 +591,9 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
         state
             .offset_tracker
             .increment_all(visible_width, state.term_width);
-        state.offset_tracker.register(id, 1);
+        state
+            .offset_tracker
+            .register(id, visible_width, state.term_width);
         state.active_tool_calls.push(ToolCallEntry {
             id: id.to_owned(),
             name: name.to_owned(),
@@ -615,47 +617,6 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
             );
         tool_call_to(&mut out, name, &display_args).ok();
     }
-}
-
-#[allow(dead_code)]
-fn draw_panel_status_row_to<W: Write + QueueableCommand>(
-    out: &mut W,
-    term_w: u16,
-    status_row: u16,
-    entries: &[(Color, String)],
-) {
-    if entries.is_empty() {
-        out.queue(cursor::SavePosition).ok();
-        out.queue(cursor::MoveTo(0, status_row)).ok();
-        out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
-        out.queue(cursor::RestorePosition).ok();
-        out.flush().ok();
-        return;
-    }
-    out.queue(cursor::SavePosition).ok();
-    out.queue(cursor::MoveTo(0, status_row)).ok();
-    out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
-    out.queue(Print("  ")).ok();
-    let max_w = (term_w as usize).saturating_sub(2);
-    let mut used = 0usize;
-    for (i, (color, name)) in entries.iter().enumerate() {
-        let sep = if i == 0 { 0 } else { 2 };
-        let needed = sep + 2 + name.chars().count();
-        if used + needed > max_w {
-            break;
-        }
-        if i > 0 {
-            out.queue(Print("  ")).ok();
-            used += 2;
-        }
-        out.queue(SetForegroundColor(*color)).ok();
-        out.queue(Print("●")).ok();
-        out.queue(ResetColor).ok();
-        out.queue(Print(format!(" {name}"))).ok();
-        used += 2 + name.chars().count();
-    }
-    out.queue(cursor::RestorePosition).ok();
-    out.flush().ok();
 }
 
 fn tool_call_to<W: Write + QueueableCommand>(
@@ -998,17 +959,23 @@ impl OffsetTracker {
         self.entries.clear();
     }
 
-    fn register(&mut self, id: &str, initial_lines: u16) {
-        self.entries.insert(id.to_string(), initial_lines);
+    fn lines_for_width(visible_width: usize, term_width: u16) -> u16 {
+        let tw = term_width as usize;
+        if tw == 0 {
+            return 1;
+        }
+        visible_width.div_ceil(tw) as u16
+    }
+
+    fn register(&mut self, id: &str, visible_width: usize, term_width: u16) {
+        self.entries.insert(
+            id.to_string(),
+            Self::lines_for_width(visible_width, term_width),
+        );
     }
 
     fn increment_all(&mut self, visible_width: usize, term_width: u16) {
-        let term_width = term_width as usize;
-        let delta = if term_width == 0 {
-            0u16
-        } else {
-            visible_width.div_ceil(term_width) as u16
-        };
+        let delta = Self::lines_for_width(visible_width, term_width);
         for offset in self.entries.values_mut() {
             *offset = offset.saturating_add(delta);
         }
@@ -1756,88 +1723,52 @@ mod tests {
     }
 
     #[test]
-    fn draw_panel_status_row_emits_moveto_and_tool_dot() {
-        let entries = vec![(YELLOW, "Bash".to_string())];
-        let mut buf: Vec<u8> = Vec::new();
-        // status_row=23 → crossterm MoveTo(0, 23) → \x1b[24;1H
-        draw_panel_status_row_to(&mut buf, 80, 23, &entries);
-        let out = String::from_utf8_lossy(&buf);
-        assert!(
-            out.contains("\x1b[24;1H"),
-            "MoveTo(0, 23) must emit \\x1b[24;1H; output: {out:?}"
-        );
-        assert!(
-            out.contains("●"),
-            "tool dot must appear in status row; output: {out:?}"
-        );
-        assert!(
-            out.contains("Bash"),
-            "tool name must appear in status row; output: {out:?}"
-        );
-        assert!(
-            contains_seq(&buf, YELLOW_ANSI),
-            "in-progress tool dot must use yellow; output: {out:?}"
-        );
-    }
-
-    #[test]
-    fn draw_panel_status_row_green_dot_after_success() {
-        let entries = vec![(GREEN, "Read".to_string())];
-        let mut buf: Vec<u8> = Vec::new();
-        draw_panel_status_row_to(&mut buf, 80, 20, &entries);
-        assert!(
-            contains_seq(&buf, GREEN_ANSI),
-            "completed tool dot must use green; output: {:?}",
-            String::from_utf8_lossy(&buf)
-        );
-    }
-
-    #[test]
-    fn draw_panel_status_row_empty_entries_emits_clear() {
-        let mut buf: Vec<u8> = Vec::new();
-        draw_panel_status_row_to(&mut buf, 80, 20, &[]);
-        // Should emit a ClearType::CurrentLine (\x1b[2K) — no dot
-        let out = String::from_utf8_lossy(&buf);
-        assert!(
-            !out.contains("●"),
-            "empty entries must not emit a dot; output: {out:?}"
-        );
-    }
-
-    #[test]
     fn offset_tracker_register_and_increment() {
         let mut tracker = OffsetTracker::new();
-        tracker.register("tool1", 1);
+        tracker.register("tool1", 20, 80); // 1 line
         tracker.increment_all(20, 80);
+        assert_eq!(tracker.get_offset("tool1", 100), Some(2));
+    }
+
+    #[test]
+    fn offset_tracker_register_wrapping_line() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 100, 80); // 2 lines (wraps)
         assert_eq!(tracker.get_offset("tool1", 100), Some(2));
     }
 
     #[test]
     fn offset_tracker_increment_line_wrapping() {
         let mut tracker = OffsetTracker::new();
-        tracker.register("tool1", 0);
+        tracker.register("tool1", 1, 80); // 1 line
         tracker.increment_all(100, 80);
-        assert_eq!(tracker.get_offset("tool1", 100), Some(2));
+        assert_eq!(tracker.get_offset("tool1", 100), Some(3));
     }
 
     #[test]
     fn offset_tracker_off_screen_returns_none() {
         let mut tracker = OffsetTracker::new();
-        tracker.register("tool1", 10);
+        tracker.register("tool1", 40, 80); // 1 line
+        for _ in 0..9 {
+            tracker.increment_all(80, 80); // push it to offset 10
+        }
         assert_eq!(tracker.get_offset("tool1", 5), None);
     }
 
     #[test]
     fn offset_tracker_on_screen_returns_some() {
         let mut tracker = OffsetTracker::new();
-        tracker.register("tool1", 3);
+        tracker.register("tool1", 40, 80); // 1 line
+        for _ in 0..2 {
+            tracker.increment_all(80, 80); // push it to offset 3
+        }
         assert_eq!(tracker.get_offset("tool1", 10), Some(3));
     }
 
     #[test]
     fn offset_tracker_remove_makes_get_return_none() {
         let mut tracker = OffsetTracker::new();
-        tracker.register("tool1", 1);
+        tracker.register("tool1", 20, 80);
         tracker.remove("tool1");
         assert_eq!(tracker.get_offset("tool1", 100), None);
     }
@@ -1845,9 +1776,9 @@ mod tests {
     #[test]
     fn offset_tracker_multiple_concurrent_entries() {
         let mut tracker = OffsetTracker::new();
-        tracker.register("tool1", 1);
+        tracker.register("tool1", 20, 80); // 1 line
         tracker.increment_all(80, 80);
-        tracker.register("tool2", 1);
+        tracker.register("tool2", 20, 80); // 1 line
         tracker.increment_all(80, 80);
         assert_eq!(tracker.get_offset("tool1", 100), Some(3));
         assert_eq!(tracker.get_offset("tool2", 100), Some(2));
@@ -1859,7 +1790,7 @@ mod tests {
     #[test]
     fn offset_tracker_recalculate_on_resize() {
         let mut tracker = OffsetTracker::new();
-        tracker.register("tool1", 2);
+        tracker.register("tool1", 160, 80); // 2 lines at width 80
         tracker.recalculate(80, 40);
         assert_eq!(tracker.get_offset("tool1", 100), Some(4));
     }

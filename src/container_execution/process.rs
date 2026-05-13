@@ -155,6 +155,12 @@ pub fn run_container(
         *slot = Some(container_name.to_string());
     }
 
+    crate::dev::log_docker_env(
+        cfg.env_file.as_deref(),
+        cfg.extra_env_file.as_deref(),
+        container_name,
+    );
+
     let mut docker_args = build_docker_args(cfg, &prompt_path, container_name);
     let image = docker_args
         .pop()

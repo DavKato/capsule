@@ -240,6 +240,12 @@ pub fn set_token_warning(msg: Option<&str>) {
 fn setup_scroll_region_to<W: Write + QueueableCommand>(out: &mut W, term_w: u16, term_h: u16) {
     let scroll_bottom = term_h.saturating_sub(PANEL_HEIGHT); // 1-indexed == this value
 
+    // Push pre-existing terminal content into scrollback so the scroll region
+    // doesn't overwrite it (fixes #184).
+    for _ in 0..term_h {
+        out.write_all(b"\n").ok();
+    }
+
     // Set DECSTBM scroll region (rows are 1-indexed in the escape sequence).
     out.write_all(format!("\x1b[1;{}r", scroll_bottom).as_bytes())
         .ok();
@@ -1673,6 +1679,20 @@ mod tests {
     }
 
     // ── TTY drawing path tests via _to sinks ─────────────────────────────────
+
+    #[test]
+    fn setup_scroll_region_pushes_existing_content_into_scrollback_before_decstbm() {
+        let mut buf: Vec<u8> = Vec::new();
+        setup_scroll_region_to(&mut buf, 80, 24);
+        let out = String::from_utf8_lossy(&buf);
+        let decstbm_pos = out.find("\x1b[1;21r").expect("DECSTBM must be emitted");
+        let newlines_before = &out[..decstbm_pos];
+        let newline_count = newlines_before.chars().filter(|&c| c == '\n').count();
+        assert!(
+            newline_count >= 24,
+            "must emit at least term_h newlines before DECSTBM to push existing content into scrollback; got {newline_count}"
+        );
+    }
 
     #[test]
     fn setup_scroll_region_emits_decstbm_sequence() {

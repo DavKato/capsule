@@ -1844,6 +1844,20 @@ mod tests {
         assert_eq!(tracker.get_offset("tool1", 100), Some(5));
     }
 
+    #[test]
+    fn offset_tracker_recalculate_with_residual_offset() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 40, 80); // 1 line own
+        tracker.increment_all(80, 80); // +1 line from other content
+        tracker.increment_all(80, 80); // +1 line from other content
+                                       // total offset = 3 (1 own + 2 other)
+        assert_eq!(tracker.get_offset("tool1", 100), Some(3));
+        tracker.recalculate(80, 40);
+        // own: 40 chars at width 40 = 1 line
+        // other: 2 lines * 80 / 40 = 4 lines (each 80-char line becomes 2 at width 40)
+        assert_eq!(tracker.get_offset("tool1", 100), Some(5));
+    }
+
     const BLINK_ANSI: &[u8] = b"\x1b[5m";
     const DARK_GREY_ANSI: &[u8] = b"\x1b[38;5;8m";
 

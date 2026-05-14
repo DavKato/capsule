@@ -25,6 +25,23 @@ pub fn log_docker_env(
     dump_file("extra_env_file (--env)", extra_env_file);
 }
 
+fn is_secret_key(key: &str) -> bool {
+    let upper = key.to_uppercase();
+    upper.ends_with("_KEY")
+        || upper.ends_with("_TOKEN")
+        || upper.ends_with("_SECRET")
+        || upper.ends_with("_PASSWORD")
+}
+
+fn redact_line(line: &str) -> String {
+    if let Some((key, _)) = line.split_once('=') {
+        if is_secret_key(key) {
+            return format!("{key}=[REDACTED]");
+        }
+    }
+    line.to_string()
+}
+
 fn dump_file(label: &str, path: Option<&Path>) {
     match path {
         None => eprintln!("[dev] {label}: <none>"),
@@ -32,7 +49,7 @@ fn dump_file(label: &str, path: Option<&Path>) {
             Ok(content) => {
                 eprintln!("[dev] {label} ({}):", p.display());
                 for line in content.lines() {
-                    eprintln!("[dev]   {line}");
+                    eprintln!("[dev]   {}", redact_line(line));
                 }
             }
             Err(e) => eprintln!("[dev] {label} ({}): read error: {e}", p.display()),
@@ -63,5 +80,19 @@ mod tests {
     fn log_docker_env_missing_file() {
         let missing = Path::new("/tmp/nonexistent-capsule-test.env");
         log_docker_env(Some(missing), None, "test-container");
+    }
+
+    #[test]
+    fn redact_line_redacts_secrets_and_keeps_safe_vars() {
+        assert_eq!(
+            redact_line("ANTHROPIC_API_KEY=sk-ant-xxx"),
+            "ANTHROPIC_API_KEY=[REDACTED]"
+        );
+        assert_eq!(redact_line("MY_TOKEN=abc123"), "MY_TOKEN=[REDACTED]");
+        assert_eq!(redact_line("DB_SECRET=hunter2"), "DB_SECRET=[REDACTED]");
+        assert_eq!(redact_line("DB_PASSWORD=s3cr3t"), "DB_PASSWORD=[REDACTED]");
+        assert_eq!(redact_line("DEBUG=true"), "DEBUG=true");
+        assert_eq!(redact_line("FOO=bar"), "FOO=bar");
+        assert_eq!(redact_line("NO_EQUALS_HERE"), "NO_EQUALS_HERE");
     }
 }

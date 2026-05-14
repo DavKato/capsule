@@ -396,4 +396,79 @@ mod tests {
             "submit_verdict_missing must take priority over non-zero exit"
         );
     }
+
+    #[test]
+    fn format_tool_args_priority_key_command() {
+        let input = serde_json::json!({"command": "ls -la", "other": "ignored"});
+        assert_eq!(format_tool_args(&input), "ls -la");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_file_path() {
+        let input = serde_json::json!({"file_path": "/src/main.rs"});
+        assert_eq!(format_tool_args(&input), "/src/main.rs");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_path() {
+        let input = serde_json::json!({"path": "/some/dir"});
+        assert_eq!(format_tool_args(&input), "/some/dir");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_pattern() {
+        let input = serde_json::json!({"pattern": "*.rs"});
+        assert_eq!(format_tool_args(&input), "*.rs");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_prompt() {
+        let input = serde_json::json!({"prompt": "hello world"});
+        assert_eq!(format_tool_args(&input), "hello world");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_over_fallback() {
+        // command is a priority key and should win over any other string values
+        let input = serde_json::json!({"other": "fallback_value", "command": "priority_value"});
+        assert_eq!(format_tool_args(&input), "priority_value");
+    }
+
+    #[test]
+    fn format_tool_args_fallback_to_first_string_value() {
+        let input = serde_json::json!({"unknown_key": "fallback_value"});
+        assert_eq!(format_tool_args(&input), "fallback_value");
+    }
+
+    #[test]
+    fn format_tool_args_non_object_returns_empty() {
+        assert_eq!(format_tool_args(&serde_json::json!("string")), "");
+        assert_eq!(format_tool_args(&serde_json::json!(42)), "");
+        assert_eq!(format_tool_args(&serde_json::json!(["a", "b"])), "");
+        assert_eq!(format_tool_args(&serde_json::json!(null)), "");
+    }
+
+    #[test]
+    fn format_tool_args_empty_object_returns_empty() {
+        assert_eq!(format_tool_args(&serde_json::json!({})), "");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_non_string_value_falls_through_to_fallback() {
+        // command key exists but has a non-string value; should fall through to fallback
+        let input = serde_json::json!({"command": 42, "other": "fallback"});
+        assert_eq!(format_tool_args(&input), "fallback");
+    }
+
+    #[test]
+    fn format_tool_args_newlines_replaced_with_spaces() {
+        let input = serde_json::json!({"command": "line1\nline2\nline3"});
+        assert_eq!(format_tool_args(&input), "line1 line2 line3");
+    }
+
+    #[test]
+    fn format_tool_args_no_string_values_returns_empty() {
+        let input = serde_json::json!({"a": 1, "b": true, "c": null});
+        assert_eq!(format_tool_args(&input), "");
+    }
 }

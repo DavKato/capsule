@@ -38,6 +38,7 @@ struct DisplayState {
     model: String,
     start_time: Instant,
     token_warning: Option<String>,
+    usage_tokens: Option<u64>,
     active_tool_calls: Vec<(String, ToolCallEntry)>,
     offset_tracker: OffsetTracker,
 }
@@ -52,6 +53,7 @@ impl DisplayState {
             model: String::new(),
             start_time: Instant::now(),
             token_warning: None,
+            usage_tokens: None,
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
         }
@@ -172,6 +174,7 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
             state.model = model.to_owned();
             state.start_time = Instant::now();
             state.token_warning = None;
+            state.usage_tokens = None;
             state.active_tool_calls.clear();
             state.offset_tracker.clear();
         }
@@ -209,6 +212,7 @@ pub fn clear_stage() {
         state.iteration = 0;
         state.model.clear();
         state.token_warning = None;
+        state.usage_tokens = None;
         state.active_tool_calls.clear();
         state.offset_tracker.clear();
         let (info_r, status_r) = (state.info_row(), state.status_row());
@@ -223,6 +227,18 @@ pub fn set_token_warning(msg: Option<&str>) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
         state.token_warning = msg.map(str::to_owned);
+        let (tw, info) = (state.term_width, state.info_row());
+        let info_text = build_info_text(state);
+        drop(guard);
+        draw_panel_info_row_to(&mut out, tw, info, &info_text);
+    }
+}
+
+pub fn set_usage(total_tokens: u64) {
+    let mut out = stdout().lock();
+    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.as_mut() {
+        state.usage_tokens = Some(total_tokens);
         let (tw, info) = (state.term_width, state.info_row());
         let info_text = build_info_text(state);
         drop(guard);
@@ -283,15 +299,28 @@ fn handle_resize_if_needed<W: Write + QueueableCommand>(
     false
 }
 
+fn format_token_count(total: u64) -> String {
+    if total >= 1_000_000 {
+        format!("{:.1}M used", total as f64 / 1_000_000.0)
+    } else if total >= 1_000 {
+        format!("{:.1}k used", total as f64 / 1_000.0)
+    } else {
+        format!("{total} used")
+    }
+}
+
 fn build_info_text(state: &DisplayState) -> String {
     let duration = state.start_time.elapsed();
-    let base = format!(
+    let mut base = format!(
         "Stage: {}  Iter: {}  Model: {}  Duration: {}",
         state.stage_name,
         state.iteration,
         state.model,
         format_duration(duration),
     );
+    if let Some(tokens) = state.usage_tokens {
+        base = format!("{base}  {}", format_token_count(tokens));
+    }
     if let Some(warn) = &state.token_warning {
         format!("{base}  ⚠ {warn}")
     } else {
@@ -1631,6 +1660,7 @@ mod tests {
             model: "claude-opus-4-6".to_string(),
             start_time: Instant::now(),
             token_warning: None,
+            usage_tokens: None,
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
         };
@@ -1639,6 +1669,88 @@ mod tests {
         assert!(text.contains("3"), "iteration must appear");
         assert!(text.contains("claude-opus-4-6"), "model must appear");
         assert!(text.contains("00:"), "duration must appear in MM:SS format");
+    }
+
+    #[test]
+    fn format_token_count_zero() {
+        assert_eq!(format_token_count(0), "0 used");
+    }
+
+    #[test]
+    fn format_token_count_below_k_threshold() {
+        assert_eq!(format_token_count(999), "999 used");
+    }
+
+    #[test]
+    fn format_token_count_exactly_one_k() {
+        assert_eq!(format_token_count(1_000), "1.0k used");
+    }
+
+    #[test]
+    fn format_token_count_one_point_five_k() {
+        assert_eq!(format_token_count(1_500), "1.5k used");
+    }
+
+    #[test]
+    fn format_token_count_33k() {
+        assert_eq!(format_token_count(33_300), "33.3k used");
+    }
+
+    #[test]
+    fn format_token_count_128k() {
+        assert_eq!(format_token_count(128_000), "128.0k used");
+    }
+
+    #[test]
+    fn format_token_count_exactly_one_m() {
+        assert_eq!(format_token_count(1_000_000), "1.0M used");
+    }
+
+    #[test]
+    fn format_token_count_one_point_five_m() {
+        assert_eq!(format_token_count(1_500_000), "1.5M used");
+    }
+
+    #[test]
+    fn build_info_text_includes_usage_when_set() {
+        let state = DisplayState {
+            term_width: 80,
+            term_height: 24,
+            stage_name: "review".to_string(),
+            iteration: 2,
+            model: "opus".to_string(),
+            start_time: Instant::now(),
+            token_warning: None,
+            usage_tokens: Some(33_300),
+            active_tool_calls: Vec::new(),
+            offset_tracker: OffsetTracker::new(),
+        };
+        let text = build_info_text(&state);
+        assert!(
+            text.contains("33.3k used"),
+            "usage segment must appear when set; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn build_info_text_omits_usage_when_none() {
+        let state = DisplayState {
+            term_width: 80,
+            term_height: 24,
+            stage_name: "review".to_string(),
+            iteration: 2,
+            model: "opus".to_string(),
+            start_time: Instant::now(),
+            token_warning: None,
+            usage_tokens: None,
+            active_tool_calls: Vec::new(),
+            offset_tracker: OffsetTracker::new(),
+        };
+        let text = build_info_text(&state);
+        assert!(
+            !text.contains("used"),
+            "usage segment must be absent when None; got: {text:?}"
+        );
     }
 
     // ── wrap_text edge cases ──────────────────────────────────────────────────

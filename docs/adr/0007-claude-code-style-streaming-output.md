@@ -13,4 +13,4 @@ Capsule's terminal output uses raw `println!`/`eprintln!` with no color or struc
 - `crossterm` added as a dependency (colors + cursor control).
 - `StreamParser` extended to extract tool-call results (success/failure), not just verdicts.
 - `entrypoint.sh` loud hook echo lines removed; proper hook rendering deferred to a future Docker-crate migration.
-- Context window usage display deferred to a later iteration.
+- Context window usage display added: live token count in the status panel info row during streaming, plus end-of-run context window percentage. _(Done — #189, #190, #191.)_

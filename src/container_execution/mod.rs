@@ -10,7 +10,10 @@ pub use infra::{
 };
 pub use process::{post_stream_error, run_container, run_iteration, StreamResult};
 pub use runner::{CredentialsGuard, DockerStageRunner};
-pub use stream_parser::{StreamParser, ToolEvent, ToolResultEvent, ToolUseEvent};
+pub use stream_parser::{
+    format_usage_with_percentage, ModelUsage, StreamParser, ToolEvent, ToolResultEvent,
+    ToolUseEvent,
+};
 
 use std::path::PathBuf;
 
@@ -59,11 +62,15 @@ pub struct ExecutionConfig {
 #[derive(Debug)]
 pub enum IterationOutcome {
     /// Loop should continue to the next iteration.
-    Continue { session_id: Option<String> },
+    Continue {
+        session_id: Option<String>,
+        model_usage: Option<ModelUsage>,
+    },
     /// Claude submitted a verdict; loop should stop.
     Done {
         verdict: crate::verdict::Verdict,
         session_id: Option<String>,
+        model_usage: Option<ModelUsage>,
     },
     /// Auth failed but the host token is still valid; caller should re-copy
     /// credentials, call `CredentialsGuard::reset_baseline`, and retry with

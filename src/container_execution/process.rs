@@ -75,6 +75,9 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
             };
             crate::display::agent_text(text);
         }
+        if let Some(snap) = parser.last_usage_snapshot() {
+            crate::display::set_usage(snap.total_tokens());
+        }
         if !had_text
             && !had_tool_events
             && !verdict_seen

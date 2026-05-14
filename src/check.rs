@@ -29,10 +29,10 @@ pub fn check(pipeline: &PipelineConfig, capsule_dir: &Path) -> CheckReport {
 fn check_dockerfile(capsule_dir: &Path, issues: &mut CheckReport) {
     if !capsule_dir.join("Dockerfile").exists() {
         issues.push(CheckIssue {
-            severity: Severity::Error,
+            severity: Severity::Hint,
             location: "Dockerfile".to_string(),
-            message: "Dockerfile not found in capsule directory".to_string(),
-            fix_hint: Some("run `capsule init` to scaffold a Dockerfile".to_string()),
+            message: "no Dockerfile — the base capsule image will be used as-is".to_string(),
+            fix_hint: Some("add a Dockerfile to install extra dependencies".to_string()),
         });
     }
 }

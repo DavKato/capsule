@@ -73,16 +73,16 @@ fn check_invalid_route_target_fails() {
 }
 
 #[test]
-fn check_missing_dockerfile_fails() {
+fn check_missing_dockerfile_hints() {
     let output = cmd()
         .args(["check", "--capsule-dir"])
         .arg(fixture("invalid-missing-dockerfile"))
         .assert()
-        .failure();
+        .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("Dockerfile"),
-        "expected 'Dockerfile' in output, got:\n{stdout}"
+        "expected 'Dockerfile' hint in output, got:\n{stdout}"
     );
 }
 

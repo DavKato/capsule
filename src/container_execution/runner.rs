@@ -9,7 +9,7 @@ use crate::verdict::Verdict;
 
 use super::{
     container_name_for, post_stream_error, run_container, run_iteration, ExecutionConfig,
-    IterationOutcome,
+    IterationOutcome, ModelUsage,
 };
 
 pub struct CredentialsGuard {
@@ -96,6 +96,7 @@ pub struct DockerStageRunner {
     active_container: Arc<Mutex<Option<String>>>,
     iteration: u32,
     session_id: Option<String>,
+    model_usage: Option<ModelUsage>,
     credentials_guard: Option<CredentialsGuard>,
     resume_session_id: Option<String>,
 }
@@ -112,6 +113,7 @@ impl DockerStageRunner {
             active_container,
             iteration: 0,
             session_id: None,
+            model_usage: None,
             credentials_guard,
             resume_session_id,
         }
@@ -119,6 +121,10 @@ impl DockerStageRunner {
 
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    pub fn model_usage(&self) -> Option<&ModelUsage> {
+        self.model_usage.as_ref()
     }
 }
 
@@ -188,21 +194,34 @@ impl DockerStageRunner {
             if let Some(id) = result.session_id {
                 self.session_id = Some(id);
             }
+            if let Some(u) = result.model_usage {
+                self.model_usage = Some(u);
+            }
             return Ok(result.verdict);
         }
         match run_iteration(&cfg, self.iteration, &self.active_container)? {
             IterationOutcome::Done {
                 verdict,
                 session_id,
+                model_usage,
             } => {
                 if let Some(id) = session_id {
                     self.session_id = Some(id);
                 }
+                if let Some(u) = model_usage {
+                    self.model_usage = Some(u);
+                }
                 Ok(Some(verdict))
             }
-            IterationOutcome::Continue { session_id } => {
+            IterationOutcome::Continue {
+                session_id,
+                model_usage,
+            } => {
                 if let Some(id) = session_id {
                     self.session_id = Some(id);
+                }
+                if let Some(u) = model_usage {
+                    self.model_usage = Some(u);
                 }
                 Ok(None)
             }
@@ -238,6 +257,9 @@ impl DockerStageRunner {
         }
         if let Some(id) = result.session_id {
             self.session_id = Some(id);
+        }
+        if let Some(u) = result.model_usage {
+            self.model_usage = Some(u);
         }
         Ok(result.verdict)
     }

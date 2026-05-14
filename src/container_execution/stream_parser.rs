@@ -30,6 +30,25 @@ pub struct UsageSnapshot {
     pub output_tokens: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ModelUsage {
+    pub context_window: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+}
+
+/// Format total token usage with context window percentage, e.g. `"33.3k (16.6%) used"`.
+pub fn format_usage_with_percentage(total_tokens: u64, context_window: u64) -> String {
+    let k = total_tokens as f64 / 1000.0;
+    let pct = if context_window > 0 {
+        total_tokens as f64 / context_window as f64 * 100.0
+    } else {
+        0.0
+    };
+    format!("{k:.1}k ({pct:.1}%) used")
+}
+
 impl UsageSnapshot {
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens
@@ -49,6 +68,7 @@ pub struct StreamParser {
     last_text_displays: Vec<TextDisplay>,
     last_parsed_value: Option<Value>,
     last_usage_snapshot: Option<UsageSnapshot>,
+    model_usage: Option<ModelUsage>,
 }
 
 impl StreamParser {
@@ -63,6 +83,7 @@ impl StreamParser {
             last_text_displays: Vec::new(),
             last_parsed_value: None,
             last_usage_snapshot: None,
+            model_usage: None,
         }
     }
 
@@ -97,6 +118,9 @@ impl StreamParser {
         self.last_tool_events = tool_events;
         self.last_text_displays = text_displays;
         self.last_usage_snapshot = extract_usage_snapshot(&msg);
+        if let Some(usage) = extract_model_usage(&msg) {
+            self.model_usage = Some(usage);
+        }
         if msg.get("type").is_some() {
             self.last_parsed_value = Some(msg);
         }
@@ -140,6 +164,11 @@ impl StreamParser {
     /// line was an assistant message carrying `message.usage`.
     pub fn last_usage_snapshot(&self) -> Option<&UsageSnapshot> {
         self.last_usage_snapshot.as_ref()
+    }
+
+    /// Returns model usage extracted from the final `"type": "result"` message, if seen.
+    pub fn model_usage(&self) -> Option<&ModelUsage> {
+        self.model_usage.as_ref()
     }
 }
 
@@ -263,6 +292,28 @@ fn extract_usage_snapshot(msg: &Value) -> Option<UsageSnapshot> {
         cache_read_input_tokens: get_u64("cache_read_input_tokens"),
         output_tokens: get_u64("output_tokens"),
     })
+}
+
+fn extract_model_usage(msg: &Value) -> Option<ModelUsage> {
+    if msg.get("type").and_then(Value::as_str) != Some("result") {
+        return None;
+    }
+    let model_usage_map = msg.get("modelUsage")?.as_object()?;
+    model_usage_map
+        .values()
+        .filter_map(|v| {
+            let context_window = v.get("contextWindow")?.as_u64()?;
+            let input_tokens = v.get("inputTokens").and_then(Value::as_u64).unwrap_or(0);
+            let output_tokens = v.get("outputTokens").and_then(Value::as_u64).unwrap_or(0);
+            let cost_usd = v.get("costUSD").and_then(Value::as_f64).unwrap_or(0.0);
+            Some(ModelUsage {
+                context_window,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+            })
+        })
+        .max_by_key(|u| u.context_window)
 }
 
 fn extract_verdict(msg: &Value) -> Option<Verdict> {
@@ -892,5 +943,82 @@ mod tests {
         assert!(p.last_usage_snapshot().is_some());
         p.feed(ASSISTANT_WITHOUT_USAGE);
         assert!(p.last_usage_snapshot().is_none());
+    }
+
+    const RESULT_WITH_MODEL_USAGE: &str = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"maxOutputTokens":32000,"inputTokens":388,"outputTokens":163,"costUSD":0.017286}}}"#;
+    const RESULT_MULTI_MODEL: &str = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"inputTokens":100,"outputTokens":50,"costUSD":0.01},"claude-opus-4-7":{"contextWindow":1000000,"inputTokens":200,"outputTokens":80,"costUSD":0.05}}}"#;
+
+    #[test]
+    fn result_with_model_usage_extracts_correctly() {
+        let mut p = StreamParser::new();
+        p.feed(RESULT_WITH_MODEL_USAGE);
+        let usage = p.model_usage().expect("expected model usage");
+        assert_eq!(usage.context_window, 200000);
+        assert_eq!(usage.input_tokens, 388);
+        assert_eq!(usage.output_tokens, 163);
+        assert!((usage.cost_usd - 0.017286).abs() < 1e-6);
+    }
+
+    #[test]
+    fn result_without_model_usage_yields_none() {
+        let mut p = StreamParser::new();
+        p.feed(RESULT_LINE);
+        assert!(p.model_usage().is_none());
+    }
+
+    #[test]
+    fn non_result_message_does_not_set_model_usage() {
+        let mut p = StreamParser::new();
+        p.feed(ASSISTANT_WITH_USAGE);
+        assert!(p.model_usage().is_none());
+    }
+
+    #[test]
+    fn multi_model_result_picks_largest_context_window() {
+        let mut p = StreamParser::new();
+        p.feed(RESULT_MULTI_MODEL);
+        let usage = p.model_usage().expect("expected model usage");
+        assert_eq!(usage.context_window, 1_000_000);
+        assert_eq!(usage.input_tokens, 200);
+        assert_eq!(usage.output_tokens, 80);
+    }
+
+    #[test]
+    fn model_usage_persists_across_subsequent_feeds() {
+        let mut p = StreamParser::new();
+        p.feed(RESULT_WITH_MODEL_USAGE);
+        assert!(p.model_usage().is_some());
+        p.feed(TEXT_LINE);
+        assert!(
+            p.model_usage().is_some(),
+            "model_usage must persist after non-result feed"
+        );
+    }
+
+    #[test]
+    fn format_usage_with_percentage_typical() {
+        // 20000 / 200000 = 10.0% — exact, no rounding ambiguity
+        assert_eq!(
+            format_usage_with_percentage(20000, 200000),
+            "20.0k (10.0%) used"
+        );
+    }
+
+    #[test]
+    fn format_usage_with_percentage_zero_tokens() {
+        assert_eq!(format_usage_with_percentage(0, 200000), "0.0k (0.0%) used");
+    }
+
+    #[test]
+    fn format_usage_with_percentage_full_window() {
+        assert_eq!(
+            format_usage_with_percentage(200000, 200000),
+            "200.0k (100.0%) used"
+        );
+    }
+
+    #[test]
+    fn format_usage_with_percentage_zero_context_window() {
+        assert_eq!(format_usage_with_percentage(1000, 0), "1.0k (0.0%) used");
     }
 }

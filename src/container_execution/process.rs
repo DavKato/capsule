@@ -1,6 +1,6 @@
 use super::docker_args::{build_docker_args, container_name_for};
 use super::infra::{host_token_is_expired, make_mcp_config};
-use super::stream_parser::{StreamParser, TextDisplay, ToolEvent};
+use super::stream_parser::{ModelUsage, StreamParser, TextDisplay, ToolEvent};
 use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
@@ -12,6 +12,7 @@ pub struct StreamResult {
     pub submit_verdict_missing: bool,
     pub verdict: Option<crate::verdict::Verdict>,
     pub session_id: Option<String>,
+    pub model_usage: Option<ModelUsage>,
 }
 
 pub fn post_stream_error(
@@ -93,6 +94,7 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         submit_verdict_missing: parser.submit_verdict_missing(),
         verdict: parser.verdict().cloned(),
         session_id: parser.session_id().map(str::to_owned),
+        model_usage: parser.model_usage().cloned(),
     })
 }
 
@@ -257,9 +259,11 @@ pub fn run_iteration(
         Some(verdict) => Ok(IterationOutcome::Done {
             verdict,
             session_id: result.session_id,
+            model_usage: result.model_usage,
         }),
         None => Ok(IterationOutcome::Continue {
             session_id: result.session_id,
+            model_usage: result.model_usage,
         }),
     }
 }
@@ -286,6 +290,7 @@ mod tests {
             submit_verdict_missing: false,
             verdict: None,
             session_id: None,
+            model_usage: None,
         }
     }
 

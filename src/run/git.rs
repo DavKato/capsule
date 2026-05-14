@@ -17,6 +17,8 @@ pub(super) fn resolve_git_identity(
 }
 
 fn git_config_get(key: &str, env: &HashMap<String, String>) -> String {
+    // env_clear() is intentionally absent: git needs HOME to locate ~/.gitconfig.
+    // The caller supplies a curated env; .envs() merges it on top of the inherited env.
     Command::new("git")
         .args(["config", key])
         .envs(env)

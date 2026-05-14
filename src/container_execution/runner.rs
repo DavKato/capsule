@@ -138,9 +138,12 @@ impl StageRunner for DockerStageRunner {
         let start = std::time::Instant::now();
         let result = self.execute_stage(prompt, model);
         let duration = start.elapsed();
+        crate::display::clear_stage();
         match &result {
             Ok(verdict) => {
                 crate::display::session_footer(
+                    stage_name,
+                    self.iteration,
                     verdict.as_ref(),
                     duration,
                     self.session_id.as_deref(),
@@ -152,6 +155,8 @@ impl StageRunner for DockerStageRunner {
                     notes: Some(format!("{e:#}")),
                 };
                 crate::display::session_footer(
+                    stage_name,
+                    self.iteration,
                     Some(&error_verdict),
                     duration,
                     self.session_id.as_deref(),

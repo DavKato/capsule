@@ -30,6 +30,7 @@ pub struct StreamParser {
     session_id: Option<String>,
     last_tool_events: Vec<ToolEvent>,
     last_text_displays: Vec<TextDisplay>,
+    last_parsed_value: Option<Value>,
 }
 
 impl StreamParser {
@@ -42,12 +43,14 @@ impl StreamParser {
             session_id: None,
             last_tool_events: Vec::new(),
             last_text_displays: Vec::new(),
+            last_parsed_value: None,
         }
     }
 
     pub fn feed(&mut self, line: &str) -> Option<&Verdict> {
         self.last_tool_events.clear();
         self.last_text_displays.clear();
+        self.last_parsed_value = None;
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return self.verdict.as_ref();
         };
@@ -73,6 +76,9 @@ impl StreamParser {
         let (tool_events, text_displays) = extract_assistant_content(&msg);
         self.last_tool_events = tool_events;
         self.last_text_displays = text_displays;
+        if msg.get("type").is_some() {
+            self.last_parsed_value = Some(msg);
+        }
         self.verdict.as_ref()
     }
 
@@ -102,6 +108,12 @@ impl StreamParser {
     pub fn last_text_displays(&self) -> &[TextDisplay] {
         &self.last_text_displays
     }
+
+    /// Returns the parsed JSON value from the most recent `feed()` call, if the line
+    /// was valid JSON containing a `"type"` field.
+    pub fn last_parsed_value(&self) -> Option<&Value> {
+        self.last_parsed_value.as_ref()
+    }
 }
 
 impl Default for StreamParser {
@@ -125,11 +137,8 @@ fn extract_session_id(msg: &Value) -> Option<String> {
 }
 
 fn is_valid_session_id(id: &str) -> bool {
-    let Some(rest) = id.strip_prefix("sess_") else {
-        return false;
-    };
-    !rest.is_empty()
-        && rest
+    !id.is_empty()
+        && id
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
@@ -248,6 +257,60 @@ mod tests {
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking..."}]}}"#;
     const RESULT_LINE: &str = r#"{"type":"result","subtype":"success","result":"done"}"#;
     const AUTH_FAIL_LINE: &str = r#"{"type":"result","subtype":"error","error":{"type":"authentication_failed","message":"invalid token"}}"#;
+
+    #[test]
+    fn last_parsed_value_some_for_typed_json() {
+        let mut p = StreamParser::new();
+        p.feed(r#"{"type":"system.init","foo":"bar"}"#);
+        assert!(p.last_parsed_value().is_some());
+    }
+
+    #[test]
+    fn last_parsed_value_none_for_json_without_type() {
+        let mut p = StreamParser::new();
+        p.feed(r#"{"foo":"bar"}"#);
+        assert!(p.last_parsed_value().is_none());
+    }
+
+    #[test]
+    fn last_parsed_value_none_for_non_json() {
+        let mut p = StreamParser::new();
+        p.feed("plain text line");
+        assert!(p.last_parsed_value().is_none());
+        p.feed("GH_TOKEN: local (.capsule/.env)");
+        assert!(p.last_parsed_value().is_none());
+        p.feed("");
+        assert!(p.last_parsed_value().is_none());
+    }
+
+    #[test]
+    fn last_parsed_value_none_for_rate_limit_adjacent_non_json() {
+        let mut p = StreamParser::new();
+        p.feed("working on: #126");
+        assert!(p.last_parsed_value().is_none());
+    }
+
+    #[test]
+    fn last_parsed_value_some_for_different_type_values() {
+        let mut p = StreamParser::new();
+        for ty in &["rate_limit_event", "user", "assistant", "system.init"] {
+            let line = format!(r#"{{"type":"{ty}"}}"#);
+            p.feed(&line);
+            assert!(
+                p.last_parsed_value().is_some(),
+                "type={ty} must yield last_parsed_value"
+            );
+        }
+    }
+
+    #[test]
+    fn last_parsed_value_cleared_between_feeds() {
+        let mut p = StreamParser::new();
+        p.feed(r#"{"type":"assistant","foo":"bar"}"#);
+        assert!(p.last_parsed_value().is_some());
+        p.feed("plain text");
+        assert!(p.last_parsed_value().is_none());
+    }
 
     #[test]
     fn non_json_returns_none() {
@@ -451,11 +514,19 @@ mod tests {
     }
 
     #[test]
-    fn session_id_rejected_without_sess_prefix() {
+    fn session_id_accepted_without_sess_prefix() {
         let line = r#"{"type":"system","subtype":"init","session_id":"abc123","tools":["Bash"]}"#;
         let mut p = StreamParser::new();
         p.feed(line);
-        assert_eq!(p.session_id(), None);
+        assert_eq!(p.session_id(), Some("abc123"));
+    }
+
+    #[test]
+    fn session_id_accepted_uuid_format() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"01f202b4-9b8e-44f8-a811-f1d0b75094db","tools":["Bash"]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert_eq!(p.session_id(), Some("01f202b4-9b8e-44f8-a811-f1d0b75094db"));
     }
 
     #[test]
@@ -468,8 +539,8 @@ mod tests {
     }
 
     #[test]
-    fn session_id_rejected_if_only_prefix() {
-        let line = r#"{"type":"system","subtype":"init","session_id":"sess_","tools":["Bash"]}"#;
+    fn session_id_rejected_if_empty() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"","tools":["Bash"]}"#;
         let mut p = StreamParser::new();
         p.feed(line);
         assert_eq!(p.session_id(), None);

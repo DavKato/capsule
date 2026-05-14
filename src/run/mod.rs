@@ -120,6 +120,7 @@ impl RunSession {
                     let _ = Command::new("docker").args(["stop", name]).output();
                 }
             }
+            capsule::display::teardown();
             std::process::exit(1);
         })
         .context("failed to register Ctrl-C handler")?;
@@ -240,7 +241,8 @@ impl RunSession {
             result.summary.session_id.as_deref(),
             &result.summary.terminal_reason,
         ) {
-            capsule::display::info(&format!("\n{hint}"));
+            capsule::display::info("");
+            capsule::display::capsule_info(&hint);
         }
         update_check::maybe_print_notice(update_rx);
         Ok(summary::exit_decision_from_summary(&result.summary))

@@ -19,7 +19,6 @@ pub(super) fn resolve_git_identity(
 fn git_config_get(key: &str, env: &HashMap<String, String>) -> String {
     Command::new("git")
         .args(["config", key])
-        .env_clear()
         .envs(env)
         .output()
         .ok()

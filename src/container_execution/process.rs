@@ -3,7 +3,6 @@ use super::infra::{host_token_is_expired, make_mcp_config};
 use super::stream_parser::{StreamParser, TextDisplay, ToolEvent};
 use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -45,38 +44,43 @@ pub fn post_stream_error(
 
 fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result<StreamResult> {
     let mut parser = StreamParser::new();
-    let mut pending_tool_names: HashMap<String, String> = HashMap::new();
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
         let verdict_seen = parser.feed(&line).is_some();
         if verbose {
-            crate::display::info(&line);
+            if let Some(v) = parser.last_parsed_value() {
+                let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| line.clone());
+                crate::display::info(&pretty);
+            } else {
+                crate::display::info(&line);
+            }
         }
         let had_tool_events = !parser.last_tool_events().is_empty();
         for event in parser.last_tool_events() {
             match event {
                 ToolEvent::Use(tu) => {
                     let args = format_tool_args(&tu.input);
-                    pending_tool_names.insert(tu.id.clone(), tu.name.clone());
-                    crate::display::tool_call(&tu.name, &args);
+                    crate::display::tool_call(&tu.name, &args, &tu.id);
                 }
                 ToolEvent::Result(tr) => {
-                    let name = pending_tool_names
-                        .remove(&tr.tool_use_id)
-                        .unwrap_or_else(|| "unknown".to_owned());
-                    crate::display::tool_result(&name, !tr.is_error);
+                    crate::display::tool_result(&tr.tool_use_id, !tr.is_error);
                 }
             }
         }
         let had_text = !parser.last_text_displays().is_empty();
         for display in parser.last_text_displays() {
-            match display {
-                TextDisplay::Content(text) => crate::display::text_content(text),
-                TextDisplay::Thinking(text) => crate::display::thinking_text(text),
-            }
+            let text = match display {
+                TextDisplay::Content(t) | TextDisplay::Thinking(t) => t,
+            };
+            crate::display::agent_text(text);
         }
-        if !had_text && !had_tool_events && !verdict_seen && !line.is_empty() {
+        if !had_text
+            && !had_tool_events
+            && !verdict_seen
+            && !line.is_empty()
+            && parser.last_parsed_value().is_none()
+        {
             crate::display::info(&line);
         }
     }
@@ -151,6 +155,12 @@ pub fn run_container(
         *slot = Some(container_name.to_string());
     }
 
+    crate::dev::log_docker_env(
+        cfg.env_file.as_deref(),
+        cfg.extra_env_file.as_deref(),
+        container_name,
+    );
+
     let mut docker_args = build_docker_args(cfg, &prompt_path, container_name);
     let image = docker_args
         .pop()
@@ -172,6 +182,7 @@ pub fn run_container(
     let mut docker_child = Command::new("docker")
         .args(&docker_args)
         .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .context("failed to spawn `docker run`")?;
 

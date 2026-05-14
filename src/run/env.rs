@@ -65,11 +65,11 @@ pub(super) fn setup_gh_token(
 
     match scope {
         GithubScope::Local => {
-            capsule::display::info("GH_TOKEN: local (.capsule/.env)");
+            capsule::display::capsule_info("GitHub token loaded from .capsule/.env");
         }
         GithubScope::Global => {
             if pre_dotenv_env.contains_key("GH_TOKEN") {
-                capsule::display::info("GH_TOKEN: global (process environment)");
+                capsule::display::capsule_info("GitHub token loaded from process environment");
             } else {
                 capsule::display::warning(
                     "GH_TOKEN not found in process environment — falling back to gh auth token",

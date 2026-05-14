@@ -85,11 +85,11 @@ pub fn build_base_image(rebuild: bool) -> Result<()> {
         if image_label(BASE_IMAGE, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
             return Ok(());
         }
-        crate::display::info(&format!(
+        crate::display::capsule_info(&format!(
             "Base Dockerfile changed — rebuilding {BASE_IMAGE}…"
         ));
     } else {
-        crate::display::info(&format!("Building {BASE_IMAGE} image…"));
+        crate::display::capsule_info(&format!("Building {BASE_IMAGE} image…"));
     }
 
     let ctx = tempfile::tempdir().context("failed to create build context tempdir")?;
@@ -117,7 +117,7 @@ pub fn build_base_image(rebuild: bool) -> Result<()> {
         );
     }
 
-    crate::display::info("Image ready.");
+    crate::display::capsule_info("Image ready.");
     Ok(())
 }
 
@@ -147,9 +147,9 @@ pub fn build_derived_image(cfg: &BuildConfig) -> Result<Option<String>> {
         if image_label(&name, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
             return Ok(Some(name));
         }
-        crate::display::info(&format!("Derived Dockerfile changed — rebuilding {name}…"));
+        crate::display::capsule_info(&format!("Derived Dockerfile changed — rebuilding {name}…"));
     } else {
-        crate::display::info(&format!("Building derived image {name}…"));
+        crate::display::capsule_info(&format!("Building derived image {name}…"));
     }
 
     let label = format!("{DOCKERFILE_HASH_LABEL}={hash}");
@@ -174,7 +174,7 @@ pub fn build_derived_image(cfg: &BuildConfig) -> Result<Option<String>> {
         );
     }
 
-    crate::display::info("Derived image ready.");
+    crate::display::capsule_info("Derived image ready.");
     Ok(Some(name))
 }
 

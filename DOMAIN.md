@@ -205,7 +205,7 @@ A two-rule Claude Code routing signpost — "for setup, run `capsule templates l
 _Avoid_: Plugin, agent definition
 
 **Base image assets**:
-The compile-time-bundled files in the repo's `base-image/` directory (`Dockerfile`, `entrypoint.sh`, `stream_display.jq`, `system_preamble.md`) — embedded into the `capsule` binary via `include_str!`. Not user-facing; not a **Template**.
+The compile-time-bundled files in the repo's `base-image/` directory (`Dockerfile`, `entrypoint.sh`, `system_preamble.md`) — embedded into the `capsule` binary via `include_str!`. Not user-facing; not a **Template**.
 _Avoid_: Templates (the directory was renamed in 2026-04 to free the name for user scaffolds)
 
 ## Relationships

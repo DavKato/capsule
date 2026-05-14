@@ -1,6 +1,6 @@
 stages:
     - loop:
-          max_iteration: 15
+          max_iteration: 30
           stages:
               - name: implementer
                 model: claude-sonnet-4-6
@@ -21,3 +21,4 @@ stages:
 
 model: claude-opus-4-6
 github: local
+git_identity: capsule

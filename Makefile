@@ -6,3 +6,6 @@ uninstall-dev:
 
 display-demo:
 	cargo run --example display_demo
+
+test-run:
+	cargo run -- run --capsule-dir .capsule-test

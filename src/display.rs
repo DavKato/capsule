@@ -738,6 +738,9 @@ fn tool_result_to<W: Write + QueueableCommand>(
 /// line of each new block, and indented continuation lines within the same block.
 /// Text is wrapped at `content_width` so wrapped portions also get indented.
 pub fn agent_text(text: &str) {
+    if text.is_empty() {
+        return;
+    }
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
     let was_text = last;
     let term_w = terminal_width() as usize;
@@ -799,30 +802,33 @@ fn format_duration(d: Duration) -> String {
 
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
-        return vec![text.to_string()];
+        return text.lines().map(String::from).collect();
     }
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_len = 0usize;
-    for word in text.split_whitespace() {
-        let word_len = word.chars().count();
-        if current_len == 0 {
-            current.push_str(word);
-            current_len = word_len;
-        } else if current_len + 1 + word_len <= max_width {
-            current.push(' ');
-            current.push_str(word);
-            current_len += 1 + word_len;
-        } else {
-            lines.push(current.clone());
-            current = word.to_string();
-            current_len = word_len;
+    let mut out: Vec<String> = Vec::new();
+    for input_line in text.lines() {
+        let mut current = String::new();
+        let mut current_len = 0usize;
+        for word in input_line.split_whitespace() {
+            let word_len = word.chars().count();
+            if current_len == 0 {
+                current.push_str(word);
+                current_len = word_len;
+            } else if current_len + 1 + word_len <= max_width {
+                current.push(' ');
+                current.push_str(word);
+                current_len += 1 + word_len;
+            } else {
+                out.push(current.clone());
+                current = word.to_string();
+                current_len = word_len;
+            }
         }
+        out.push(current);
     }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
+    if out.is_empty() {
+        out.push(String::new());
     }
-    lines
+    out
 }
 
 fn local_timestamp() -> String {
@@ -1841,13 +1847,12 @@ mod tests {
     }
 
     #[test]
-    fn wrap_text_zero_width_returns_full_text_unchanged() {
-        let text = "hello world foo bar";
-        let lines = wrap_text(text, 0);
+    fn wrap_text_zero_width_returns_lines_unsplit() {
+        let lines = wrap_text("hello world\nfoo bar", 0);
         assert_eq!(
             lines,
-            vec![text.to_string()],
-            "zero width must return the whole text as a single element"
+            vec!["hello world".to_string(), "foo bar".to_string()],
+            "zero width must preserve newlines but not wrap further"
         );
     }
 
@@ -1864,11 +1869,47 @@ mod tests {
 
     #[test]
     fn wrap_text_wraps_at_word_boundary() {
-        // Width 10 fits "hello" (5) but not "hello world" (11).
         let lines = wrap_text("hello world", 10);
         assert_eq!(lines.len(), 2, "text must wrap into two lines");
         assert_eq!(lines[0], "hello");
         assert_eq!(lines[1], "world");
+    }
+
+    #[test]
+    fn wrap_text_preserves_newlines() {
+        let lines = wrap_text("line one\nline two\nline three", 40);
+        assert_eq!(
+            lines,
+            vec![
+                "line one".to_string(),
+                "line two".to_string(),
+                "line three".to_string(),
+            ],
+            "explicit newlines must produce separate output lines"
+        );
+    }
+
+    #[test]
+    fn wrap_text_wraps_within_newline_separated_lines() {
+        let lines = wrap_text("hello world\nfoo bar baz", 10);
+        assert_eq!(
+            lines,
+            vec![
+                "hello".to_string(),
+                "world".to_string(),
+                "foo bar".to_string(),
+                "baz".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn wrap_text_preserves_blank_lines() {
+        let lines = wrap_text("above\n\nbelow", 40);
+        assert_eq!(
+            lines,
+            vec!["above".to_string(), "".to_string(), "below".to_string(),],
+        );
     }
 
     // ── TTY drawing path tests via _to sinks ─────────────────────────────────

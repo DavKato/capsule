@@ -10,6 +10,7 @@ pub struct ToolUseEvent {
 pub struct ToolResultEvent {
     pub tool_use_id: String,
     pub is_error: bool,
+    pub content: Option<String>,
 }
 
 pub enum ToolEvent {
@@ -207,9 +208,14 @@ fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) 
                         .get("is_error")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
+                    let content = block
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
                     Some(ToolEvent::Result(ToolResultEvent {
                         tool_use_id,
                         is_error,
+                        content,
                     }))
                 })
                 .collect();
@@ -584,6 +590,10 @@ mod tests {
         };
         assert_eq!(result_event.tool_use_id, "toolu_bash01");
         assert!(!result_event.is_error);
+        assert_eq!(
+            result_event.content.as_deref(),
+            Some("file1.txt\nfile2.txt")
+        );
     }
 
     #[test]
@@ -597,6 +607,21 @@ mod tests {
         };
         assert_eq!(result_event.tool_use_id, "toolu_bash01");
         assert!(result_event.is_error);
+        assert_eq!(result_event.content.as_deref(), Some("command not found"));
+    }
+
+    #[test]
+    fn tool_result_with_no_content_field_yields_none() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","is_error":false}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Result(result_event) = &events[0] else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(result_event.tool_use_id, "toolu_bash01");
+        assert!(result_event.content.is_none());
     }
 
     #[test]

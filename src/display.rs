@@ -67,7 +67,7 @@ impl DisplayState {
         self.term_height.saturating_sub(PANEL_HEIGHT - 1)
     }
 
-    fn status_row(&self) -> u16 {
+    fn warning_row(&self) -> u16 {
         self.term_height.saturating_sub(PANEL_HEIGHT - 2)
     }
 }
@@ -158,10 +158,12 @@ fn redraw_info_row() {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
-        let info_text = build_info_text(state);
-        let (tw, info) = (state.term_width, state.info_row());
+        let segments = build_info_segments(state);
+        let (tw, info, warn_r) = (state.term_width, state.info_row(), state.warning_row());
+        let warning = state.token_warning.clone();
         drop(guard);
-        draw_panel_info_row_to(&mut out, tw, info, &info_text);
+        draw_panel_info_row_to(&mut out, tw, info, &segments);
+        draw_warning_row_to(&mut out, tw, warn_r, warning.as_deref());
     }
 }
 
@@ -215,10 +217,10 @@ pub fn clear_stage() {
         state.usage_tokens = None;
         state.active_tool_calls.clear();
         state.offset_tracker.clear();
-        let (info_r, status_r) = (state.info_row(), state.status_row());
+        let (info_r, warn_r) = (state.info_row(), state.warning_row());
         drop(guard);
         clear_panel_row_to(&mut out, info_r);
-        clear_panel_row_to(&mut out, status_r);
+        clear_panel_row_to(&mut out, warn_r);
     }
 }
 
@@ -227,10 +229,11 @@ pub fn set_token_warning(msg: Option<&str>) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
         state.token_warning = msg.map(str::to_owned);
-        let (tw, info) = (state.term_width, state.info_row());
-        let info_text = build_info_text(state);
+        let tw = state.term_width;
+        let warn_r = state.warning_row();
+        let warning = state.token_warning.clone();
         drop(guard);
-        draw_panel_info_row_to(&mut out, tw, info, &info_text);
+        draw_warning_row_to(&mut out, tw, warn_r, warning.as_deref());
     }
 }
 
@@ -239,10 +242,10 @@ pub fn set_usage(total_tokens: u64) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
         state.usage_tokens = Some(total_tokens);
+        let segments = build_info_segments(state);
         let (tw, info) = (state.term_width, state.info_row());
-        let info_text = build_info_text(state);
         drop(guard);
-        draw_panel_info_row_to(&mut out, tw, info, &info_text);
+        draw_panel_info_row_to(&mut out, tw, info, &segments);
     }
 }
 
@@ -261,7 +264,7 @@ fn setup_scroll_region_to<W: Write + QueueableCommand>(out: &mut W, term_w: u16,
 
     let sep_row = scroll_bottom; // 0-indexed (crossterm MoveTo is 0-indexed)
     out.queue(cursor::MoveTo(0, sep_row)).ok();
-    out.queue(SetForegroundColor(CYAN)).ok();
+    out.queue(SetForegroundColor(Color::DarkGrey)).ok();
     out.queue(Print("─".repeat(term_w as usize))).ok();
     out.queue(ResetColor).ok();
 
@@ -309,37 +312,60 @@ fn format_token_count(total: u64) -> String {
     }
 }
 
-fn build_info_text(state: &DisplayState) -> String {
+fn build_info_segments(state: &DisplayState) -> Vec<String> {
     let duration = state.start_time.elapsed();
-    let mut base = format!(
-        "Stage: {}  Iter: {}  Model: {}  Duration: {}",
-        state.stage_name,
-        state.iteration,
-        state.model,
+    let mut segs = vec![
+        state.stage_name.clone(),
+        format!("iter {}", state.iteration),
+        state.model.clone(),
         format_duration(duration),
-    );
+    ];
     if let Some(tokens) = state.usage_tokens {
-        base = format!("{base}  {}", format_token_count(tokens));
+        segs.push(format_token_count(tokens));
     }
-    if let Some(warn) = &state.token_warning {
-        format!("{base}  ⚠ {warn}")
-    } else {
-        base
-    }
+    segs
 }
+
+const STATUS_BAR_COLOR: Color = Color::AnsiValue(236);
+const STATUS_DIM: Color = Color::DarkGrey;
+const STATUS_SEP: &str = " │ ";
 
 fn draw_panel_info_row_to<W: Write + QueueableCommand>(
     out: &mut W,
     term_w: u16,
     info_row: u16,
-    text: &str,
+    segments: &[String],
 ) {
-    let padded = pad_or_truncate(text, term_w as usize);
     out.queue(cursor::SavePosition).ok();
     out.queue(cursor::MoveTo(0, info_row)).ok();
     out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
-    out.queue(SetForegroundColor(CYAN)).ok();
-    out.queue(Print(&padded)).ok();
+    out.queue(SetBackgroundColor(STATUS_BAR_COLOR)).ok();
+
+    out.queue(SetForegroundColor(FOOTER_BAR)).ok();
+    out.queue(Print("▎")).ok();
+    out.queue(Print(" ")).ok();
+    let mut content_w: usize = 2; // "▎ "
+
+    for (i, seg) in segments.iter().enumerate() {
+        if i == 0 {
+            out.queue(SetForegroundColor(Color::Reset)).ok();
+            out.queue(SetAttribute(Attribute::Bold)).ok();
+        } else {
+            out.queue(SetForegroundColor(STATUS_DIM)).ok();
+            out.queue(Print(STATUS_SEP)).ok();
+            content_w += STATUS_SEP.chars().count();
+            out.queue(SetForegroundColor(Color::Reset)).ok();
+        }
+        out.queue(Print(seg)).ok();
+        content_w += seg.chars().count();
+        if i == 0 {
+            out.queue(SetAttribute(Attribute::Reset)).ok();
+            out.queue(SetBackgroundColor(STATUS_BAR_COLOR)).ok();
+        }
+    }
+
+    let pad = (term_w as usize).saturating_sub(content_w);
+    out.queue(Print(" ".repeat(pad))).ok();
     out.queue(ResetColor).ok();
     out.queue(cursor::RestorePosition).ok();
     out.flush().ok();
@@ -466,6 +492,34 @@ fn draw_panel_separator_to<W: Write + QueueableCommand>(out: &mut W, term_w: u16
     out.queue(SetForegroundColor(Color::DarkGrey)).ok();
     out.queue(Print(&dashes)).ok();
     out.queue(ResetColor).ok();
+    out.queue(cursor::RestorePosition).ok();
+    out.flush().ok();
+}
+
+fn draw_warning_row_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    term_w: u16,
+    warn_row: u16,
+    warning: Option<&str>,
+) {
+    out.queue(cursor::SavePosition).ok();
+    out.queue(cursor::MoveTo(0, warn_row)).ok();
+    out.queue(terminal::Clear(ClearType::CurrentLine)).ok();
+    if let Some(msg) = warning {
+        out.queue(SetBackgroundColor(STATUS_BAR_COLOR)).ok();
+        out.queue(SetForegroundColor(FOOTER_BAR)).ok();
+        out.queue(Print("▎")).ok();
+        out.queue(Print(" ")).ok();
+        out.queue(SetForegroundColor(YELLOW)).ok();
+        let text = format!("⚠ {msg}");
+        let max = (term_w as usize).saturating_sub(2);
+        let truncated: String = text.chars().take(max).collect();
+        let content_w = 2 + truncated.chars().count();
+        out.queue(Print(&truncated)).ok();
+        let pad = (term_w as usize).saturating_sub(content_w);
+        out.queue(Print(" ".repeat(pad))).ok();
+        out.queue(ResetColor).ok();
+    }
     out.queue(cursor::RestorePosition).ok();
     out.flush().ok();
 }
@@ -854,6 +908,7 @@ struct FooterData<'a> {
     verdict: Option<&'a Verdict>,
     duration: Duration,
     session_id: Option<&'a str>,
+    context_usage: Option<&'a str>,
     timestamp: &'a str,
 }
 
@@ -866,6 +921,7 @@ pub fn session_footer(
     verdict: Option<&Verdict>,
     duration: Duration,
     session_id: Option<&str>,
+    context_usage: Option<&str>,
 ) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     let ts = local_timestamp();
@@ -877,6 +933,7 @@ pub fn session_footer(
             verdict,
             duration,
             session_id,
+            context_usage,
             timestamp: &ts,
         },
         terminal_width() as usize,
@@ -961,7 +1018,7 @@ fn session_footer_to<W: Write + QueueableCommand>(
         Ok(())
     })?;
 
-    let label = " Status:   ";
+    let label = " Status:     ";
     let status_w = label.chars().count() + status_upper.chars().count();
     card_line_styled(out, block_w, status_w, |out| {
         out.queue(Print(label))?;
@@ -971,7 +1028,11 @@ fn session_footer_to<W: Write + QueueableCommand>(
         Ok(())
     })?;
 
-    card_line(out, &format!("Duration: {duration_str}"), block_w)?;
+    card_line(out, &format!("Duration:   {duration_str}"), block_w)?;
+
+    if let Some(usage) = data.context_usage {
+        card_line(out, &format!("Context:    {usage}"), block_w)?;
+    }
 
     if let Some(id) = data.session_id {
         let truncated_id = if id.chars().count() > SESSION_ID_MAX {
@@ -980,10 +1041,11 @@ fn session_footer_to<W: Write + QueueableCommand>(
         } else {
             id.to_string()
         };
-        card_line(out, &format!("Session:  {truncated_id}"), block_w)?;
+        card_line(out, &format!("Session ID: {truncated_id}"), block_w)?;
     }
 
     if let Some(notes) = data.verdict.and_then(|v| v.notes.as_deref()) {
+        card_line(out, "", block_w)?;
         card_line(out, "Notes:", block_w)?;
         let wrap_width = block_w.saturating_sub(5);
         let wrapped = wrap_text(notes, wrap_width);
@@ -1410,7 +1472,6 @@ mod tests {
     // Crossterm emits 256-color (8-bit) SGR sequences on non-tty buffers.
     const GREEN_ANSI: &[u8] = b"\x1b[38;5;10m";
     const RED_ANSI: &[u8] = b"\x1b[38;5;9m";
-    const CYAN_ANSI: &[u8] = b"\x1b[38;5;14m";
     const YELLOW_ANSI: &[u8] = b"\x1b[38;5;11m";
 
     fn contains_seq(buf: &[u8], seq: &[u8]) -> bool {
@@ -1433,6 +1494,7 @@ mod tests {
                 verdict,
                 duration: Duration::from_secs(secs),
                 session_id: session,
+                context_usage: None,
                 timestamp: "2026-05-11 14:32",
             },
             80,
@@ -1632,6 +1694,7 @@ mod tests {
                 verdict: Some(&v),
                 duration: Duration::from_secs(0),
                 session_id: None,
+                context_usage: None,
                 timestamp: "2026-05-11 14:32",
             },
             200,
@@ -1736,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn build_info_text_includes_stage_iteration_model_duration() {
+    fn build_info_segments_includes_stage_iteration_model_duration() {
         let state = DisplayState {
             term_width: 80,
             term_height: 24,
@@ -1749,11 +1812,19 @@ mod tests {
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
         };
-        let text = build_info_text(&state);
-        assert!(text.contains("reviewer"), "stage name must appear");
-        assert!(text.contains("3"), "iteration must appear");
-        assert!(text.contains("claude-opus-4-6"), "model must appear");
-        assert!(text.contains("00:"), "duration must appear in MM:SS format");
+        let segs = build_info_segments(&state);
+        assert_eq!(segs[0], "reviewer");
+        assert_eq!(segs[1], "iter 3");
+        assert_eq!(segs[2], "claude-opus-4-6");
+        assert!(
+            segs[3].contains("00:"),
+            "duration must appear in MM:SS format"
+        );
+        assert_eq!(
+            segs.len(),
+            4,
+            "no extra segments when usage/warning are None"
+        );
     }
 
     #[test]
@@ -1797,7 +1868,7 @@ mod tests {
     }
 
     #[test]
-    fn build_info_text_includes_usage_when_set() {
+    fn build_info_segments_includes_usage_when_set() {
         let state = DisplayState {
             term_width: 80,
             term_height: 24,
@@ -1810,15 +1881,15 @@ mod tests {
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
         };
-        let text = build_info_text(&state);
+        let segs = build_info_segments(&state);
         assert!(
-            text.contains("33.3k used"),
-            "usage segment must appear when set; got: {text:?}"
+            segs.iter().any(|s| s.contains("33.3k used")),
+            "usage segment must appear when set; got: {segs:?}"
         );
     }
 
     #[test]
-    fn build_info_text_omits_usage_when_none() {
+    fn build_info_segments_omits_usage_when_none() {
         let state = DisplayState {
             term_width: 80,
             term_height: 24,
@@ -1831,10 +1902,10 @@ mod tests {
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
         };
-        let text = build_info_text(&state);
+        let segs = build_info_segments(&state);
         assert!(
-            !text.contains("used"),
-            "usage segment must be absent when None; got: {text:?}"
+            !segs.iter().any(|s| s.contains("used")),
+            "usage segment must be absent when None; got: {segs:?}"
         );
     }
 
@@ -1941,7 +2012,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_scroll_region_emits_separator_line_in_cyan() {
+    fn setup_scroll_region_emits_separator_line() {
         let mut buf: Vec<u8> = Vec::new();
         setup_scroll_region_to(&mut buf, 80, 24);
         let out = String::from_utf8_lossy(&buf);
@@ -1949,30 +2020,29 @@ mod tests {
             out.contains('─'),
             "separator line must use ─ characters; output: {out:?}"
         );
-        assert!(
-            contains_seq(&buf, CYAN_ANSI),
-            "separator line must use cyan color; output: {out:?}"
-        );
     }
 
     #[test]
-    fn draw_panel_info_row_emits_moveto_and_cyan() {
+    fn draw_panel_info_row_emits_moveto_and_segments() {
         let mut buf: Vec<u8> = Vec::new();
-        // info_row=22 → crossterm MoveTo(0, 22) → \x1b[23;1H
-        draw_panel_info_row_to(&mut buf, 80, 22, "Stage: foo  Iter: 1  Model: test");
+        let segs = vec!["foo".to_string(), "iter 1".to_string(), "test".to_string()];
+        draw_panel_info_row_to(&mut buf, 80, 22, &segs);
         let out = String::from_utf8_lossy(&buf);
-        // Verify a MoveTo escape was emitted (format: ESC [ row ; col H)
         assert!(
             out.contains("\x1b[23;1H"),
             "MoveTo(0, 22) must emit \\x1b[23;1H; output: {out:?}"
         );
         assert!(
-            contains_seq(&buf, CYAN_ANSI),
-            "info row must use cyan color; output: {out:?}"
+            out.contains("foo"),
+            "stage name must appear in output; output: {out:?}"
         );
         assert!(
-            out.contains("Stage: foo"),
-            "info text must appear in output; output: {out:?}"
+            out.contains("iter 1"),
+            "iteration must appear in output; output: {out:?}"
+        );
+        assert!(
+            out.contains("│"),
+            "pipe separators must appear in output; output: {out:?}"
         );
     }
 

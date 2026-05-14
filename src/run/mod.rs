@@ -237,14 +237,6 @@ impl RunSession {
             _ => None,
         };
         summary::write_last_run(&self.cfg.capsule_dir, &result.summary, state_to_write)?;
-        if let Some(usage) = runner.model_usage() {
-            let total = usage.input_tokens + usage.output_tokens;
-            let formatted = capsule::container_execution::format_usage_with_percentage(
-                total,
-                usage.context_window,
-            );
-            capsule::display::capsule_info(&formatted);
-        }
         if let Some(hint) = summary::resume_hint(
             result.summary.session_id.as_deref(),
             &result.summary.terminal_reason,

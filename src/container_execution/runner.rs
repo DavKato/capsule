@@ -145,6 +145,10 @@ impl StageRunner for DockerStageRunner {
         let result = self.execute_stage(prompt, model);
         let duration = start.elapsed();
         crate::display::clear_stage();
+        let usage_str = self.model_usage.as_ref().map(|u| {
+            let total = u.input_tokens + u.output_tokens;
+            super::format_usage_with_percentage(total, u.context_window)
+        });
         match &result {
             Ok(verdict) => {
                 crate::display::session_footer(
@@ -153,6 +157,7 @@ impl StageRunner for DockerStageRunner {
                     verdict.as_ref(),
                     duration,
                     self.session_id.as_deref(),
+                    usage_str.as_deref(),
                 );
             }
             Err(e) => {
@@ -166,6 +171,7 @@ impl StageRunner for DockerStageRunner {
                     Some(&error_verdict),
                     duration,
                     self.session_id.as_deref(),
+                    usage_str.as_deref(),
                 );
             }
         }

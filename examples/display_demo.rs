@@ -98,6 +98,18 @@ fn main() {
     pause(1500);
     display::set_token_warning(None);
 
+    // --- status bar standalone ---
+    section("Status bar — styled segments");
+    display::set_stage("chatter", 1, "claude-haiku-4-5-20251001");
+    pause(1500);
+    display::set_usage(2_100);
+    pause(1500);
+    display::set_usage(18_400);
+    pause(1500);
+    display::set_token_warning(Some("context > 80% — approaching limit"));
+    pause(2000);
+    display::set_token_warning(None);
+
     // --- session footer: pass ---
     section("Session footer — pass");
     display::clear_stage();
@@ -110,6 +122,7 @@ fn main() {
         }),
         Duration::from_secs(247),
         Some("sess_abc123def456"),
+        Some("33.3k (16.6%) used"),
     );
 
     // --- stage header with retry ---
@@ -137,6 +150,7 @@ fn main() {
         }),
         Duration::from_secs(83),
         Some("sess_xyz789"),
+        Some("12.1k (6.1%) used"),
     );
 
     // --- stage header with unlimited retry ---
@@ -164,11 +178,12 @@ fn main() {
         }),
         Duration::from_secs(412),
         None,
+        None,
     );
 
     // --- session footer: implicit fail (no verdict) ---
     section("Session footer — implicit fail (no verdict)");
-    display::session_footer("crasher", 1, None, Duration::from_secs(5), None);
+    display::session_footer("crasher", 1, None, Duration::from_secs(5), None, None);
 
     pause(500);
     display::teardown();

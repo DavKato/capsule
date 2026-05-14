@@ -1048,7 +1048,6 @@ mod tests {
 
     #[test]
     fn format_usage_with_percentage_typical() {
-        // 20000 / 200000 = 10.0% — exact, no rounding ambiguity
         assert_eq!(
             format_usage_with_percentage(20000, 200000),
             "20.0k (10.0%) used"

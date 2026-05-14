@@ -400,7 +400,6 @@ fn render_stage_header_to<W: Write + QueueableCommand>(
         None => format!("{stage_name} · iter {iteration} · {model}"),
     };
 
-    // "══ {content} " + trailing ═ to fill terminal width
     let prefix = "══ ";
     let suffix = " ";
     let prefix_len = prefix.chars().count();
@@ -1598,7 +1597,6 @@ mod tests {
         };
         let mut buf: Vec<u8> = Vec::new();
         footer(&mut buf, "build", 1, Some(&v), 0, None);
-        // AnsiValue(236) background: ESC[48;5;236m
         let bg_ansi: &[u8] = b"\x1b[48;5;236m";
         assert!(
             contains_seq(&buf, bg_ansi),

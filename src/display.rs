@@ -886,20 +886,8 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 }
 
 fn local_timestamp() -> String {
-    unsafe {
-        let mut t: libc::time_t = 0;
-        libc::time(&mut t);
-        let mut tm: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&t, &mut tm);
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}",
-            tm.tm_year + 1900,
-            tm.tm_mon + 1,
-            tm.tm_mday,
-            tm.tm_hour,
-            tm.tm_min,
-        )
-    }
+    let now = chrono::Local::now();
+    now.format("%Y-%m-%d %H:%M").to_string()
 }
 
 struct FooterData<'a> {

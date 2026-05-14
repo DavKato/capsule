@@ -383,6 +383,7 @@ fn render_stage_header_to<W: Write + QueueableCommand>(
     let used = prefix_len + content_len + suffix_len;
     let trailing_len = term_w.saturating_sub(used);
 
+    out.queue(Print("\n"))?;
     out.queue(SetForegroundColor(Color::DarkGrey))?;
     out.queue(Print(prefix))?;
     out.queue(ResetColor)?;
@@ -553,7 +554,7 @@ fn render_tty_tool_call_to<W: Write + QueueableCommand>(
     name: &str,
     display_args: &str,
 ) -> std::io::Result<()> {
-    out.queue(Print("  "))?;
+    out.queue(Print("\n"))?;
     out.queue(SetAttribute(Attribute::SlowBlink))?;
     out.queue(SetForegroundColor(Color::DarkGrey))?;
     out.queue(Print("●"))?;
@@ -579,7 +580,6 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
             out.queue(cursor::MoveUp(n))?;
             out.queue(cursor::MoveToColumn(0))?;
             out.queue(terminal::Clear(ClearType::CurrentLine))?;
-            out.queue(Print("  "))?;
             out.queue(SetForegroundColor(color))?;
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
@@ -587,7 +587,6 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
             out.queue(cursor::RestorePosition)?;
         }
         None => {
-            out.queue(Print("  "))?;
             out.queue(SetForegroundColor(color))?;
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
@@ -595,7 +594,7 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
         }
     }
     out.queue(Print(format!(
-        "    {label} ({:.1}s)\n",
+        "  {label} ({:.1}s)\n",
         duration.as_secs_f64()
     )))?;
     out.flush()
@@ -615,7 +614,8 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
-        let visible_width = 4 + name.chars().count() + 2 + display_args.chars().count();
+        state.offset_tracker.increment_all(1, state.term_width); // blank line
+        let visible_width = 2 + name.chars().count() + 2 + display_args.chars().count();
         state
             .offset_tracker
             .increment_all(visible_width, state.term_width);
@@ -654,8 +654,9 @@ fn tool_call_to<W: Write + QueueableCommand>(
     name: &str,
     display_args: &str,
 ) -> std::io::Result<()> {
+    out.queue(Print("\n"))?;
     out.queue(SetForegroundColor(YELLOW))?;
-    out.queue(Print("  ● "))?;
+    out.queue(Print("● "))?;
     out.queue(ResetColor)?;
     out.queue(Print(format!("{name}  {display_args}\n")))?;
     out.flush()
@@ -687,14 +688,14 @@ pub fn tool_result(id: &str, success: bool) {
 
         // Account for the sub-line (and the solid-dot line in the off-screen case).
         let label = if success { "Done" } else { "Failed" };
-        let sub_visible = format!("    {label} ({:.1}s)", duration.as_secs_f64())
+        let sub_visible = format!("  {label} ({:.1}s)", duration.as_secs_f64())
             .chars()
             .count();
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = guard.as_mut() {
             if offset.is_none() {
                 // Off-screen path wrote 2 lines: solid dot + sub-line.
-                let line1_visible = 4 + name.chars().count() + 2 + args.chars().count();
+                let line1_visible = 2 + name.chars().count() + 2 + args.chars().count();
                 state.offset_tracker.increment_all(line1_visible, tw);
             }
             state.offset_tracker.increment_all(sub_visible, tw);
@@ -722,47 +723,60 @@ fn tool_result_to<W: Write + QueueableCommand>(
 ) -> std::io::Result<()> {
     let color = if success { GREEN } else { RED };
     let status = if success { "Done" } else { "Failed" };
-    out.queue(Print("  "))?;
     out.queue(SetForegroundColor(color))?;
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
     out.queue(Print(format!("{name}  {args}\n")))?;
     out.queue(Print(format!(
-        "    {status} ({:.1}s)\n",
+        "  {status} ({:.1}s)\n",
         duration.as_secs_f64()
     )))?;
     out.flush()
 }
 
-/// Print agent text (thinking or content) with a dim-white block dot on the first
+/// Print agent text (thinking or content) with a dot on the first
 /// line of each new block, and indented continuation lines within the same block.
+/// Text is wrapped at `content_width` so wrapped portions also get indented.
 pub fn agent_text(text: &str) {
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
-    let visible_width = 4 + text.chars().count(); // "  ● " or "    " (4 chars) + text
+    let was_text = last;
+    let term_w = terminal_width() as usize;
+    let content_width = term_w.min(MAX_DISPLAY_WIDTH).saturating_sub(2);
+    let wrapped = wrap_text(text, content_width);
+
     let mut out = stdout().lock();
-    agent_text_to(&mut out, text, &mut last).ok();
+    agent_text_to(&mut out, &wrapped, &mut last).ok();
     LAST_WAS_TEXT.store(last, Ordering::Relaxed);
 
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
-        state
-            .offset_tracker
-            .increment_all(visible_width, state.term_width);
+        if !was_text {
+            state.offset_tracker.increment_all(1, state.term_width); // blank line
+        }
+        for line in &wrapped {
+            let vw = 2 + line.chars().count();
+            state.offset_tracker.increment_all(vw, state.term_width);
+        }
     }
 }
 
 fn agent_text_to<W: Write + QueueableCommand>(
     out: &mut W,
-    text: &str,
+    lines: &[String],
     last_was_text: &mut bool,
 ) -> std::io::Result<()> {
-    if *last_was_text {
-        out.queue(Print("    "))?;
-    } else {
-        out.queue(Print("  ● "))?;
+    if !*last_was_text {
+        out.queue(Print("\n"))?;
     }
-    out.queue(Print(text))?;
-    out.queue(Print("\n"))?;
+    for (i, line) in lines.iter().enumerate() {
+        if i == 0 && !*last_was_text {
+            out.queue(Print("● "))?;
+        } else {
+            out.queue(Print("  "))?;
+        }
+        out.queue(Print(line))?;
+        out.queue(Print("\n"))?;
+    }
     out.flush()?;
     *last_was_text = true;
     Ok(())
@@ -1088,12 +1102,24 @@ mod tests {
     }
 
     #[test]
+    fn stage_header_starts_with_blank_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_stage_header_to(&mut buf, "s", 1, "m", None, 80).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        let visible = strip_ansi(&out);
+        assert!(
+            visible.starts_with('\n'),
+            "header must begin with a blank line"
+        );
+    }
+
+    #[test]
     fn stage_header_fills_to_terminal_width() {
         let mut buf: Vec<u8> = Vec::new();
         render_stage_header_to(&mut buf, "s", 1, "m", None, 40).unwrap();
         let out = String::from_utf8_lossy(&buf);
         let visible: String = strip_ansi(&out);
-        let line = visible.lines().next().unwrap_or("");
+        let line = visible.lines().find(|l| !l.is_empty()).unwrap_or("");
         assert_eq!(
             line.chars().count(),
             40,
@@ -1106,7 +1132,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         render_stage_header_to(&mut buf, "s", 1, "m", None, 200).unwrap();
         let visible = strip_ansi(&String::from_utf8_lossy(&buf));
-        let line = visible.lines().next().unwrap_or("");
+        let line = visible.lines().find(|l| !l.is_empty()).unwrap_or("");
         assert_eq!(
             line.chars().count(),
             120,
@@ -1289,7 +1315,7 @@ mod tests {
     fn agent_text_first_call_emits_dot_and_text() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = false;
-        agent_text_to(&mut buf, "hello world", &mut last).unwrap();
+        agent_text_to(&mut buf, &["hello world".to_string()], &mut last).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("hello world"), "text must appear");
         assert!(out.contains('●'), "dot must appear on first line");
@@ -1297,16 +1323,70 @@ mod tests {
     }
 
     #[test]
+    fn agent_text_first_call_emits_blank_line_before_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last = false;
+        agent_text_to(&mut buf, &["hello".to_string()], &mut last).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.starts_with('\n'),
+            "new section must start with a blank line"
+        );
+    }
+
+    #[test]
     fn agent_text_continuation_indents_without_dot() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = true;
-        agent_text_to(&mut buf, "second line", &mut last).unwrap();
+        agent_text_to(&mut buf, &["second line".to_string()], &mut last).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("second line"), "text must appear");
-        assert!(!out.contains('·'), "no dot on continuation line");
+        assert!(!out.contains('●'), "no dot on continuation line");
         assert!(
-            out.starts_with("    "),
-            "continuation must be indented with 4 spaces"
+            out.starts_with("  "),
+            "continuation must be indented with 2 spaces"
+        );
+    }
+
+    #[test]
+    fn agent_text_continuation_no_blank_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last = true;
+        agent_text_to(&mut buf, &["continued".to_string()], &mut last).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            !out.starts_with('\n'),
+            "continuation must not start with a blank line"
+        );
+    }
+
+    #[test]
+    fn agent_text_wrapped_lines_all_indented() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last = false;
+        let lines = vec![
+            "first line".to_string(),
+            "second line".to_string(),
+            "third line".to_string(),
+        ];
+        agent_text_to(&mut buf, &lines, &mut last).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        let text_lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(text_lines.len(), 3);
+        assert!(
+            text_lines[0].starts_with("● "),
+            "first line must start with dot; got: {:?}",
+            text_lines[0]
+        );
+        assert!(
+            text_lines[1].starts_with("  "),
+            "second line must be indented; got: {:?}",
+            text_lines[1]
+        );
+        assert!(
+            text_lines[2].starts_with("  "),
+            "third line must be indented; got: {:?}",
+            text_lines[2]
         );
     }
 
@@ -1314,8 +1394,7 @@ mod tests {
     fn agent_text_body_not_dimmed() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = false;
-        agent_text_to(&mut buf, "body text", &mut last).unwrap();
-        // ESC[2m is the dim attribute — must not appear anywhere in the output
+        agent_text_to(&mut buf, &["body text".to_string()], &mut last).unwrap();
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[2m"),
             "agent_text must not emit dim escape code on body text"

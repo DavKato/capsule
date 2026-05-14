@@ -949,7 +949,7 @@ fn session_footer_to<W: Write + QueueableCommand>(
 }
 
 struct OffsetTracker {
-    entries: HashMap<String, u16>,
+    entries: HashMap<String, (u16, usize)>,
 }
 
 impl OffsetTracker {
@@ -974,19 +974,22 @@ impl OffsetTracker {
     fn register(&mut self, id: &str, visible_width: usize, term_width: u16) {
         self.entries.insert(
             id.to_string(),
-            Self::lines_for_width(visible_width, term_width),
+            (
+                Self::lines_for_width(visible_width, term_width),
+                visible_width,
+            ),
         );
     }
 
     fn increment_all(&mut self, visible_width: usize, term_width: u16) {
         let delta = Self::lines_for_width(visible_width, term_width);
-        for offset in self.entries.values_mut() {
+        for (offset, _) in self.entries.values_mut() {
             *offset = offset.saturating_add(delta);
         }
     }
 
     fn get_offset(&self, id: &str, scroll_height: u16) -> Option<u16> {
-        let &offset = self.entries.get(id)?;
+        let &(offset, _) = self.entries.get(id)?;
         if offset > scroll_height {
             None
         } else {
@@ -1002,11 +1005,12 @@ impl OffsetTracker {
         if new_width == 0 {
             return;
         }
-        let old_width = old_width as usize;
-        let new_width = new_width as usize;
-        for offset in self.entries.values_mut() {
-            let raw = (*offset as usize) * old_width;
-            *offset = raw.div_ceil(new_width) as u16;
+        for (offset, visible_width) in self.entries.values_mut() {
+            let own_old = Self::lines_for_width(*visible_width, old_width);
+            let own_new = Self::lines_for_width(*visible_width, new_width);
+            let other = (*offset).saturating_sub(own_old) as usize;
+            let other_new = (other * old_width as usize).div_ceil(new_width as usize) as u16;
+            *offset = own_new + other_new;
         }
     }
 }
@@ -1811,6 +1815,33 @@ mod tests {
         tracker.register("tool1", 160, 80); // 2 lines at width 80
         tracker.recalculate(80, 40);
         assert_eq!(tracker.get_offset("tool1", 100), Some(4));
+    }
+
+    #[test]
+    fn offset_tracker_recalculate_short_line_stays_one() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 40, 80); // 40 visible chars = 1 line at width 80
+        tracker.recalculate(80, 40); // resize to 40 wide
+                                     // 40 chars still fits in 1 line at width 40
+        assert_eq!(tracker.get_offset("tool1", 100), Some(1));
+    }
+
+    #[test]
+    fn offset_tracker_recalculate_full_width_line_wraps() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 80, 80); // 1 line at width 80
+        tracker.recalculate(80, 40); // resize to 40 wide
+                                     // 80 chars now wraps to 2 lines at width 40
+        assert_eq!(tracker.get_offset("tool1", 100), Some(2));
+    }
+
+    #[test]
+    fn offset_tracker_recalculate_multi_wrap_line() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 200, 80); // 3 lines at width 80 (200/80 = 2.5 → 3)
+        tracker.recalculate(80, 40); // resize to 40 wide
+                                     // 200 chars at width 40 = 5 lines
+        assert_eq!(tracker.get_offset("tool1", 100), Some(5));
     }
 
     const BLINK_ANSI: &[u8] = b"\x1b[5m";

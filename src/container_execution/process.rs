@@ -187,7 +187,6 @@ pub fn run_container(
     let mut docker_child = Command::new("docker")
         .args(&docker_args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
         .spawn()
         .context("failed to spawn `docker run`")?;
 

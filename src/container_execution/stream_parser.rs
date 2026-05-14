@@ -23,6 +23,22 @@ pub enum TextDisplay {
     Thinking(String),
 }
 
+pub struct UsageSnapshot {
+    pub input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl UsageSnapshot {
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
+            + self.output_tokens
+    }
+}
+
 pub struct StreamParser {
     verdict: Option<Verdict>,
     auth_failed: bool,
@@ -32,6 +48,7 @@ pub struct StreamParser {
     last_tool_events: Vec<ToolEvent>,
     last_text_displays: Vec<TextDisplay>,
     last_parsed_value: Option<Value>,
+    last_usage_snapshot: Option<UsageSnapshot>,
 }
 
 impl StreamParser {
@@ -45,6 +62,7 @@ impl StreamParser {
             last_tool_events: Vec::new(),
             last_text_displays: Vec::new(),
             last_parsed_value: None,
+            last_usage_snapshot: None,
         }
     }
 
@@ -52,6 +70,7 @@ impl StreamParser {
         self.last_tool_events.clear();
         self.last_text_displays.clear();
         self.last_parsed_value = None;
+        self.last_usage_snapshot = None;
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return self.verdict.as_ref();
         };
@@ -77,6 +96,7 @@ impl StreamParser {
         let (tool_events, text_displays) = extract_assistant_content(&msg);
         self.last_tool_events = tool_events;
         self.last_text_displays = text_displays;
+        self.last_usage_snapshot = extract_usage_snapshot(&msg);
         if msg.get("type").is_some() {
             self.last_parsed_value = Some(msg);
         }
@@ -114,6 +134,12 @@ impl StreamParser {
     /// was valid JSON containing a `"type"` field.
     pub fn last_parsed_value(&self) -> Option<&Value> {
         self.last_parsed_value.as_ref()
+    }
+
+    /// Returns the usage snapshot extracted from the most recent `feed()` call, if the
+    /// line was an assistant message carrying `message.usage`.
+    pub fn last_usage_snapshot(&self) -> Option<&UsageSnapshot> {
+        self.last_usage_snapshot.as_ref()
     }
 }
 
@@ -223,6 +249,20 @@ fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) 
         }
         _ => (Vec::new(), Vec::new()),
     }
+}
+
+fn extract_usage_snapshot(msg: &Value) -> Option<UsageSnapshot> {
+    if msg.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let usage = msg.pointer("/message/usage")?;
+    let get_u64 = |key: &str| -> u64 { usage.get(key).and_then(Value::as_u64).unwrap_or(0) };
+    Some(UsageSnapshot {
+        input_tokens: get_u64("input_tokens"),
+        cache_creation_input_tokens: get_u64("cache_creation_input_tokens"),
+        cache_read_input_tokens: get_u64("cache_read_input_tokens"),
+        output_tokens: get_u64("output_tokens"),
+    })
 }
 
 fn extract_verdict(msg: &Value) -> Option<Verdict> {
@@ -793,5 +833,64 @@ mod tests {
     fn no_text_displays_before_any_feed() {
         let p = StreamParser::new();
         assert!(p.last_text_displays().is_empty());
+    }
+
+    const ASSISTANT_WITH_USAGE: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":9,"cache_creation_input_tokens":32784,"cache_read_input_tokens":100,"output_tokens":8,"service_tier":"standard"}}}"#;
+    const ASSISTANT_WITHOUT_USAGE: &str =
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+
+    #[test]
+    fn assistant_with_usage_yields_snapshot() {
+        let mut p = StreamParser::new();
+        p.feed(ASSISTANT_WITH_USAGE);
+        let snap = p.last_usage_snapshot().expect("expected usage snapshot");
+        assert_eq!(snap.input_tokens, 9);
+        assert_eq!(snap.cache_creation_input_tokens, 32784);
+        assert_eq!(snap.cache_read_input_tokens, 100);
+        assert_eq!(snap.output_tokens, 8);
+    }
+
+    #[test]
+    fn usage_snapshot_total_tokens_sums_all_fields() {
+        let mut p = StreamParser::new();
+        p.feed(ASSISTANT_WITH_USAGE);
+        let snap = p.last_usage_snapshot().expect("expected usage snapshot");
+        assert_eq!(snap.total_tokens(), 9 + 32784 + 100 + 8);
+    }
+
+    #[test]
+    fn assistant_without_usage_yields_no_snapshot() {
+        let mut p = StreamParser::new();
+        p.feed(ASSISTANT_WITHOUT_USAGE);
+        assert!(p.last_usage_snapshot().is_none());
+    }
+
+    #[test]
+    fn non_assistant_message_yields_no_snapshot() {
+        let mut p = StreamParser::new();
+        p.feed(RESULT_LINE);
+        assert!(p.last_usage_snapshot().is_none());
+    }
+
+    #[test]
+    fn missing_optional_cache_fields_default_to_zero() {
+        let line = r#"{"type":"assistant","message":{"content":[],"usage":{"input_tokens":5,"output_tokens":3}}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let snap = p.last_usage_snapshot().expect("expected usage snapshot");
+        assert_eq!(snap.input_tokens, 5);
+        assert_eq!(snap.cache_creation_input_tokens, 0);
+        assert_eq!(snap.cache_read_input_tokens, 0);
+        assert_eq!(snap.output_tokens, 3);
+        assert_eq!(snap.total_tokens(), 8);
+    }
+
+    #[test]
+    fn usage_snapshot_cleared_between_feeds() {
+        let mut p = StreamParser::new();
+        p.feed(ASSISTANT_WITH_USAGE);
+        assert!(p.last_usage_snapshot().is_some());
+        p.feed(ASSISTANT_WITHOUT_USAGE);
+        assert!(p.last_usage_snapshot().is_none());
     }
 }

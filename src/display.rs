@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 use crate::pipeline::RetryInfo;
 use crate::verdict::{Verdict, VerdictStatus};
 
-pub const GREEN: Color = Color::Green;
-pub const RED: Color = Color::Red;
-pub const CYAN: Color = Color::Cyan;
-pub const YELLOW: Color = Color::Yellow;
+const GREEN: Color = Color::Green;
+const RED: Color = Color::Red;
+const CYAN: Color = Color::Cyan;
+const YELLOW: Color = Color::Yellow;
 
 const PANEL_HEIGHT: u16 = 3;
 const MIN_TERM_HEIGHT: u16 = 12;

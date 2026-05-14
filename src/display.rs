@@ -25,7 +25,6 @@ const PANEL_HEIGHT: u16 = 3;
 const MIN_TERM_HEIGHT: u16 = 12;
 
 struct ToolCallEntry {
-    id: String,
     name: String,
     args: String,
     start_time: Instant,
@@ -39,7 +38,7 @@ struct DisplayState {
     model: String,
     start_time: Instant,
     token_warning: Option<String>,
-    active_tool_calls: Vec<ToolCallEntry>,
+    active_tool_calls: Vec<(String, ToolCallEntry)>,
     offset_tracker: OffsetTracker,
 }
 
@@ -82,14 +81,8 @@ fn timer_wake() -> &'static (Mutex<()>, Condvar) {
     TIMER_WAKE.get_or_init(|| (Mutex::new(()), Condvar::new()))
 }
 
-struct ToolCallInfo {
-    name: String,
-    args: String,
-    started_at: Instant,
-}
-
-fn tool_call_cache() -> &'static Mutex<HashMap<String, ToolCallInfo>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, ToolCallInfo>>> = OnceLock::new();
+fn tool_call_cache() -> &'static Mutex<HashMap<String, ToolCallEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, ToolCallEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -600,12 +593,14 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
         state
             .offset_tracker
             .register(id, visible_width, state.term_width);
-        state.active_tool_calls.push(ToolCallEntry {
-            id: id.to_owned(),
-            name: name.to_owned(),
-            args: display_args.clone(),
-            start_time: Instant::now(),
-        });
+        state.active_tool_calls.push((
+            id.to_owned(),
+            ToolCallEntry {
+                name: name.to_owned(),
+                args: display_args.clone(),
+                start_time: Instant::now(),
+            },
+        ));
         drop(guard);
         render_tty_tool_call_to(&mut out, name, &display_args).ok();
     } else {
@@ -615,10 +610,10 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
             .unwrap_or_else(|e| e.into_inner())
             .insert(
                 id.to_owned(),
-                ToolCallInfo {
+                ToolCallEntry {
                     name: name.to_owned(),
                     args: display_args.clone(),
-                    started_at: Instant::now(),
+                    start_time: Instant::now(),
                 },
             );
         tool_call_to(&mut out, name, &display_args).ok();
@@ -644,10 +639,13 @@ pub fn tool_result(id: &str, success: bool) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
-        let entry_pos = state.active_tool_calls.iter().position(|e| e.id == id);
+        let entry_pos = state
+            .active_tool_calls
+            .iter()
+            .position(|(eid, _)| eid == id);
         let entry = entry_pos.map(|i| state.active_tool_calls.remove(i));
         let (name, args, duration) = match entry {
-            Some(e) => (e.name, e.args, e.start_time.elapsed()),
+            Some((_, e)) => (e.name, e.args, e.start_time.elapsed()),
             None => ("unknown".to_owned(), String::new(), Duration::ZERO),
         };
         let scroll_height = state.separator_row();
@@ -679,7 +677,7 @@ pub fn tool_result(id: &str, success: bool) {
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
         let (name, args, duration) = match info {
-            Some(i) => (i.name, i.args, i.started_at.elapsed()),
+            Some(i) => (i.name, i.args, i.start_time.elapsed()),
             None => ("unknown".to_owned(), String::new(), Duration::ZERO),
         };
         tool_result_to(&mut out, &name, &args, duration, success).ok();

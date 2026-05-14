@@ -138,6 +138,7 @@ impl StageRunner for DockerStageRunner {
         let start = std::time::Instant::now();
         let result = self.execute_stage(prompt, model);
         let duration = start.elapsed();
+        crate::display::clear_stage();
         match &result {
             Ok(verdict) => {
                 crate::display::session_footer(

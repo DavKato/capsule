@@ -263,10 +263,19 @@ fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) 
                         .get("is_error")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
-                    let content = block
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
+                    let content = block.get("content").and_then(|c| {
+                        if let Some(s) = c.as_str() {
+                            Some(s.to_owned())
+                        } else if let Some(arr) = c.as_array() {
+                            // array of content blocks — extract text from the first text block
+                            arr.iter()
+                                .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                                .and_then(|b| b.get("text").and_then(Value::as_str))
+                                .map(str::to_owned)
+                        } else {
+                            None
+                        }
+                    });
                     Some(ToolEvent::Result(ToolResultEvent {
                         tool_use_id,
                         is_error,
@@ -704,6 +713,48 @@ mod tests {
     #[test]
     fn tool_result_with_no_content_field_yields_none() {
         let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","is_error":false}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Result(result_event) = &events[0] else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(result_event.tool_use_id, "toolu_bash01");
+        assert!(result_event.content.is_none());
+    }
+
+    #[test]
+    fn tool_result_array_content_with_text_block_is_extracted() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","content":[{"type":"text","text":"hello from array"},{"type":"image","source":{}}],"is_error":false}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Result(result_event) = &events[0] else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(result_event.tool_use_id, "toolu_bash01");
+        assert_eq!(result_event.content.as_deref(), Some("hello from array"));
+    }
+
+    #[test]
+    fn tool_result_array_content_with_no_text_block_yields_none() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","content":[{"type":"image","source":{}}],"is_error":false}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Result(result_event) = &events[0] else {
+            panic!("expected ToolEvent::Result");
+        };
+        assert_eq!(result_event.tool_use_id, "toolu_bash01");
+        assert!(result_event.content.is_none());
+    }
+
+    #[test]
+    fn tool_result_null_content_yields_none() {
+        let line = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash01","content":null,"is_error":false}]}}"#;
         let mut p = StreamParser::new();
         p.feed(line);
         let events = p.last_tool_events();

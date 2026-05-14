@@ -37,18 +37,32 @@ fn main() {
     section("Stage header — first run");
     display::stage_header("implementer", 1, "claude-sonnet-4-6", None);
 
-    // --- agent text ---
+    // --- set_stage starts the live timer in the panel ---
+    display::set_stage("implementer", 1, "claude-sonnet-4-6");
+
+    // --- agent text: short lines ---
     pause(400);
     display::agent_text("I'll start by reading the project structure…");
     display::agent_text("The codebase uses a pipeline model with stages.");
     pause(200);
 
-    // --- tool call states side by side ---
+    // --- agent text: long line that wraps ---
+    section("Agent text — wrapping");
+    display::agent_text("This is a much longer line of text that should demonstrate the word-wrapping behavior. When the terminal is narrower than the content, the display layer breaks it at word boundaries and indents continuation lines so everything stays aligned under the bullet point.");
+    pause(400);
+
+    // --- agent text: preserves newlines (e.g. code / structured output) ---
+    section("Agent text — newlines preserved");
+    display::agent_text("Here's what I found:\n\nsrc/main.rs  — entry point\nsrc/display.rs — terminal rendering\nsrc/pipeline.rs — stage orchestration");
+    pause(400);
+
+    // --- tool call states ---
     section("Tool call states");
     display::tool_call("Read", "src/main.rs", "s-1");
-    display::tool_call("Read", "src/main.rs", "s-2");
+    display::tool_call("Read", "src/lib.rs", "s-2");
+    display::tool_result("s-1", true);
     display::tool_result("s-2", true);
-    display::tool_call("Read", "src/main.rs", "s-3");
+    display::tool_call("Bash", "cargo test", "s-3");
     display::tool_result("s-3", false);
 
     // --- tool calls (overlapping) ---
@@ -65,9 +79,18 @@ fn main() {
     pause(400);
     display::tool_result("tc-3", true);
 
-    // --- more agent text ---
+    // --- agent text after tools ---
     pause(300);
     display::agent_text("The test failure was expected — fixing now.");
+
+    // --- usage counter in panel ---
+    section("Usage counter");
+    display::set_usage(12_400);
+    pause(800);
+    display::set_usage(48_700);
+    pause(800);
+    display::set_usage(128_000);
+    pause(800);
 
     // --- token warning ---
     section("Token warning");

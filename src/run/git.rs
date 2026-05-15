@@ -36,10 +36,13 @@ mod tests {
     use capsule::config::GitIdentity;
     use std::collections::HashMap;
 
-    fn env_with_git_config(config_path: &str) -> HashMap<String, String> {
+    fn env_with_git_config(config_path: &str, home: &str) -> HashMap<String, String> {
         let mut env = HashMap::new();
         env.insert("GIT_CONFIG_GLOBAL".to_string(), config_path.to_string());
         env.insert("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string());
+        // Isolate from CWD-dependent local .git/config — other tests may call
+        // set_current_dir() concurrently, pointing git at an unexpected repo.
+        env.insert("GIT_DIR".to_string(), format!("{home}/.git"));
         env
     }
 
@@ -61,7 +64,8 @@ mod tests {
         )
         .unwrap();
 
-        let env = env_with_git_config(config_path.to_str().unwrap());
+        let home = dir.path().to_str().unwrap();
+        let env = env_with_git_config(config_path.to_str().unwrap(), home);
         let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
 
         assert_eq!(name, "Alice Dev");
@@ -73,7 +77,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let nonexistent = dir.path().join("does_not_exist");
 
-        let env = env_with_git_config(nonexistent.to_str().unwrap());
+        let home = dir.path().to_str().unwrap();
+        let env = env_with_git_config(nonexistent.to_str().unwrap(), home);
         let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
 
         assert_eq!(name, "");
@@ -86,7 +91,8 @@ mod tests {
         let config_path = dir.path().join("gitconfig");
         std::fs::write(&config_path, "[core]\n\tpager = \n").unwrap();
 
-        let env = env_with_git_config(config_path.to_str().unwrap());
+        let home = dir.path().to_str().unwrap();
+        let env = env_with_git_config(config_path.to_str().unwrap(), home);
         let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
 
         assert_eq!(name, "");

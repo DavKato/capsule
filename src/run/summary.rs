@@ -71,10 +71,10 @@ pub(super) fn parse_resume_state(capsule_dir: &Path) -> Result<(String, Pipeline
 }
 
 pub(super) fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> Option<String> {
-    let id = session_id?;
+    session_id?;
     match reason {
         TerminalReason::FailExit | TerminalReason::CapHit => {
-            Some(format!("To continue the session, run: capsule resume {id}"))
+            Some("To continue the session, run: capsule resume".to_string())
         }
         _ => None,
     }
@@ -236,7 +236,7 @@ mod tests {
         let hint = resume_hint(Some("sess_abc"), &TerminalReason::FailExit);
         assert!(hint.is_some());
         let msg = hint.unwrap();
-        assert!(msg.contains("sess_abc"), "hint was: {msg}");
+        assert!(!msg.contains("sess_abc"), "hint was: {msg}");
         assert!(msg.contains("capsule resume"), "hint was: {msg}");
     }
 

@@ -1,0 +1,108 @@
+[
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "tool_use_id": "toolu_01X1cdCnQTXS72PA4BcGMFc1",
+          "type": "tool_result",
+          "content": "1\t[workspace]\n2\tmembers = [\".\", \"capsule-macros\"]\n3\tresolver = \"2\"\n4\t\n5\t[package]\n6\tname = \"capsule\"\n7\tversion = \"0.4.1\"\n8\tedition = \"2021\"\n9\t\n10\t[[bin]]\n11\tname = \"capsule\"\n12\tpath = \"src/main.rs\"\n13\n...[truncated]"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+    "uuid": "095b2606-b5cb-4493-bbd0-864e3dacd255",
+    "timestamp": "2026-05-15T06:15:09.250Z",
+    "tool_use_result": {
+      "type": "text",
+      "file": {
+        "filePath": "/home/davide/projects/davide/capsule/Cargo.toml",
+        "content": "[workspace]\nmembers = [\".\", \"capsule-macros\"]\nresolver = \"2\"\n\n[package]\nname = \"capsule\"\nversion = \"0.4.1\"\nedition = \"2021\"\n\n[[bin]]\nname = \"capsule\"\npath = \"src/main.rs\"\n\n[dependencies]\nanyhow = \"1\"\n\n...[truncated]",
+        "numLines": 30,
+        "startLine": 1,
+        "totalLines": 32
+      }
+    }
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "tool_use_id": "toolu_01GHpH77XW5UYiBsX722ezf8",
+          "type": "tool_result",
+          "content": "1\tuse anyhow::Result;\n2\tuse capsule::check::{CheckIssue, CheckReport, Severity};\n3\tuse capsule::config::{CliOverrides, GitIdentity, GithubScope};\n4\tuse clap::{CommandFactory, Parser, Subcommand, Value\n...[truncated]"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+    "uuid": "ec5c8210-a49f-4efb-9ca0-902587edaaae",
+    "timestamp": "2026-05-15T06:15:10.351Z",
+    "tool_use_result": {
+      "type": "text",
+      "file": {
+        "filePath": "/home/davide/projects/davide/capsule/src/main.rs",
+        "content": "use anyhow::Result;\nuse capsule::check::{CheckIssue, CheckReport, Severity};\nuse capsule::config::{CliOverrides, GitIdentity, GithubScope};\nuse clap::{CommandFactory, Parser, Subcommand, ValueEnum};\nu\n...[truncated]",
+        "numLines": 30,
+        "startLine": 1,
+        "totalLines": 625
+      }
+    }
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "tool_use_id": "toolu_01R9dhKJq8WCR3cL9T1tCrVF",
+          "type": "tool_result",
+          "content": "1\tuse crossterm::{\n2\t    cursor,\n3\t    style::{\n4\t        Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,\n5\t    },\n6\t    terminal,\n7\t    terminal::ClearType,\n...[truncated]"
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+    "uuid": "965ff7b3-7ce9-4e27-b454-823f93d6e933",
+    "timestamp": "2026-05-15T06:15:10.405Z",
+    "tool_use_result": {
+      "type": "text",
+      "file": {
+        "filePath": "/home/davide/projects/davide/capsule/src/display.rs",
+        "content": "use crossterm::{\n    cursor,\n    style::{\n        Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,\n    },\n    terminal,\n    terminal::ClearType,\n    Queueable\n...[truncated]",
+        "numLines": 30,
+        "startLine": 1,
+        "totalLines": 2420
+      }
+    }
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "tool_use_id": "toolu_01JzmqHGpntBJhrRzGhwBYsZ",
+          "type": "tool_result",
+          "content": "hello from the test agent",
+          "is_error": false
+        }
+      ]
+    },
+    "parent_tool_use_id": null,
+    "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+    "uuid": "87f2e93d-e8ac-4900-ba81-2218d5d92228",
+    "timestamp": "2026-05-15T06:15:16.504Z",
+    "tool_use_result": {
+      "stdout": "hello from the test agent",
+      "stderr": "",
+      "interrupted": false,
+      "isImage": false,
+      "noOutputExpected": false
+    }
+  }
+]

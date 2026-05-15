@@ -1,0 +1,159 @@
+[
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-opus-4-6",
+      "id": "msg_01UKx6cLZxmwHtQXESUzm8ry",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The user wants me to exercise terminal display with varied output. Let me follow the steps.",
+          "signature": "EpYCClkIDRgCKkCv4DTP8mo8+0sZRKuNd5j9PEd9fksvdHcjYbCUDmpfWCcNZuz+BgsInEN7+8fgItbTAcKmPthStFkD9jxutd6nMg9jbGF1ZGUtb3B1cy00LTY4ABIM5mtaLB9g5xQ+YljHGgyuYjV39G3g0Xj+mIoiMOobF6gpRI4XN3PWAC35HzQJuRRARtEwsXTJ+8pqLcWeZzpSpEQ5XtUffVag04kdlyprvmCMZnvJ6RGPFHnQDUtyUv3pk7ie6rFGYuMlRx5I5wkKYI1LeZamqyowgoW5ojyu6BStnkeqQOQmUn5bIiSjwYJymEPKprU1hl3TBL4y5WCe0f/CcIOg/0q5mJyDDPTGXwzc/zSeb0wldFIYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "This repository is a Rust project called \"capsule\" that appears to be a CLI tool. It uses Cargo as its build system and has a structure with source code in `src/`, integration tests in `tests/`, and a procedural macro crate in `capsule-macros/`. The project enforces strict conventions around stdout routing, testing with Docker, and automated releases.\n\nLet me read a few files to learn more."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01X1cdCnQTXS72PA4BcGMFc1",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/davide/projects/davide/capsule/Cargo.toml",
+            "limit": 30
+          },
+          "caller": {
+            "type": "direct"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01GHpH77XW5UYiBsX722ezf8",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/davide/projects/davide/capsule/src/main.rs",
+            "limit": 30
+          },
+          "caller": {
+            "type": "direct"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01R9dhKJq8WCR3cL9T1tCrVF",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/davide/projects/davide/capsule/src/display.rs",
+            "limit": 30
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 3,
+        "cache_creation_input_tokens": 7904,
+        "cache_read_input_tokens": 13032,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 7904
+        },
+        "output_tokens": 35,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+    "uuid": "040009dd-311d-41e1-9777-fde86a3de113",
+    "request_id": "req_011Cb3s3gpmE2UVZvDs4USfS"
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-opus-4-6",
+      "id": "msg_01EWSWGYsiCVNesXiDE9BK9i",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01JzmqHGpntBJhrRzGhwBYsZ",
+          "name": "Bash",
+          "input": {
+            "command": "echo \"hello from the test agent\"",
+            "description": "Print a test message"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ],
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1,
+        "cache_creation_input_tokens": 1382,
+        "cache_read_input_tokens": 20936,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1382
+        },
+        "output_tokens": 34,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+    "uuid": "c8c6eaa6-e590-4690-965d-bef247688df8",
+    "request_id": "req_011Cb3s4CjbSUPpKqArXz9gQ"
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "claude-opus-4-6",
+      "id": "msg_01SZZUEogXVh5Z5rZSLZ7TdW",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Capsule is a Rust CLI tool (v0.4.1) that manages containerized development environments. It uses `clap` for argument parsing with subcommands like `init`, `run`, `check`, `update`, and an MCP server mode. The display module in `src/display.rs` is notably sophisticated \u2014 it uses `crossterm` for terminal manipulation with colored output, a status panel, and tool-call tracking, which explains why the project enforces that all stdout goes through this module rather than raw `println!`. The codebase is well-structured as a Cargo workspace with a companion `capsule-macros` crate for procedural macros like the `#[requires_docker]` test attribute.\n\nVerdict: **pass**."
+        }
+      ],
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1,
+        "cache_creation_input_tokens": 166,
+        "cache_read_input_tokens": 22318,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 166
+        },
+        "output_tokens": 2,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "diagnostics": null,
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+    "uuid": "2db87f36-5b36-456b-b250-3abec1805857",
+    "request_id": "req_011Cb3s4eokGodwYT8WvxL7j"
+  }
+]

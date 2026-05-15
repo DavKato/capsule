@@ -1,0 +1,70 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 21763,
+  "duration_api_ms": 22949,
+  "ttft_ms": 2736,
+  "num_turns": 5,
+  "result": "Capsule is a Rust CLI tool (v0.4.1) that manages containerized development environments. It uses `clap` for argument parsing with subcommands like `init`, `run`, `check`, `update`, and an MCP server mode. The display module in `src/display.rs` is notably sophisticated \u2014 it uses `crossterm` for terminal manipulation with colored output, a status panel, and tool-call tracking, which explains why the project enforces that all stdout goes through this module rather than raw `println!`. The codebase is well-structured as a Cargo workspace with a companion `capsule-macros` crate for procedural macros like the `#[requires_docker]` test attribute.\n\nVerdict: **pass**.",
+  "stop_reason": "end_turn",
+  "session_id": "7838b740-b18e-42ca-adfd-f757f2faa63c",
+  "total_cost_usd": 0.103007,
+  "usage": {
+    "input_tokens": 5,
+    "cache_creation_input_tokens": 9452,
+    "cache_read_input_tokens": 56286,
+    "output_tokens": 605,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 9452,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [
+      {
+        "input_tokens": 1,
+        "output_tokens": 169,
+        "cache_read_input_tokens": 22318,
+        "cache_creation_input_tokens": 166,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 166
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 574,
+      "outputTokens": 13,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "webSearchRequests": 0,
+      "costUSD": 0.0006389999999999999,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000
+    },
+    "claude-opus-4-6": {
+      "inputTokens": 5,
+      "outputTokens": 605,
+      "cacheReadInputTokens": 56286,
+      "cacheCreationInputTokens": 9452,
+      "webSearchRequests": 0,
+      "costUSD": 0.102368,
+      "contextWindow": 200000,
+      "maxOutputTokens": 64000
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "uuid": "6690edd6-57f1-4c0b-a720-8f148558990a"
+}

@@ -566,6 +566,18 @@ fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Resu
     out.flush()
 }
 
+/// Print a dimmed informational line to stderr.
+pub fn dim_info(msg: &str) {
+    dim_info_to(&mut stderr(), msg).ok();
+}
+
+fn dim_info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
+    out.queue(SetAttribute(Attribute::Dim))?;
+    out.queue(Print(format!("{msg}\n")))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.flush()
+}
+
 pub fn println(msg: &str) {
     println_to(&mut stdout().lock(), msg).ok();
 }

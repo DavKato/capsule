@@ -95,7 +95,7 @@ fn write_cache(path: &PathBuf, tag: Option<&str>) {
     let _ = std::fs::write(path, content);
 }
 
-fn fetch_latest_tag() -> Option<String> {
+pub fn fetch_latest_tag() -> Option<String> {
     let output = std::process::Command::new("curl")
         .args([
             "--silent",
@@ -129,7 +129,7 @@ fn extract_tag_name(json: &str) -> Option<String> {
     Some(inner[..end].to_string())
 }
 
-fn strip_v(tag: &str) -> &str {
+pub fn strip_v(tag: &str) -> &str {
     tag.strip_prefix('v').unwrap_or(tag)
 }
 

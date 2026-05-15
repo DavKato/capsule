@@ -25,6 +25,24 @@ fn main() {
     pause(300);
     display::info("container started");
 
+    // --- update output: already up to date ---
+    section("Update — already up to date");
+    display::dim_info("Current version: 2.1.137");
+    pause(300);
+    display::dim_info("Checking for updates...");
+    pause(600);
+    display::info("Already up to date (2.1.137)");
+
+    // --- update output: new version available ---
+    section("Update — new version");
+    display::dim_info("Current version: 2.1.137");
+    pause(300);
+    display::dim_info("Checking for updates...");
+    pause(600);
+    display::dim_info("Updating 2.1.137 → 2.1.138...");
+    pause(800);
+    display::info("Successfully updated to 2.1.138");
+
     // --- notice_box ---
     section("Notice box");
     display::notice_box(&[

@@ -338,19 +338,46 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Update => {
-            let curl = std::process::Command::new("curl")
-                .args([
-                    "-fsSL",
-                    "https://raw.githubusercontent.com/DavKato/capsule/main/install.sh",
-                ])
-                .stdout(std::process::Stdio::piped())
-                .spawn()?;
-            let status = std::process::Command::new("bash")
-                .stdin(curl.stdout.unwrap())
-                .status()?;
-            if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
+            let current = env!("CARGO_PKG_VERSION");
+            capsule::display::dim_info(&format!("Current version: {current}"));
+            capsule::display::dim_info("Checking for updates...");
+
+            let run_install = || -> anyhow::Result<()> {
+                let curl = std::process::Command::new("curl")
+                    .args([
+                        "-fsSL",
+                        "https://raw.githubusercontent.com/DavKato/capsule/main/install.sh",
+                    ])
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()?;
+                let status = std::process::Command::new("bash")
+                    .stdin(curl.stdout.unwrap())
+                    .status()?;
+                if !status.success() {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+                Ok(())
+            };
+
+            match capsule::update_check::fetch_latest_tag() {
+                Some(tag) => {
+                    let latest = capsule::update_check::strip_v(&tag);
+                    if capsule::update_check::is_newer(&tag, current) {
+                        capsule::display::dim_info(&format!("Updating {current} → {latest}..."));
+                        run_install()?;
+                        capsule::display::info(&format!("Successfully updated to {latest}"));
+                    } else {
+                        capsule::display::info(&format!("Already up to date ({current})"));
+                    }
+                }
+                None => {
+                    capsule::display::info(
+                        "Could not check latest version, running install script anyway",
+                    );
+                    run_install()?;
+                }
             }
+
             Ok(())
         }
         Commands::Templates {

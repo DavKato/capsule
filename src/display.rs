@@ -388,13 +388,9 @@ fn render_stage_header_to<W: Write + QueueableCommand>(
     let term_w = term_w.min(MAX_DISPLAY_WIDTH);
     let content = match retry {
         Some(r) => {
-            let max_str = match r.max {
-                Some(m) => m.to_string(),
-                None => "∞".to_string(),
-            };
             format!(
                 "{stage_name} · iter {iteration} · {model} · retry {}/{}",
-                r.current, max_str
+                r.current, r.max
             )
         }
         None => format!("{stage_name} · iter {iteration} · {model}"),
@@ -1143,29 +1139,13 @@ mod tests {
     }
 
     #[test]
-    fn stage_header_with_finite_retry_shows_inline() {
-        let retry = RetryInfo {
-            current: 2,
-            max: Some(3),
-        };
+    fn stage_header_with_retry_shows_inline() {
+        let retry = RetryInfo { current: 2, max: 3 };
         let mut buf: Vec<u8> = Vec::new();
         render_stage_header_to(&mut buf, "builder", 2, "claude-opus-4-6", Some(&retry), 80)
             .unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("retry 2/3"), "retry info must appear inline");
-    }
-
-    #[test]
-    fn stage_header_with_unlimited_retry_shows_infinity() {
-        let retry = RetryInfo {
-            current: 1,
-            max: None,
-        };
-        let mut buf: Vec<u8> = Vec::new();
-        render_stage_header_to(&mut buf, "builder", 1, "claude-opus-4-6", Some(&retry), 80)
-            .unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("retry 1/∞"), "unlimited retry must show ∞");
     }
 
     #[test]

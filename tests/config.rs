@@ -240,7 +240,7 @@ fn multi_stage_parses_stages_and_routing() {
     };
     assert_eq!(impl_stage.name, "implementer");
     assert_eq!(impl_stage.on_fail, OnFail::Retry);
-    assert_eq!(impl_stage.max_retries, Some(3));
+    assert_eq!(impl_stage.max_retries, 3);
 
     let PipelineEntry::Stage(ref rev_stage) = cfg.pipeline.entries[1] else {
         panic!("expected Stage entry");

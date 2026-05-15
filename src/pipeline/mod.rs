@@ -25,8 +25,7 @@ use summary::CapHitKind as CapHit;
 pub struct RetryInfo {
     /// How many times the stage has already failed (1 = first retry).
     pub current: u32,
-    /// Maximum number of retries (`None` = unlimited).
-    pub max: Option<u32>,
+    pub max: u32,
 }
 
 pub trait StageRunner {
@@ -225,7 +224,9 @@ impl<R: StageRunner> PipelineExecutor<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
+    use crate::config::{
+        LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig, MAX_RETRIES_DEFAULT,
+    };
     use crate::verdict::{Verdict, VerdictStatus};
     use std::collections::VecDeque;
 
@@ -284,7 +285,7 @@ mod tests {
             model: None,
             on_pass: OnPass::Next,
             on_fail: OnFail::Exit,
-            max_retries: None,
+            max_retries: MAX_RETRIES_DEFAULT,
         }
     }
 
@@ -348,7 +349,7 @@ mod tests {
     fn on_fail_retry_exits_when_max_retries_exceeded() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(2);
+        s.max_retries = 2;
         let config = pipeline(vec![single_stage_entry(s)]);
         // 3 fails: fail_count reaches 3 > 2, exit
         assert_eq!(
@@ -383,7 +384,7 @@ mod tests {
     fn max_retries_resets_on_pass() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(2);
+        s.max_retries = 2;
         let config = pipeline(vec![single_stage_entry(s)]);
         // fail, fail, pass (reset), fail, fail, pass — all within max_retries
         assert_eq!(
@@ -776,7 +777,7 @@ mod tests {
     fn pipeline_state_captures_fail_counts() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(5);
+        s.max_retries = 5;
         let config = pipeline(vec![single_stage_entry(s)]);
         // Two fails, then pass
         let result = run_result(config, FakeRunner::new([fail(), fail(), pass()]));
@@ -787,7 +788,7 @@ mod tests {
     fn pipeline_state_captures_fail_counts_on_exit() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(1);
+        s.max_retries = 1;
         let config = pipeline(vec![single_stage_entry(s)]);
         // Two fails exceed max_retries → exit; fail_count for "a" should be 2
         let result = run_result(config, FakeRunner::new([fail(), fail()]));
@@ -856,6 +857,7 @@ mod tests {
     fn resume_global_counter_preserved() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
+        s.max_retries = 10;
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 5,

@@ -12,6 +12,7 @@ pub enum ResolveMode {
 }
 
 pub const MAX_PIPELINE_ITERATIONS_DEFAULT: u32 = 1000;
+pub const MAX_RETRIES_DEFAULT: u32 = 3;
 
 /// Git commit identity mode.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,7 +60,7 @@ pub struct StageConfig {
     pub model: Option<String>,
     pub on_pass: OnPass,
     pub on_fail: OnFail,
-    pub max_retries: Option<u32>,
+    pub max_retries: u32,
 }
 
 /// A `loop:` block containing an ordered list of stages.
@@ -229,7 +230,7 @@ fn convert_stage(raw: StageConfigRaw) -> StageConfig {
         model: raw.model,
         on_pass,
         on_fail,
-        max_retries: raw.max_retries,
+        max_retries: raw.max_retries.unwrap_or(MAX_RETRIES_DEFAULT),
     }
 }
 
@@ -339,7 +340,7 @@ fn desugar_flat_form(iterations: u32, prompt: Option<&str>) -> PipelineConfig {
         model: None,
         on_pass: OnPass::Next,
         on_fail: OnFail::Exit,
-        max_retries: None,
+        max_retries: MAX_RETRIES_DEFAULT,
     };
     PipelineConfig {
         entries: vec![PipelineEntry::Loop(LoopConfig {

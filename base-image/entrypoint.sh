@@ -10,9 +10,7 @@ _email="${GIT_AUTHOR_EMAIL:-capsule@localhost}"
 git config --global user.name "${_name}"
 git config --global user.email "${_email}"
 if [ -f /home/claude/before-each.sh ]; then
-  echo "── Running before-each.sh ────────────────────────────────────"
   bash /home/claude/before-each.sh
-  echo "── before-each.sh complete ───────────────────────────────────"
 fi
 if [ -n "${CAPSULE_RESUME_SESSION}" ]; then
   claude --dangerously-skip-permissions --model "${CAPSULE_MODEL:-claude-sonnet-4-6}" --resume "${CAPSULE_RESUME_SESSION}" -p "Continue where you left off." --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json

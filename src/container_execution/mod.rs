@@ -10,11 +10,12 @@ pub use infra::{
 };
 pub use process::{post_stream_error, run_container, run_iteration, StreamResult};
 pub use runner::{CredentialsGuard, DockerStageRunner};
+pub use stream_parser::{
+    format_usage_with_percentage, ModelUsage, StreamParser, ToolEvent, ToolResultEvent,
+    ToolUseEvent,
+};
 
 use std::path::PathBuf;
-
-/// The jq stream-display filter embedded at compile time.
-pub const STREAM_DISPLAY_JQ: &str = include_str!("../../base-image/stream_display.jq");
 
 /// Configuration for a single iteration's `docker run`.
 #[derive(Default, Clone)]
@@ -27,7 +28,7 @@ pub struct ExecutionConfig {
     pub pwd: PathBuf,
     /// Optional model override passed via `-e CAPSULE_MODEL`.
     pub model: Option<String>,
-    /// When true, print unfiltered container output in addition to jq-filtered view.
+    /// When true, print unfiltered container output to stderr in addition to the display view.
     pub verbose: bool,
     /// Path to the `.env` file to pass via `--env-file` (None → omitted).
     pub env_file: Option<PathBuf>,
@@ -61,31 +62,18 @@ pub struct ExecutionConfig {
 #[derive(Debug)]
 pub enum IterationOutcome {
     /// Loop should continue to the next iteration.
-    Continue { session_id: Option<String> },
+    Continue {
+        session_id: Option<String>,
+        model_usage: Option<ModelUsage>,
+    },
     /// Claude submitted a verdict; loop should stop.
     Done {
         verdict: crate::verdict::Verdict,
         session_id: Option<String>,
+        model_usage: Option<ModelUsage>,
     },
     /// Auth failed but the host token is still valid; caller should re-copy
     /// credentials, call `CredentialsGuard::reset_baseline`, and retry with
     /// `run_container(..., Some(session_id))`.
     AuthFailedResumable { session_id: String },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn embedded_stream_display_jq_is_non_empty() {
-        assert!(
-            !STREAM_DISPLAY_JQ.is_empty(),
-            "embedded stream_display.jq must not be empty"
-        );
-        assert!(
-            STREAM_DISPLAY_JQ.contains("fromjson"),
-            "jq filter must contain fromjson"
-        );
-    }
 }

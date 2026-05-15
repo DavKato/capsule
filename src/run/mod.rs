@@ -53,7 +53,7 @@ impl RunSession {
         check_docker()?;
 
         if let Some(warning) = env::env_gitignore_warning(&cfg.capsule_dir) {
-            eprintln!("{warning}");
+            capsule::display::warning(&warning);
         }
 
         // Capture environment snapshot before .env is sourced (needed for 'global' scope).
@@ -120,6 +120,7 @@ impl RunSession {
                     let _ = Command::new("docker").args(["stop", name]).output();
                 }
             }
+            capsule::display::teardown();
             std::process::exit(1);
         })
         .context("failed to register Ctrl-C handler")?;
@@ -174,7 +175,7 @@ impl RunSession {
             token_remaining_minutes(&self.claude_dir),
             self.cfg.min_token_lifetime_minutes,
         ) {
-            eprintln!("{warning}");
+            capsule::display::warning(&warning);
             eprint!("Continue anyway? [y/N] ");
             let _ = std::io::stderr().flush();
             let mut answer = String::new();
@@ -240,7 +241,8 @@ impl RunSession {
             result.summary.session_id.as_deref(),
             &result.summary.terminal_reason,
         ) {
-            eprintln!("\n{hint}");
+            capsule::display::info("");
+            capsule::display::capsule_info(&hint);
         }
         update_check::maybe_print_notice(update_rx);
         Ok(summary::exit_decision_from_summary(&result.summary))

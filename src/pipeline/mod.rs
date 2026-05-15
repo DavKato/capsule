@@ -21,12 +21,21 @@ use routing::{
 };
 use summary::CapHitKind as CapHit;
 
+/// Info about the current retry attempt — shown only when retrying.
+pub struct RetryInfo {
+    /// How many times the stage has already failed (1 = first retry).
+    pub current: u32,
+    /// Maximum number of retries (`None` = unlimited).
+    pub max: Option<u32>,
+}
+
 pub trait StageRunner {
     fn run(
         &mut self,
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
+        retry: Option<&RetryInfo>,
     ) -> anyhow::Result<Option<crate::verdict::Verdict>>;
 }
 
@@ -238,6 +247,7 @@ mod tests {
             _stage_name: &str,
             _prompt: &str,
             _model: Option<&str>,
+            _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             Ok(self
                 .responses
@@ -502,6 +512,7 @@ mod tests {
             _stage_name: &str,
             prompt: &str,
             _model: Option<&str>,
+            _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             self.prompts.lock().unwrap().push(prompt.to_string());
             Ok(self

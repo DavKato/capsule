@@ -1,11 +1,24 @@
 use std::collections::HashMap;
 
+use super::RetryInfo;
 use crate::config::{LoopConfig, OnFail, OnPass, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
 
 use super::prompt::{inject_input, inject_note_block};
 use super::summary::{CapHitKind, PipelineOutcome};
 use super::StageRunner;
+
+fn retry_info(progress: &PipelineProgress, stage: &StageConfig) -> Option<RetryInfo> {
+    let fail_count = progress.fail_counts.get(&stage.name).copied().unwrap_or(0);
+    if fail_count > 0 {
+        Some(RetryInfo {
+            current: fail_count,
+            max: stage.max_retries,
+        })
+    } else {
+        None
+    }
+}
 
 /// Mutable progress tracked across stage invocations during a pipeline run.
 pub(super) struct PipelineProgress {
@@ -104,7 +117,13 @@ pub(super) fn run_loop(
             &with_input,
         );
         progress.last_stage = Some(stage.name.clone());
-        let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref())?;
+        let retry = retry_info(progress, stage);
+        let verdict = runner.run(
+            &stage.name,
+            &effective_prompt,
+            stage.model.as_deref(),
+            retry.as_ref(),
+        )?;
         progress.last_verdict = verdict.clone();
 
         if matches!(
@@ -263,7 +282,13 @@ pub(super) fn run_stage(
         &with_input,
     );
     progress.last_stage = Some(stage.name.clone());
-    let verdict = runner.run(&stage.name, &effective_prompt, stage.model.as_deref())?;
+    let retry = retry_info(progress, stage);
+    let verdict = runner.run(
+        &stage.name,
+        &effective_prompt,
+        stage.model.as_deref(),
+        retry.as_ref(),
+    )?;
     progress.last_verdict = verdict.clone();
 
     if matches!(

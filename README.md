@@ -160,5 +160,5 @@ This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub 
 4. Builds the base `capsule` image if not cached (or if `--rebuild` is passed)
 5. Builds a repo-specific `capsule-<basename>` image if `.capsule/Dockerfile` exists
 6. Runs `before-all.sh` if present
-7. For each iteration: mounts the prompt, runs `before-each.sh` inside the container, pipes the prompt to Claude Code, and streams output through `jq`
+7. For each iteration: mounts the prompt, runs `before-each.sh` inside the container, pipes the prompt to Claude Code, and renders streaming output with color-coded status
 8. Exits early when Claude calls `submit_verdict` (pass exits 0, fail exits non-zero) or the iteration budget is exhausted (implicit fail)

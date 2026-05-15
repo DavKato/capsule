@@ -8,13 +8,18 @@ use super::ExitDecision;
 pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
     match summary.terminal_reason {
         TerminalReason::Done | TerminalReason::Exit | TerminalReason::Ok => ExitDecision::Success,
-        TerminalReason::FailExit | TerminalReason::CapHit => {
-            let msg = summary
+        ref reason @ (TerminalReason::FailExit | TerminalReason::CapHit) => {
+            let fallback = match reason {
+                TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
+                _ => "pipeline ended with fail-exit (no verdict emitted)",
+            };
+            let notes = summary
                 .last_verdict
                 .as_ref()
-                .and_then(|v| v.notes.clone())
-                .unwrap_or_else(|| format!("pipeline ended with {:?}", summary.terminal_reason));
-            ExitDecision::Failure(msg)
+                .and_then(|v| v.notes.as_deref())
+                .unwrap_or(fallback)
+                .to_string();
+            ExitDecision::Failure(notes)
         }
     }
 }
@@ -77,7 +82,11 @@ pub(super) fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{is_workspace_dirty, parse_resume_state, resume_hint, write_last_run};
+    use super::super::ExitDecision;
+    use super::{
+        exit_decision_from_summary, is_workspace_dirty, parse_resume_state, resume_hint,
+        write_last_run,
+    };
     use capsule::pipeline::{
         build_summary_artifact, CapHitKind, IterationCounters, PipelineState, RunSummary,
         TerminalReason,
@@ -407,5 +416,52 @@ mod tests {
         assert_eq!(env.len(), 2);
         assert_eq!(env["PARENT"], "79");
         assert_eq!(env["MODE"], "dry");
+    }
+
+    #[test]
+    fn failure_decision_carries_notes_from_last_verdict() {
+        let mut s = minimal_summary(TerminalReason::FailExit);
+        s.last_verdict = Some(Verdict {
+            status: VerdictStatus::Fail,
+            notes: Some("reviewer rejected implementation".to_string()),
+        });
+        match exit_decision_from_summary(&s) {
+            ExitDecision::Failure(notes) => {
+                assert_eq!(notes, "reviewer rejected implementation");
+            }
+            _ => panic!("expected Failure"),
+        }
+    }
+
+    #[test]
+    fn failure_decision_fallback_notes_when_no_verdict() {
+        let s = minimal_summary(TerminalReason::FailExit);
+        match exit_decision_from_summary(&s) {
+            ExitDecision::Failure(notes) => {
+                assert!(
+                    notes.contains("fail-exit"),
+                    "fallback must mention fail-exit, got: {notes}"
+                );
+            }
+            _ => panic!("expected Failure"),
+        }
+    }
+
+    #[test]
+    fn failure_decision_fallback_notes_when_verdict_has_no_notes() {
+        let mut s = minimal_summary(TerminalReason::CapHit);
+        s.last_verdict = Some(Verdict {
+            status: VerdictStatus::Fail,
+            notes: None,
+        });
+        match exit_decision_from_summary(&s) {
+            ExitDecision::Failure(notes) => {
+                assert!(
+                    notes.contains("cap-hit"),
+                    "fallback must mention cap-hit, got: {notes}"
+                );
+            }
+            _ => panic!("expected Failure"),
+        }
     }
 }

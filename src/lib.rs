@@ -1,6 +1,8 @@
 pub mod check;
 pub mod config;
 pub mod container_execution;
+pub(crate) mod dev;
+pub mod display;
 pub mod explain;
 pub mod image_build;
 pub mod init;

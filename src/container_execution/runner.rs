@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::pipeline::StageRunner;
+use crate::pipeline::{RetryInfo, StageRunner};
 use crate::verdict::Verdict;
 
 use super::{
     container_name_for, post_stream_error, run_container, run_iteration, ExecutionConfig,
-    IterationOutcome,
+    IterationOutcome, ModelUsage,
 };
 
 pub struct CredentialsGuard {
@@ -78,7 +78,7 @@ impl Drop for CredentialsGuard {
         let current = match std::fs::read(self.tempfile.path()) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("warning: failed to read credentials temp file: {e}");
+                crate::display::warning(&format!("failed to read credentials temp file: {e}"));
                 return;
             }
         };
@@ -86,7 +86,7 @@ impl Drop for CredentialsGuard {
             return;
         }
         if let Err(e) = std::fs::copy(self.tempfile.path(), &dest) {
-            eprintln!("warning: failed to write back credentials: {e}");
+            crate::display::warning(&format!("failed to write back credentials: {e}"));
         }
     }
 }
@@ -96,6 +96,7 @@ pub struct DockerStageRunner {
     active_container: Arc<Mutex<Option<String>>>,
     iteration: u32,
     session_id: Option<String>,
+    model_usage: Option<ModelUsage>,
     credentials_guard: Option<CredentialsGuard>,
     resume_session_id: Option<String>,
 }
@@ -112,6 +113,7 @@ impl DockerStageRunner {
             active_container,
             iteration: 0,
             session_id: None,
+            model_usage: None,
             credentials_guard,
             resume_session_id,
         }
@@ -119,6 +121,10 @@ impl DockerStageRunner {
 
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    pub fn model_usage(&self) -> Option<&ModelUsage> {
+        self.model_usage.as_ref()
     }
 }
 
@@ -128,9 +134,57 @@ impl StageRunner for DockerStageRunner {
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
+        retry: Option<&RetryInfo>,
     ) -> anyhow::Result<Option<Verdict>> {
         self.iteration += 1;
-        println!("── {} (iteration {}) ──", stage_name, self.iteration);
+        let effective_model = model
+            .or(self.base_cfg.model.as_deref())
+            .unwrap_or("unknown");
+        crate::display::stage_header(stage_name, self.iteration, effective_model, retry);
+        let start = std::time::Instant::now();
+        let result = self.execute_stage(prompt, model);
+        let duration = start.elapsed();
+        crate::display::clear_stage();
+        let usage_str = self.model_usage.as_ref().map(|u| {
+            let total = u.input_tokens + u.output_tokens;
+            super::format_usage_with_percentage(total, u.context_window)
+        });
+        match &result {
+            Ok(verdict) => {
+                crate::display::session_footer(
+                    stage_name,
+                    self.iteration,
+                    verdict.as_ref(),
+                    duration,
+                    self.session_id.as_deref(),
+                    usage_str.as_deref(),
+                );
+            }
+            Err(e) => {
+                let error_verdict = crate::verdict::Verdict {
+                    status: crate::verdict::VerdictStatus::Fail,
+                    notes: Some(format!("{e:#}")),
+                };
+                crate::display::session_footer(
+                    stage_name,
+                    self.iteration,
+                    Some(&error_verdict),
+                    duration,
+                    self.session_id.as_deref(),
+                    usage_str.as_deref(),
+                );
+            }
+        }
+        result
+    }
+}
+
+impl DockerStageRunner {
+    fn execute_stage(
+        &mut self,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> anyhow::Result<Option<Verdict>> {
         let mut cfg = self.base_cfg.clone();
         cfg.prompt = prompt.to_string();
         if let Some(m) = model {
@@ -146,21 +200,34 @@ impl StageRunner for DockerStageRunner {
             if let Some(id) = result.session_id {
                 self.session_id = Some(id);
             }
+            if let Some(u) = result.model_usage {
+                self.model_usage = Some(u);
+            }
             return Ok(result.verdict);
         }
         match run_iteration(&cfg, self.iteration, &self.active_container)? {
             IterationOutcome::Done {
                 verdict,
                 session_id,
+                model_usage,
             } => {
                 if let Some(id) = session_id {
                     self.session_id = Some(id);
                 }
+                if let Some(u) = model_usage {
+                    self.model_usage = Some(u);
+                }
                 Ok(Some(verdict))
             }
-            IterationOutcome::Continue { session_id } => {
+            IterationOutcome::Continue {
+                session_id,
+                model_usage,
+            } => {
                 if let Some(id) = session_id {
                     self.session_id = Some(id);
+                }
+                if let Some(u) = model_usage {
+                    self.model_usage = Some(u);
                 }
                 Ok(None)
             }
@@ -179,10 +246,9 @@ impl DockerStageRunner {
         cfg: &ExecutionConfig,
         session_id: &str,
     ) -> anyhow::Result<Option<Verdict>> {
-        eprintln!(
-            "[capsule] auth failed — host token valid, attempting resume-retry (session {})",
-            session_id
-        );
+        crate::display::warning(&format!(
+            "auth failed — host token valid, attempting resume-retry (session {session_id})"
+        ));
         if let Some(ref mut guard) = self.credentials_guard {
             let host_creds = cfg.claude_dir.join(".credentials.json");
             std::fs::copy(&host_creds, guard.path())
@@ -197,6 +263,9 @@ impl DockerStageRunner {
         }
         if let Some(id) = result.session_id {
             self.session_id = Some(id);
+        }
+        if let Some(u) = result.model_usage {
+            self.model_usage = Some(u);
         }
         Ok(result.verdict)
     }
@@ -213,10 +282,8 @@ mod tests {
         std::fs::write(&creds_path, b"original").unwrap();
 
         let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
-        // Simulate re-copying host creds to the temp file (as resume-retry does).
         std::fs::write(guard.path(), b"resumed-creds").unwrap();
         guard.reset_baseline().unwrap();
-        // Simulate the resumed container rotating the token.
         std::fs::write(guard.path(), b"rotated-by-resume").unwrap();
         drop(guard);
 

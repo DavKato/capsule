@@ -3,3 +3,9 @@ install-dev:
 
 uninstall-dev:
 	rm -f ~/.cargo/bin/capsule-dev
+
+display-demo:
+	cargo run --example display_demo
+
+test-run:
+	cargo run -- run --capsule-dir .capsule-test

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    name: Check, fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --locked --tests -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
+
+  lint-stdout:
+    name: No direct stdout writes outside display module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for direct println!/print! outside display module
+        run: |
+          # display.rs owns all stdout output; mcp_server.rs uses JSON-RPC protocol output.
+          # Any println!/print! outside those two files is a routing violation.
+          found=$(grep -rn --include='*.rs' -E '\bprintln!\s*\(|\bprint!\s*\(' src/ \
+            | grep -v '^src/display\.rs:' \
+            | grep -v '^src/mcp_server\.rs:' || true)
+          if [ -n "$found" ]; then
+            echo "ERROR: direct println!/print! found outside display module:"
+            echo "$found"
+            echo ""
+            echo "Route output through capsule::display::println or capsule::display::print instead."
+            exit 1
+          fi

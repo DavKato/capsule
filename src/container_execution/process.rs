@@ -1,7 +1,7 @@
 use super::docker_args::{build_docker_args, container_name_for};
 use super::infra::{host_token_is_expired, make_mcp_config};
-use super::stream_parser::StreamParser;
-use super::{ExecutionConfig, IterationOutcome, STREAM_DISPLAY_JQ};
+use super::stream_parser::{ModelUsage, StreamParser, TextDisplay, ToolEvent};
+use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -12,6 +12,7 @@ pub struct StreamResult {
     pub submit_verdict_missing: bool,
     pub verdict: Option<crate::verdict::Verdict>,
     pub session_id: Option<String>,
+    pub model_usage: Option<ModelUsage>,
 }
 
 pub fn post_stream_error(
@@ -42,20 +43,50 @@ pub fn post_stream_error(
     None
 }
 
-fn stream_output(
-    reader: BufReader<impl std::io::Read>,
-    mut jq_stdin: impl Write,
-    verbose: bool,
-) -> Result<StreamResult> {
+fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result<StreamResult> {
     let mut parser = StreamParser::new();
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
-        parser.feed(&line);
+        let verdict_seen = parser.feed(&line).is_some();
         if verbose {
-            eprintln!("{line}");
+            if let Some(v) = parser.last_parsed_value() {
+                let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| line.clone());
+                crate::display::info(&pretty);
+            } else {
+                crate::display::info(&line);
+            }
         }
-        let _ = writeln!(jq_stdin, "{line}");
+        let had_tool_events = !parser.last_tool_events().is_empty();
+        for event in parser.last_tool_events() {
+            match event {
+                ToolEvent::Use(tu) => {
+                    let args = format_tool_args(&tu.input);
+                    crate::display::tool_call(&tu.name, &args, &tu.id);
+                }
+                ToolEvent::Result(tr) => {
+                    crate::display::tool_result(&tr.tool_use_id, !tr.is_error);
+                }
+            }
+        }
+        let had_text = !parser.last_text_displays().is_empty();
+        for display in parser.last_text_displays() {
+            let text = match display {
+                TextDisplay::Content(t) | TextDisplay::Thinking(t) => t,
+            };
+            crate::display::agent_text(text);
+        }
+        if let Some(snap) = parser.last_usage_snapshot() {
+            crate::display::set_usage(snap.total_tokens());
+        }
+        if !had_text
+            && !had_tool_events
+            && !verdict_seen
+            && !line.is_empty()
+            && parser.last_parsed_value().is_none()
+        {
+            crate::display::info(&line);
+        }
     }
 
     Ok(StreamResult {
@@ -63,11 +94,29 @@ fn stream_output(
         submit_verdict_missing: parser.submit_verdict_missing(),
         verdict: parser.verdict().cloned(),
         session_id: parser.session_id().map(str::to_owned),
+        model_usage: parser.model_usage().cloned(),
     })
 }
 
+fn format_tool_args(input: &serde_json::Value) -> String {
+    let Some(obj) = input.as_object() else {
+        return String::new();
+    };
+    for key in &["command", "file_path", "path", "pattern", "prompt"] {
+        if let Some(s) = obj.get(*key).and_then(serde_json::Value::as_str) {
+            return s.replace('\n', " ");
+        }
+    }
+    for val in obj.values() {
+        if let Some(s) = val.as_str() {
+            return s.replace('\n', " ");
+        }
+    }
+    String::new()
+}
+
 /// Shared scaffolding for one container run: temp files, docker args, MCP config,
-/// jq piping, streaming, wait, and active-container slot management.
+/// streaming, wait, and active-container slot management.
 ///
 /// `resume_session_id` — when `Some`, adds `-e=CAPSULE_RESUME_SESSION=<id>` so the
 /// entrypoint invokes `claude --resume` instead of piping `prompt.txt`.
@@ -111,6 +160,12 @@ pub fn run_container(
         *slot = Some(container_name.to_string());
     }
 
+    crate::dev::log_docker_env(
+        cfg.env_file.as_deref(),
+        cfg.extra_env_file.as_deref(),
+        container_name,
+    );
+
     let mut docker_args = build_docker_args(cfg, &prompt_path, container_name);
     let image = docker_args
         .pop()
@@ -136,19 +191,8 @@ pub fn run_container(
         .context("failed to spawn `docker run`")?;
 
     let reader = BufReader::new(docker_child.stdout.take().expect("stdout piped"));
+    let result = stream_output(reader, cfg.verbose)?;
 
-    let mut jq_child = Command::new("jq")
-        .args(["-R", "-r", STREAM_DISPLAY_JQ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn `jq`")?;
-
-    let jq_stdin = jq_child.stdin.take().expect("jq stdin piped");
-    let result = stream_output(reader, jq_stdin, cfg.verbose)?;
-
-    let _ = jq_child.wait();
     let status = docker_child.wait().context("docker run did not complete")?;
 
     if let Ok(mut slot) = active_container.lock() {
@@ -170,7 +214,7 @@ fn should_attempt_resume(
     session_id.is_some() && has_credentials && !host_token_expired
 }
 
-/// Run one iteration: mount prompt, stream output through jq, propagate exit code.
+/// Run one iteration: mount prompt, stream output, propagate exit code.
 ///
 /// `iteration` is used to derive a unique `--name` for the container so that a
 /// registered ctrlc handler can call `docker stop <name>` on SIGINT.
@@ -214,9 +258,11 @@ pub fn run_iteration(
         Some(verdict) => Ok(IterationOutcome::Done {
             verdict,
             session_id: result.session_id,
+            model_usage: result.model_usage,
         }),
         None => Ok(IterationOutcome::Continue {
             session_id: result.session_id,
+            model_usage: result.model_usage,
         }),
     }
 }
@@ -243,6 +289,7 @@ mod tests {
             submit_verdict_missing: false,
             verdict: None,
             session_id: None,
+            model_usage: None,
         }
     }
 
@@ -347,5 +394,80 @@ mod tests {
             err.to_string().contains("submit_verdict"),
             "submit_verdict_missing must take priority over non-zero exit"
         );
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_command() {
+        let input = serde_json::json!({"command": "ls -la", "other": "ignored"});
+        assert_eq!(format_tool_args(&input), "ls -la");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_file_path() {
+        let input = serde_json::json!({"file_path": "/src/main.rs"});
+        assert_eq!(format_tool_args(&input), "/src/main.rs");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_path() {
+        let input = serde_json::json!({"path": "/some/dir"});
+        assert_eq!(format_tool_args(&input), "/some/dir");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_pattern() {
+        let input = serde_json::json!({"pattern": "*.rs"});
+        assert_eq!(format_tool_args(&input), "*.rs");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_prompt() {
+        let input = serde_json::json!({"prompt": "hello world"});
+        assert_eq!(format_tool_args(&input), "hello world");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_over_fallback() {
+        // command is a priority key and should win over any other string values
+        let input = serde_json::json!({"other": "fallback_value", "command": "priority_value"});
+        assert_eq!(format_tool_args(&input), "priority_value");
+    }
+
+    #[test]
+    fn format_tool_args_fallback_to_first_string_value() {
+        let input = serde_json::json!({"unknown_key": "fallback_value"});
+        assert_eq!(format_tool_args(&input), "fallback_value");
+    }
+
+    #[test]
+    fn format_tool_args_non_object_returns_empty() {
+        assert_eq!(format_tool_args(&serde_json::json!("string")), "");
+        assert_eq!(format_tool_args(&serde_json::json!(42)), "");
+        assert_eq!(format_tool_args(&serde_json::json!(["a", "b"])), "");
+        assert_eq!(format_tool_args(&serde_json::json!(null)), "");
+    }
+
+    #[test]
+    fn format_tool_args_empty_object_returns_empty() {
+        assert_eq!(format_tool_args(&serde_json::json!({})), "");
+    }
+
+    #[test]
+    fn format_tool_args_priority_key_non_string_value_falls_through_to_fallback() {
+        // command key exists but has a non-string value; should fall through to fallback
+        let input = serde_json::json!({"command": 42, "other": "fallback"});
+        assert_eq!(format_tool_args(&input), "fallback");
+    }
+
+    #[test]
+    fn format_tool_args_newlines_replaced_with_spaces() {
+        let input = serde_json::json!({"command": "line1\nline2\nline3"});
+        assert_eq!(format_tool_args(&input), "line1 line2 line3");
+    }
+
+    #[test]
+    fn format_tool_args_no_string_values_returns_empty() {
+        let input = serde_json::json!({"a": 1, "b": true, "c": null});
+        assert_eq!(format_tool_args(&input), "");
     }
 }

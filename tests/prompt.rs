@@ -31,6 +31,7 @@ impl StageRunner for RecordingRunner {
         _stage_name: &str,
         prompt: &str,
         _model: Option<&str>,
+        _retry: Option<&capsule::pipeline::RetryInfo>,
     ) -> anyhow::Result<Option<Verdict>> {
         self.prompts.lock().unwrap().push(prompt.to_string());
         Ok(self.responses.pop_front().expect("no more responses"))

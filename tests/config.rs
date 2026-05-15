@@ -261,6 +261,17 @@ fn multi_stage_default_max_pipeline_iterations() {
 }
 
 #[test]
+fn multi_stage_max_retries_defaults_when_omitted_in_yaml() {
+    let dir = capsule_dir_with_config(MULTI_STAGE_YAML);
+    let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
+    let PipelineEntry::Stage(ref rev_stage) = cfg.pipeline.entries[1] else {
+        panic!("expected Stage entry");
+    };
+    assert_eq!(rev_stage.name, "reviewer");
+    assert_eq!(rev_stage.max_retries, MAX_RETRIES_DEFAULT);
+}
+
+#[test]
 fn max_retries_defaults_to_constant_when_omitted() {
     let yaml = "\
 stages:

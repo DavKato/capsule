@@ -149,10 +149,7 @@ fn main() {
         "reviewer",
         2,
         "claude-opus-4-6",
-        Some(&RetryInfo {
-            current: 2,
-            max: Some(3),
-        }),
+        Some(&RetryInfo { current: 2, max: 3 }),
     );
     pause(800);
 
@@ -171,16 +168,13 @@ fn main() {
         Some("12.1k (6.1%) used"),
     );
 
-    // --- stage header with unlimited retry ---
-    section("Stage header — unlimited retry");
+    // --- stage header with retry ---
+    section("Stage header — retry");
     display::stage_header(
         "implementer",
         3,
         "claude-sonnet-4-6",
-        Some(&RetryInfo {
-            current: 1,
-            max: None,
-        }),
+        Some(&RetryInfo { current: 1, max: 5 }),
     );
     pause(800);
 

@@ -43,6 +43,10 @@ pub(crate) struct RunSession {
 }
 
 impl RunSession {
+    pub(crate) fn log_file(&self) -> Option<&std::path::Path> {
+        self.cfg.log_file.as_deref()
+    }
+
     /// Phases 1-10: resolve config, load env/tokens, build images,
     /// detect infrastructure, register Ctrl-C handler.
     pub(crate) fn prepare(capsule_dir: PathBuf, mut overrides: CliOverrides) -> Result<Self> {
@@ -155,7 +159,8 @@ impl RunSession {
         capsule_dir: PathBuf,
         cli_env: Vec<(String, String)>,
     ) -> Result<Self> {
-        let resume_data = summary::parse_resume_state(&capsule_dir)?;
+        let mut resume_data = summary::parse_resume_state(&capsule_dir)?;
+        resume_data.1.env = env::sanitize_persisted_env(&resume_data.1.env);
         let merged_env = env::merge_env(&resume_data.1.env, &cli_env);
         let overrides = capsule::config::CliOverrides {
             env: merged_env,

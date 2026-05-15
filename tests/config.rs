@@ -1,6 +1,6 @@
 use capsule::config::{
     resolve, CliOverrides, Config, GitIdentity, GithubScope, OnFail, OnPass, PipelineEntry,
-    ResolveMode, MAX_PIPELINE_ITERATIONS_DEFAULT,
+    ResolveMode, MAX_PIPELINE_ITERATIONS_DEFAULT, MAX_RETRIES_DEFAULT,
 };
 use tempfile::TempDir;
 
@@ -240,7 +240,7 @@ fn multi_stage_parses_stages_and_routing() {
     };
     assert_eq!(impl_stage.name, "implementer");
     assert_eq!(impl_stage.on_fail, OnFail::Retry);
-    assert_eq!(impl_stage.max_retries, Some(3));
+    assert_eq!(impl_stage.max_retries, 3);
 
     let PipelineEntry::Stage(ref rev_stage) = cfg.pipeline.entries[1] else {
         panic!("expected Stage entry");
@@ -258,6 +258,33 @@ fn multi_stage_default_max_pipeline_iterations() {
         cfg.pipeline.max_pipeline_iterations,
         MAX_PIPELINE_ITERATIONS_DEFAULT
     );
+}
+
+#[test]
+fn multi_stage_max_retries_defaults_when_omitted_in_yaml() {
+    let dir = capsule_dir_with_config(MULTI_STAGE_YAML);
+    let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
+    let PipelineEntry::Stage(ref rev_stage) = cfg.pipeline.entries[1] else {
+        panic!("expected Stage entry");
+    };
+    assert_eq!(rev_stage.name, "reviewer");
+    assert_eq!(rev_stage.max_retries, MAX_RETRIES_DEFAULT);
+}
+
+#[test]
+fn max_retries_defaults_to_constant_when_omitted() {
+    let yaml = "\
+stages:
+  - name: worker
+    prompt: prompts/work.md
+    on_fail: retry
+";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
+    let PipelineEntry::Stage(ref stage) = cfg.pipeline.entries[0] else {
+        panic!("expected Stage entry");
+    };
+    assert_eq!(stage.max_retries, MAX_RETRIES_DEFAULT);
 }
 
 #[test]

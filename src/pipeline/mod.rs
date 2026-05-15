@@ -25,8 +25,7 @@ use summary::CapHitKind as CapHit;
 pub struct RetryInfo {
     /// How many times the stage has already failed (1 = first retry).
     pub current: u32,
-    /// Maximum number of retries (`None` = unlimited).
-    pub max: Option<u32>,
+    pub max: u32,
 }
 
 pub trait StageRunner {
@@ -225,7 +224,9 @@ impl<R: StageRunner> PipelineExecutor<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig};
+    use crate::config::{
+        LoopConfig, OnFail, OnPass, PipelineConfig, PipelineEntry, StageConfig, MAX_RETRIES_DEFAULT,
+    };
     use crate::verdict::{Verdict, VerdictStatus};
     use std::collections::VecDeque;
 
@@ -284,7 +285,7 @@ mod tests {
             model: None,
             on_pass: OnPass::Next,
             on_fail: OnFail::Exit,
-            max_retries: None,
+            max_retries: MAX_RETRIES_DEFAULT,
         }
     }
 
@@ -348,7 +349,7 @@ mod tests {
     fn on_fail_retry_exits_when_max_retries_exceeded() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(2);
+        s.max_retries = 2;
         let config = pipeline(vec![single_stage_entry(s)]);
         // 3 fails: fail_count reaches 3 > 2, exit
         assert_eq!(
@@ -383,7 +384,7 @@ mod tests {
     fn max_retries_resets_on_pass() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(2);
+        s.max_retries = 2;
         let config = pipeline(vec![single_stage_entry(s)]);
         // fail, fail, pass (reset), fail, fail, pass — all within max_retries
         assert_eq!(
@@ -776,7 +777,7 @@ mod tests {
     fn pipeline_state_captures_fail_counts() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(5);
+        s.max_retries = 5;
         let config = pipeline(vec![single_stage_entry(s)]);
         // Two fails, then pass
         let result = run_result(config, FakeRunner::new([fail(), fail(), pass()]));
@@ -787,7 +788,7 @@ mod tests {
     fn pipeline_state_captures_fail_counts_on_exit() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
-        s.max_retries = Some(1);
+        s.max_retries = 1;
         let config = pipeline(vec![single_stage_entry(s)]);
         // Two fails exceed max_retries → exit; fail_count for "a" should be 2
         let result = run_result(config, FakeRunner::new([fail(), fail()]));
@@ -856,6 +857,7 @@ mod tests {
     fn resume_global_counter_preserved() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
+        s.max_retries = 10;
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
             max_pipeline_iterations: 5,
@@ -960,7 +962,7 @@ mod tests {
     #[test]
     fn pipeline_state_to_json_produces_expected_shape() {
         let state = full_state();
-        let v = state.to_json();
+        let v = serde_json::to_value(&state).unwrap();
         assert_eq!(v["current_idx"], 2);
         assert_eq!(v["global_counter"], 7);
         assert_eq!(v["fail_counts"]["stage-a"], 2);
@@ -974,78 +976,72 @@ mod tests {
     #[test]
     fn pipeline_state_round_trips_via_json() {
         let original = full_state();
-        let json = original.to_json();
-        let restored = PipelineState::from_json(&json).unwrap();
-        assert_eq!(restored.current_idx, original.current_idx);
-        assert_eq!(restored.global_counter, original.global_counter);
-        assert_eq!(restored.fail_counts, original.fail_counts);
-        assert_eq!(restored.last_stage, original.last_stage);
-        assert_eq!(restored.last_verdict, original.last_verdict);
-        assert_eq!(restored.loop_iterations, original.loop_iterations);
-        assert_eq!(restored.env, original.env);
+        let json = serde_json::to_value(&original).unwrap();
+        let restored: PipelineState = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, original);
     }
 
     #[test]
     fn from_json_errors_on_missing_current_idx() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("current_idx");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_missing_global_counter() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("global_counter");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_missing_fail_counts() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("fail_counts");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_non_number_in_fail_counts() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["fail_counts"]["stage-a"] = serde_json::json!("not-a-number");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_missing_loop_iterations() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("loop_iterations");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_non_number_in_loop_iterations() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["loop_iterations"]["0"] = serde_json::json!("not-a-number");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_malformed_last_verdict() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["last_verdict"] = serde_json::json!({"status": 42});
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_env_defaults_to_empty_when_absent() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("env");
-        let restored = PipelineState::from_json(&v).unwrap();
+        let restored: PipelineState = serde_json::from_value(v).unwrap();
         assert_eq!(restored.env, vec![]);
     }
 
     #[test]
     fn from_json_errors_on_non_string_in_env() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["env"]["KEY"] = serde_json::json!(42);
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 }

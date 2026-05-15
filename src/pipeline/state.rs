@@ -1,120 +1,89 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Context};
+use serde::{Deserialize, Serialize};
 
 /// Runtime state snapshot used to resume an interrupted pipeline.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PipelineState {
     pub current_idx: usize,
     pub global_counter: u32,
     pub fail_counts: HashMap<String, u32>,
     pub last_stage: Option<String>,
     pub last_verdict: Option<crate::verdict::Verdict>,
+    #[serde(with = "string_key_map")]
     pub loop_iterations: HashMap<usize, u32>,
-    /// Run environment pairs persisted for resume; omitted from disk on successful exits.
+    #[serde(default, with = "env_as_map")]
     pub env: Vec<(String, String)>,
 }
 
-impl PipelineState {
-    pub fn to_json(&self) -> serde_json::Value {
-        let fail_counts: serde_json::Map<String, serde_json::Value> = self
-            .fail_counts
-            .iter()
-            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-            .collect();
-        let loop_iterations: serde_json::Map<String, serde_json::Value> = self
-            .loop_iterations
-            .iter()
-            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
-            .collect();
-        let last_verdict = self
-            .last_verdict
-            .as_ref()
-            .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null));
-        let env: serde_json::Map<String, serde_json::Value> = self
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-            .collect();
-        serde_json::json!({
-            "current_idx": self.current_idx,
-            "global_counter": self.global_counter,
-            "fail_counts": fail_counts,
-            "last_stage": self.last_stage,
-            "last_verdict": last_verdict,
-            "loop_iterations": loop_iterations,
-            "env": env,
-        })
+/// Serialize/deserialize `HashMap<usize, u32>` with string keys for JSON compat.
+mod string_key_map {
+    use std::collections::HashMap;
+
+    use serde::de::{self, Deserializer, MapAccess, Visitor};
+    use serde::ser::{SerializeMap, Serializer};
+
+    pub fn serialize<S: Serializer>(map: &HashMap<usize, u32>, ser: S) -> Result<S::Ok, S::Error> {
+        let mut m = ser.serialize_map(Some(map.len()))?;
+        for (k, v) in map {
+            m.serialize_entry(&k.to_string(), v)?;
+        }
+        m.end()
     }
 
-    pub fn from_json(v: &serde_json::Value) -> anyhow::Result<Self> {
-        let current_idx = v["current_idx"]
-            .as_u64()
-            .ok_or_else(|| anyhow!("pipeline_state.current_idx missing or invalid"))?
-            as usize;
-        let global_counter = v["global_counter"]
-            .as_u64()
-            .ok_or_else(|| anyhow!("pipeline_state.global_counter missing or invalid"))?
-            as u32;
-        let fail_counts: HashMap<String, u32> = v["fail_counts"]
-            .as_object()
-            .ok_or_else(|| anyhow!("pipeline_state.fail_counts missing or not an object"))?
-            .iter()
-            .map(|(k, val)| {
-                val.as_u64()
-                    .ok_or_else(|| anyhow!("pipeline_state.fail_counts[{}] is not a number", k))
-                    .map(|n| (k.clone(), n as u32))
-            })
-            .collect::<anyhow::Result<_>>()?;
-        let last_stage = v["last_stage"].as_str().map(str::to_owned);
-        let last_verdict: Option<crate::verdict::Verdict> = if v["last_verdict"].is_null() {
-            None
-        } else {
-            Some(
-                serde_json::from_value(v["last_verdict"].clone())
-                    .context("pipeline_state.last_verdict is malformed")?,
-            )
-        };
-        let loop_iterations: HashMap<usize, u32> = v["loop_iterations"]
-            .as_object()
-            .ok_or_else(|| anyhow!("pipeline_state.loop_iterations missing or not an object"))?
-            .iter()
-            .map(|(k, val)| {
-                let ki = k.parse::<usize>().map_err(|_| {
-                    anyhow!(
-                        "pipeline_state.loop_iterations key {:?} is not a valid index",
-                        k
-                    )
-                })?;
-                let vi = val.as_u64().ok_or_else(|| {
-                    anyhow!("pipeline_state.loop_iterations[{}] is not a number", k)
-                })? as u32;
-                Ok((ki, vi))
-            })
-            .collect::<anyhow::Result<_>>()?;
-        // env defaults to empty for backward compat (pre-ADR-0006 files lack this field)
-        let env: Vec<(String, String)> = v["env"]
-            .as_object()
-            .map(|obj| {
-                obj.iter()
-                    .map(|(k, val)| {
-                        let s = val
-                            .as_str()
-                            .ok_or_else(|| anyhow!("pipeline_state.env[{}] is not a string", k))?;
-                        Ok((k.clone(), s.to_owned()))
-                    })
-                    .collect::<anyhow::Result<_>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
-        Ok(Self {
-            current_idx,
-            global_counter,
-            fail_counts,
-            last_stage,
-            last_verdict,
-            loop_iterations,
-            env,
-        })
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<HashMap<usize, u32>, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = HashMap<usize, u32>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map with string-encoded usize keys")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+                let mut map = HashMap::new();
+                while let Some((k, v)) = access.next_entry::<String, u32>()? {
+                    let idx = k.parse::<usize>().map_err(de::Error::custom)?;
+                    map.insert(idx, v);
+                }
+                Ok(map)
+            }
+        }
+        de.deserialize_map(V)
+    }
+}
+
+/// Serialize `Vec<(String, String)>` as a JSON object for backward compat.
+mod env_as_map {
+    use serde::de::{Deserializer, MapAccess, Visitor};
+    use serde::ser::{SerializeMap, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        pairs: &Vec<(String, String)>,
+        ser: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut m = ser.serialize_map(Some(pairs.len()))?;
+        for (k, v) in pairs {
+            m.serialize_entry(k, v)?;
+        }
+        m.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        de: D,
+    ) -> Result<Vec<(String, String)>, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Vec<(String, String)>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of string key-value pairs")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+                let mut pairs = Vec::new();
+                while let Some((k, v)) = access.next_entry::<String, String>()? {
+                    pairs.push((k, v));
+                }
+                Ok(pairs)
+            }
+        }
+        de.deserialize_map(V)
     }
 }

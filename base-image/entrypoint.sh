@@ -12,8 +12,12 @@ git config --global user.email "${_email}"
 if [ -f /home/claude/before-each.sh ]; then
   bash /home/claude/before-each.sh
 fi
+MODEL_FLAG=""
+if [ -n "${CAPSULE_MODEL}" ]; then
+  MODEL_FLAG="--model ${CAPSULE_MODEL}"
+fi
 if [ -n "${CAPSULE_RESUME_SESSION}" ]; then
-  claude --dangerously-skip-permissions --model "${CAPSULE_MODEL:-claude-sonnet-4-6}" --resume "${CAPSULE_RESUME_SESSION}" -p "Continue where you left off." --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json
+  claude --dangerously-skip-permissions ${MODEL_FLAG} --resume "${CAPSULE_RESUME_SESSION}" -p "Continue where you left off." --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json
 else
-  cat /home/claude/prompt.txt | claude --dangerously-skip-permissions --model "${CAPSULE_MODEL:-claude-sonnet-4-6}" -p --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json
+  cat /home/claude/prompt.txt | claude --dangerously-skip-permissions ${MODEL_FLAG} -p --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json
 fi

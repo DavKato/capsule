@@ -164,13 +164,11 @@ pub(super) fn run_loop(
             let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
             *fail_count += 1;
 
-            if let Some(max) = stage.max_retries {
-                if *fail_count > max {
-                    return Ok(LoopOutcome::Exit {
-                        kind: ExitKind::FailRoute,
-                        iterations: iteration_count,
-                    });
-                }
+            if *fail_count > stage.max_retries {
+                return Ok(LoopOutcome::Exit {
+                    kind: ExitKind::FailRoute,
+                    iterations: iteration_count,
+                });
             }
 
             match &stage.on_fail {
@@ -310,10 +308,8 @@ pub(super) fn run_stage(
         let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
         *fail_count += 1;
 
-        if let Some(max) = stage.max_retries {
-            if *fail_count > max {
-                return Ok(StageOutcome::Exit(ExitKind::FailRoute));
-            }
+        if *fail_count > stage.max_retries {
+            return Ok(StageOutcome::Exit(ExitKind::FailRoute));
         }
 
         Ok(route_fail(stage, name_to_entry))

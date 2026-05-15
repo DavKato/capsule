@@ -92,7 +92,7 @@ pub fn build_summary_artifact(
         .iter()
         .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
         .collect();
-    let ps = pipeline_state.map(|s| s.to_json());
+    let ps = pipeline_state.map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null));
     serde_json::json!({
         "terminal_reason": terminal_reason,
         "cap_hit_counter": cap_hit_counter,

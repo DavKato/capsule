@@ -1,6 +1,6 @@
 use capsule::config::{
     resolve, CliOverrides, Config, GitIdentity, GithubScope, OnFail, OnPass, PipelineEntry,
-    ResolveMode, MAX_PIPELINE_ITERATIONS_DEFAULT,
+    ResolveMode, MAX_PIPELINE_ITERATIONS_DEFAULT, MAX_RETRIES_DEFAULT,
 };
 use tempfile::TempDir;
 
@@ -258,6 +258,22 @@ fn multi_stage_default_max_pipeline_iterations() {
         cfg.pipeline.max_pipeline_iterations,
         MAX_PIPELINE_ITERATIONS_DEFAULT
     );
+}
+
+#[test]
+fn max_retries_defaults_to_constant_when_omitted() {
+    let yaml = "\
+stages:
+  - name: worker
+    prompt: prompts/work.md
+    on_fail: retry
+";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
+    let PipelineEntry::Stage(ref stage) = cfg.pipeline.entries[0] else {
+        panic!("expected Stage entry");
+    };
+    assert_eq!(stage.max_retries, MAX_RETRIES_DEFAULT);
 }
 
 #[test]

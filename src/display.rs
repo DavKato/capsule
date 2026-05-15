@@ -99,7 +99,6 @@ fn log_write(text: &str) {
     if let Some(m) = LOG_FILE.get() {
         if let Ok(mut w) = m.lock() {
             let _ = w.write_all(text.as_bytes());
-            let _ = w.flush();
         }
     }
 }

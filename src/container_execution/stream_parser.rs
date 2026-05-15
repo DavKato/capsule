@@ -34,8 +34,19 @@ pub struct UsageSnapshot {
 pub struct ModelUsage {
     pub context_window: u64,
     pub input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
+}
+
+impl ModelUsage {
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            + self.cache_creation_input_tokens
+            + self.cache_read_input_tokens
+            + self.output_tokens
+    }
 }
 
 /// Format total token usage with context window percentage, e.g. `"33.3k (16.6%) used"`.
@@ -313,11 +324,21 @@ fn extract_model_usage(msg: &Value) -> Option<ModelUsage> {
         .filter_map(|v| {
             let context_window = v.get("contextWindow")?.as_u64()?;
             let input_tokens = v.get("inputTokens").and_then(Value::as_u64).unwrap_or(0);
+            let cache_creation_input_tokens = v
+                .get("cacheCreationInputTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let cache_read_input_tokens = v
+                .get("cacheReadInputTokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             let output_tokens = v.get("outputTokens").and_then(Value::as_u64).unwrap_or(0);
             let cost_usd = v.get("costUSD").and_then(Value::as_f64).unwrap_or(0.0);
             Some(ModelUsage {
                 context_window,
                 input_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
                 output_tokens,
                 cost_usd,
             })
@@ -996,8 +1017,8 @@ mod tests {
         assert!(p.last_usage_snapshot().is_none());
     }
 
-    const RESULT_WITH_MODEL_USAGE: &str = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"maxOutputTokens":32000,"inputTokens":388,"outputTokens":163,"costUSD":0.017286}}}"#;
-    const RESULT_MULTI_MODEL: &str = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"inputTokens":100,"outputTokens":50,"costUSD":0.01},"claude-opus-4-7":{"contextWindow":1000000,"inputTokens":200,"outputTokens":80,"costUSD":0.05}}}"#;
+    const RESULT_WITH_MODEL_USAGE: &str = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"maxOutputTokens":32000,"inputTokens":388,"cacheCreationInputTokens":15000,"cacheReadInputTokens":5000,"outputTokens":163,"costUSD":0.017286}}}"#;
+    const RESULT_MULTI_MODEL: &str = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"inputTokens":100,"cacheCreationInputTokens":800,"cacheReadInputTokens":200,"outputTokens":50,"costUSD":0.01},"claude-opus-4-7":{"contextWindow":1000000,"inputTokens":200,"cacheCreationInputTokens":1600,"cacheReadInputTokens":400,"outputTokens":80,"costUSD":0.05}}}"#;
 
     #[test]
     fn result_with_model_usage_extracts_correctly() {
@@ -1006,6 +1027,8 @@ mod tests {
         let usage = p.model_usage().expect("expected model usage");
         assert_eq!(usage.context_window, 200000);
         assert_eq!(usage.input_tokens, 388);
+        assert_eq!(usage.cache_creation_input_tokens, 15000);
+        assert_eq!(usage.cache_read_input_tokens, 5000);
         assert_eq!(usage.output_tokens, 163);
         assert!((usage.cost_usd - 0.017286).abs() < 1e-6);
     }
@@ -1031,6 +1054,8 @@ mod tests {
         let usage = p.model_usage().expect("expected model usage");
         assert_eq!(usage.context_window, 1_000_000);
         assert_eq!(usage.input_tokens, 200);
+        assert_eq!(usage.cache_creation_input_tokens, 1600);
+        assert_eq!(usage.cache_read_input_tokens, 400);
         assert_eq!(usage.output_tokens, 80);
     }
 
@@ -1044,6 +1069,30 @@ mod tests {
             p.model_usage().is_some(),
             "model_usage must persist after non-result feed"
         );
+    }
+
+    #[test]
+    fn model_usage_total_tokens_sums_all_fields() {
+        let usage = ModelUsage {
+            context_window: 200000,
+            input_tokens: 388,
+            cache_creation_input_tokens: 15000,
+            cache_read_input_tokens: 5000,
+            output_tokens: 163,
+            cost_usd: 0.0,
+        };
+        assert_eq!(usage.total_tokens(), 388 + 15000 + 5000 + 163);
+    }
+
+    #[test]
+    fn model_usage_missing_cache_fields_default_to_zero() {
+        let json = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"inputTokens":100,"outputTokens":50,"costUSD":0.01}}}"#;
+        let mut p = StreamParser::new();
+        p.feed(json);
+        let usage = p.model_usage().expect("expected model usage");
+        assert_eq!(usage.cache_creation_input_tokens, 0);
+        assert_eq!(usage.cache_read_input_tokens, 0);
+        assert_eq!(usage.total_tokens(), 150);
     }
 
     #[test]

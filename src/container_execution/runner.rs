@@ -146,7 +146,7 @@ impl StageRunner for DockerStageRunner {
         let duration = start.elapsed();
         crate::display::clear_stage();
         let usage_str = self.model_usage.as_ref().map(|u| {
-            let total = u.input_tokens + u.output_tokens;
+            let total = u.total_tokens();
             super::format_usage_with_percentage(total, u.context_window)
         });
         match &result {

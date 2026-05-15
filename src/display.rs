@@ -105,9 +105,12 @@ fn log_write(text: &str) {
 }
 
 fn log_line(text: &str) {
-    if LOG_FILE.get().is_some() {
-        log_write(text);
-        log_write("\n");
+    if let Some(m) = LOG_FILE.get() {
+        if let Ok(mut w) = m.lock() {
+            let _ = w.write_all(text.as_bytes());
+            let _ = w.write_all(b"\n");
+            let _ = w.flush();
+        }
     }
 }
 

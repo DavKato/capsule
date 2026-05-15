@@ -428,7 +428,6 @@ mod tests {
 
     #[test]
     fn format_tool_args_priority_key_over_fallback() {
-        // command is a priority key and should win over any other string values
         let input = serde_json::json!({"other": "fallback_value", "command": "priority_value"});
         assert_eq!(format_tool_args(&input), "priority_value");
     }
@@ -454,7 +453,6 @@ mod tests {
 
     #[test]
     fn format_tool_args_priority_key_non_string_value_falls_through_to_fallback() {
-        // command key exists but has a non-string value; should fall through to fallback
         let input = serde_json::json!({"command": 42, "other": "fallback"});
         assert_eq!(format_tool_args(&input), "fallback");
     }

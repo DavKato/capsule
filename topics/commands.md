@@ -28,6 +28,7 @@ capsule run --verbose                          # show unfiltered container outpu
 | `--capsule-dir` | `.capsule` | Config directory path |
 | `--git-identity` | `user` | Git commit identity: `user` (host config) or `capsule` (generic) |
 | `--github local\|global` | — | Inject `GH_TOKEN` into containers |
+| `--log-file` | — | Write run output to a file in addition to the terminal |
 | `--min-token-lifetime-minutes` | — | Prompt before starting if access token expires within threshold |
 
 ## capsule resume

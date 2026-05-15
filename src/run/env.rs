@@ -158,6 +158,41 @@ pub(super) fn build_extra_env_tempfile(
     Ok(Some(tmp))
 }
 
+fn is_valid_posix_env_key(k: &str) -> bool {
+    !k.is_empty()
+        && k.bytes().enumerate().all(|(i, b)| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+            b'0'..=b'9' if i > 0 => true,
+            _ => false,
+        })
+}
+
+pub(super) fn sanitize_persisted_env(pairs: &[(String, String)]) -> Vec<(String, String)> {
+    let mut clean = Vec::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        if k.starts_with("CAPSULE_") {
+            capsule::display::warning(&format!(
+                "resume: dropping reserved env key {k:?} from last-run.json"
+            ));
+            continue;
+        }
+        if k.contains(['\n', '\r', '\0']) || v.contains(['\n', '\r', '\0']) {
+            capsule::display::warning(&format!(
+                "resume: dropping env key {k:?} — contains newline or null"
+            ));
+            continue;
+        }
+        if !is_valid_posix_env_key(k) {
+            capsule::display::warning(&format!(
+                "resume: dropping env key {k:?} — not a valid POSIX name"
+            ));
+            continue;
+        }
+        clean.push((k.clone(), v.clone()));
+    }
+    clean
+}
+
 /// Merge persisted run-environment pairs with CLI overrides. Persisted pairs
 /// form the base; any same-key CLI pair overwrites; new CLI keys are appended.
 pub(super) fn merge_env(
@@ -220,8 +255,9 @@ pub(super) fn env_gitignore_warning(capsule_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_extra_env_tempfile, env_gitignore_warning, load_dotenv, merge_env, parse_dotenv,
-        resolve_gh_token, strip_quotes, token_lifetime_warning,
+        build_extra_env_tempfile, env_gitignore_warning, is_valid_posix_env_key, load_dotenv,
+        merge_env, parse_dotenv, resolve_gh_token, sanitize_persisted_env, strip_quotes,
+        token_lifetime_warning,
     };
     use capsule::config::GithubScope;
     use std::collections::HashMap;
@@ -531,5 +567,68 @@ mod tests {
         std::env::set_current_dir(original).unwrap();
 
         assert!(result.is_some(), "expected a warning but got None");
+    }
+
+    #[test]
+    fn is_valid_posix_env_key_accepts_valid_names() {
+        assert!(is_valid_posix_env_key("FOO"));
+        assert!(is_valid_posix_env_key("_BAR"));
+        assert!(is_valid_posix_env_key("a1b2"));
+        assert!(is_valid_posix_env_key("_"));
+    }
+
+    #[test]
+    fn is_valid_posix_env_key_rejects_invalid_names() {
+        assert!(!is_valid_posix_env_key(""));
+        assert!(!is_valid_posix_env_key("1BAD"));
+        assert!(!is_valid_posix_env_key("has-dash"));
+        assert!(!is_valid_posix_env_key("has space"));
+    }
+
+    #[test]
+    fn sanitize_drops_capsule_prefixed_keys() {
+        let pairs = vec![
+            ("GOOD".into(), "ok".into()),
+            ("CAPSULE_FOO".into(), "x".into()),
+            ("ALSO_GOOD".into(), "ok".into()),
+        ];
+        let clean = sanitize_persisted_env(&pairs);
+        assert_eq!(clean.len(), 2);
+        assert!(clean.iter().all(|(k, _)| !k.starts_with("CAPSULE_")));
+    }
+
+    #[test]
+    fn sanitize_drops_invalid_posix_keys() {
+        let pairs = vec![
+            ("VALID".into(), "ok".into()),
+            ("1BAD".into(), "x".into()),
+            ("has-dash".into(), "y".into()),
+        ];
+        let clean = sanitize_persisted_env(&pairs);
+        assert_eq!(clean.len(), 1);
+        assert_eq!(clean[0].0, "VALID");
+    }
+
+    #[test]
+    fn sanitize_drops_keys_with_control_chars() {
+        let pairs = vec![
+            ("GOOD".into(), "ok".into()),
+            ("BAD\nKEY".into(), "x".into()),
+            ("OK".into(), "has\0null".into()),
+        ];
+        let clean = sanitize_persisted_env(&pairs);
+        assert_eq!(clean.len(), 1);
+        assert_eq!(clean[0].0, "GOOD");
+    }
+
+    #[test]
+    fn sanitize_passes_through_valid_pairs() {
+        let pairs = vec![
+            ("FOO".into(), "bar".into()),
+            ("_UNDER".into(), "score".into()),
+            ("a1".into(), "num".into()),
+        ];
+        let clean = sanitize_persisted_env(&pairs);
+        assert_eq!(clean.len(), 3);
     }
 }

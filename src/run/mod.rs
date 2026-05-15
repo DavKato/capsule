@@ -159,7 +159,8 @@ impl RunSession {
         capsule_dir: PathBuf,
         cli_env: Vec<(String, String)>,
     ) -> Result<Self> {
-        let resume_data = summary::parse_resume_state(&capsule_dir)?;
+        let mut resume_data = summary::parse_resume_state(&capsule_dir)?;
+        resume_data.1.env = env::sanitize_persisted_env(&resume_data.1.env);
         let merged_env = env::merge_env(&resume_data.1.env, &cli_env);
         let overrides = capsule::config::CliOverrides {
             env: merged_env,

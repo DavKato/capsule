@@ -65,7 +65,7 @@ pub(super) fn parse_resume_state(capsule_dir: &Path) -> Result<(String, Pipeline
         );
     }
 
-    let state = PipelineState::from_json(state_json)
+    let state: PipelineState = serde_json::from_value(state_json.clone())
         .context("failed to deserialize pipeline_state from last-run.json")?;
     Ok((session_id, state))
 }
@@ -411,7 +411,7 @@ mod tests {
                 ("MODE".to_string(), "dry".to_string()),
             ],
         };
-        let json = state.to_json();
+        let json = serde_json::to_value(&state).unwrap();
         let env = json["env"].as_object().expect("env must be an object");
         assert_eq!(env.len(), 2);
         assert_eq!(env["PARENT"], "79");

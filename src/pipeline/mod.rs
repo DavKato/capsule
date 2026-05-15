@@ -960,7 +960,7 @@ mod tests {
     #[test]
     fn pipeline_state_to_json_produces_expected_shape() {
         let state = full_state();
-        let v = state.to_json();
+        let v = serde_json::to_value(&state).unwrap();
         assert_eq!(v["current_idx"], 2);
         assert_eq!(v["global_counter"], 7);
         assert_eq!(v["fail_counts"]["stage-a"], 2);
@@ -974,78 +974,72 @@ mod tests {
     #[test]
     fn pipeline_state_round_trips_via_json() {
         let original = full_state();
-        let json = original.to_json();
-        let restored = PipelineState::from_json(&json).unwrap();
-        assert_eq!(restored.current_idx, original.current_idx);
-        assert_eq!(restored.global_counter, original.global_counter);
-        assert_eq!(restored.fail_counts, original.fail_counts);
-        assert_eq!(restored.last_stage, original.last_stage);
-        assert_eq!(restored.last_verdict, original.last_verdict);
-        assert_eq!(restored.loop_iterations, original.loop_iterations);
-        assert_eq!(restored.env, original.env);
+        let json = serde_json::to_value(&original).unwrap();
+        let restored: PipelineState = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, original);
     }
 
     #[test]
     fn from_json_errors_on_missing_current_idx() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("current_idx");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_missing_global_counter() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("global_counter");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_missing_fail_counts() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("fail_counts");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_non_number_in_fail_counts() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["fail_counts"]["stage-a"] = serde_json::json!("not-a-number");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_missing_loop_iterations() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("loop_iterations");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_non_number_in_loop_iterations() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["loop_iterations"]["0"] = serde_json::json!("not-a-number");
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_errors_on_malformed_last_verdict() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["last_verdict"] = serde_json::json!({"status": 42});
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
     fn from_json_env_defaults_to_empty_when_absent() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v.as_object_mut().unwrap().remove("env");
-        let restored = PipelineState::from_json(&v).unwrap();
+        let restored: PipelineState = serde_json::from_value(v).unwrap();
         assert_eq!(restored.env, vec![]);
     }
 
     #[test]
     fn from_json_errors_on_non_string_in_env() {
-        let mut v = full_state().to_json();
+        let mut v = serde_json::to_value(full_state()).unwrap();
         v["env"]["KEY"] = serde_json::json!(42);
-        assert!(PipelineState::from_json(&v).is_err());
+        assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 }

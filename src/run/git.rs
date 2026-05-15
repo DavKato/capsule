@@ -37,12 +37,12 @@ mod tests {
     use std::collections::HashMap;
 
     fn env_with_git_config(config_path: &str, home: &str) -> HashMap<String, String> {
+        let git_dir = format!("{home}/.git");
+        std::fs::create_dir_all(&git_dir).ok();
         let mut env = HashMap::new();
         env.insert("GIT_CONFIG_GLOBAL".to_string(), config_path.to_string());
         env.insert("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string());
-        // Isolate from CWD-dependent local .git/config — other tests may call
-        // set_current_dir() concurrently, pointing git at an unexpected repo.
-        env.insert("GIT_DIR".to_string(), format!("{home}/.git"));
+        env.insert("GIT_DIR".to_string(), git_dir);
         env
     }
 

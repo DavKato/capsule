@@ -43,6 +43,10 @@ pub(crate) struct RunSession {
 }
 
 impl RunSession {
+    pub(crate) fn log_file(&self) -> Option<&std::path::Path> {
+        self.cfg.log_file.as_deref()
+    }
+
     /// Phases 1-10: resolve config, load env/tokens, build images,
     /// detect infrastructure, register Ctrl-C handler.
     pub(crate) fn prepare(capsule_dir: PathBuf, mut overrides: CliOverrides) -> Result<Self> {

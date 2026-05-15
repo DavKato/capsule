@@ -94,6 +94,10 @@ enum Commands {
         /// CAPSULE_* keys are reserved and rejected.
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
+
+        /// Write run output to a file in addition to the terminal
+        #[arg(long)]
+        log_file: Option<PathBuf>,
     },
 
     /// Resume pipeline from the last interrupted run (reads last-run.json)
@@ -319,6 +323,9 @@ fn main() -> Result<()> {
         Commands::Resume { capsule_dir, env } => {
             let env = parse_env_pairs(env)?;
             let session = RunSession::prepare_resume(capsule_dir, env)?;
+            if let Some(path) = session.log_file() {
+                capsule::display::set_log_file(path)?;
+            }
             capsule::display::init();
             let result = session.execute();
             capsule::display::teardown();
@@ -453,6 +460,7 @@ fn main() -> Result<()> {
             input,
             min_token_lifetime_minutes,
             env,
+            log_file,
         } => {
             let git_identity = match git_identity {
                 CliGitIdentity::User => Some(GitIdentity::User),
@@ -474,8 +482,12 @@ fn main() -> Result<()> {
                 input,
                 min_token_lifetime_minutes,
                 env,
+                log_file,
             };
             let session = RunSession::prepare(capsule_dir, overrides)?;
+            if let Some(path) = session.log_file() {
+                capsule::display::set_log_file(path)?;
+            }
             capsule::display::init();
             let result = session.execute();
             capsule::display::teardown();

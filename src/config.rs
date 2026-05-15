@@ -101,6 +101,8 @@ pub struct Config {
     /// Parsed pipeline execution graph (present for both flat-form and multi-stage configs).
     pub pipeline: PipelineConfig,
     pub min_token_lifetime_minutes: Option<u32>,
+    /// When Some, tee all display output to this file path.
+    pub log_file: Option<PathBuf>,
 }
 
 /// CLI-supplied overrides. `None` means "not provided on the command line".
@@ -119,6 +121,8 @@ pub struct CliOverrides {
     pub min_token_lifetime_minutes: Option<u32>,
     /// KEY=VALUE pairs injected into every container and hook invocation for this run.
     pub env: Vec<(String, String)>,
+    /// When Some, tee all display output to this file path.
+    pub log_file: Option<PathBuf>,
 }
 
 // ── Flat-form serde types ─────────────────────────────────────────────────────
@@ -133,6 +137,7 @@ struct FlatConfigFile {
     git_identity: Option<String>,
     github: Option<String>,
     min_token_lifetime_minutes: Option<u32>,
+    log_file: Option<String>,
 }
 
 // ── Multi-stage serde types ───────────────────────────────────────────────────
@@ -176,6 +181,7 @@ struct MultiStageConfigFile {
     git_identity: Option<String>,
     github: Option<String>,
     min_token_lifetime_minutes: Option<u32>,
+    log_file: Option<String>,
     /// Present to produce a clear error when combined with `stages:`.
     iterations: Option<u32>,
 }
@@ -417,6 +423,10 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
                 .as_ref()
                 .and_then(|m| m.min_token_lifetime_minutes)
         });
+    let file_log_file = file_flat
+        .as_ref()
+        .and_then(|f| f.log_file.clone())
+        .or_else(|| file_multi.as_ref().and_then(|m| m.log_file.clone()));
 
     let model = cli.model.or(file_model);
     let verbose = cli.verbose || file_verbose.unwrap_or(false);
@@ -429,6 +439,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
         .or_else(|| file_github.as_deref().and_then(github_scope_from_str));
 
     let min_token_lifetime_minutes = cli.min_token_lifetime_minutes.or(file_min_token);
+    let log_file = cli.log_file.or_else(|| file_log_file.map(PathBuf::from));
     let rebuild = cli.rebuild;
 
     let (iterations, pipeline) = if let Some(multi) = file_multi {
@@ -471,6 +482,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
         github,
         pipeline,
         min_token_lifetime_minutes,
+        log_file,
     })
 }
 

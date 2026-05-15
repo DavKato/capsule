@@ -8,7 +8,8 @@ use crossterm::{
     QueueableCommand,
 };
 use std::collections::HashMap;
-use std::io::{stderr, stdout, IsTerminal, Write};
+use std::io::{stderr, stdout, BufWriter, IsTerminal, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -81,6 +82,33 @@ static TIMER_WAKE: OnceLock<(Mutex<()>, Condvar)> = OnceLock::new();
 
 fn timer_wake() -> &'static (Mutex<()>, Condvar) {
     TIMER_WAKE.get_or_init(|| (Mutex::new(()), Condvar::new()))
+}
+
+static LOG_FILE: OnceLock<Mutex<BufWriter<std::fs::File>>> = OnceLock::new();
+
+pub fn set_log_file(path: &Path) -> anyhow::Result<()> {
+    let file = std::fs::File::create(path)
+        .map_err(|e| anyhow::anyhow!("failed to open log file {}: {e}", path.display()))?;
+    LOG_FILE
+        .set(Mutex::new(BufWriter::new(file)))
+        .map_err(|_| anyhow::anyhow!("log file already set"))?;
+    Ok(())
+}
+
+fn log_write(text: &str) {
+    if let Some(m) = LOG_FILE.get() {
+        if let Ok(mut w) = m.lock() {
+            let _ = w.write_all(text.as_bytes());
+            let _ = w.flush();
+        }
+    }
+}
+
+fn log_line(text: &str) {
+    if LOG_FILE.get().is_some() {
+        log_write(text);
+        log_write("\n");
+    }
 }
 
 fn tool_call_cache() -> &'static Mutex<HashMap<String, ToolCallEntry>> {
@@ -462,6 +490,15 @@ pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option
     let term_w = terminal_width() as usize;
     let mut out = stdout().lock();
     render_stage_header_to(&mut out, stage_name, iteration, model, retry, term_w).ok();
+    match retry {
+        Some(r) => log_line(&format!(
+            "\n══ {stage_name} · iter {iteration} · {model} · retry {}/{} ══",
+            r.current, r.max
+        )),
+        None => log_line(&format!(
+            "\n══ {stage_name} · iter {iteration} · {model} ══"
+        )),
+    }
 
     {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -530,6 +567,7 @@ fn clear_panel_row_to<W: Write + QueueableCommand>(out: &mut W, row: u16) {
 /// Print a yellow warning icon followed by `msg` to stderr.
 pub fn warning(msg: &str) {
     warning_to(&mut stderr(), msg).ok();
+    log_line(&format!("⚠ {msg}"));
 }
 
 fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -542,6 +580,7 @@ fn warning_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
 
 pub fn capsule_info(msg: &str) {
     capsule_info_to(&mut stderr(), msg).ok();
+    log_line(&format!("capsule: {msg}"));
 }
 
 fn capsule_info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -555,6 +594,7 @@ fn capsule_info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::
 /// Print a neutral informational line to stderr.
 pub fn info(msg: &str) {
     info_to(&mut stderr(), msg).ok();
+    log_line(msg);
 }
 
 fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -565,6 +605,7 @@ fn info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Resu
 /// Print a dimmed informational line to stderr.
 pub fn dim_info(msg: &str) {
     dim_info_to(&mut stderr(), msg).ok();
+    log_line(msg);
 }
 
 fn dim_info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -576,6 +617,7 @@ fn dim_info_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::
 
 pub fn println(msg: &str) {
     println_to(&mut stdout().lock(), msg).ok();
+    log_line(msg);
 }
 
 fn println_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -585,6 +627,7 @@ fn println_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::R
 
 pub fn print(msg: &str) {
     print_to(&mut stdout().lock(), msg).ok();
+    log_write(msg);
 }
 
 fn print_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Result<()> {
@@ -598,6 +641,9 @@ fn print_to<W: Write + QueueableCommand>(out: &mut W, msg: &str) -> std::io::Res
 /// the widest line and capped at terminal width.
 pub fn notice_box(lines: &[String]) {
     notice_box_to(&mut stdout().lock(), lines, terminal_width() as usize).ok();
+    for line in lines {
+        log_line(line);
+    }
 }
 
 fn notice_box_to<W: Write + QueueableCommand>(
@@ -670,6 +716,7 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
     } else {
         args.to_owned()
     };
+    log_line(&format!("\n● {name}  {display_args}"));
 
     let mut out = stdout().lock();
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -746,6 +793,7 @@ pub fn tool_result(id: &str, success: bool) {
         drop(guard);
 
         render_tty_tool_result_to(&mut out, &name, &args, duration, success, offset).ok();
+        log_tool_result(&name, &args, duration, success);
 
         // Account for the sub-line (and the solid-dot line in the off-screen case).
         let label = if success { "Done" } else { "Failed" };
@@ -772,7 +820,14 @@ pub fn tool_result(id: &str, success: bool) {
             None => ("unknown".to_owned(), String::new(), Duration::ZERO),
         };
         tool_result_to(&mut out, &name, &args, duration, success).ok();
+        log_tool_result(&name, &args, duration, success);
     }
+}
+
+fn log_tool_result(name: &str, args: &str, duration: Duration, success: bool) {
+    let status = if success { "Done" } else { "Failed" };
+    log_line(&format!("● {name}  {args}"));
+    log_line(&format!("  {status} ({:.1}s)", duration.as_secs_f64()));
 }
 
 fn tool_result_to<W: Write + QueueableCommand>(
@@ -811,6 +866,18 @@ pub fn agent_text(text: &str) {
     let mut out = stdout().lock();
     agent_text_to(&mut out, &wrapped, &mut last).ok();
     LAST_WAS_TEXT.store(last, Ordering::Relaxed);
+    if LOG_FILE.get().is_some() {
+        if !was_text {
+            log_write("\n");
+        }
+        for (i, line) in wrapped.iter().enumerate() {
+            if i == 0 && !was_text {
+                log_line(&format!("● {line}"));
+            } else {
+                log_line(&format!("  {line}"));
+            }
+        }
+    }
 
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
@@ -934,6 +1001,27 @@ pub fn session_footer(
         terminal_width() as usize,
     )
     .ok();
+    if LOG_FILE.get().is_some() {
+        let (_, status_label) = match verdict {
+            Some(v) => verdict_color_label(&v.status),
+            None => (RED, "fail"),
+        };
+        log_line("");
+        log_line(&format!(
+            "{stage_name} · iter {iteration} completed at {ts}"
+        ));
+        log_line(&format!("Status:     {}", status_label.to_uppercase()));
+        log_line(&format!("Duration:   {}", format_duration(duration)));
+        if let Some(usage) = context_usage {
+            log_line(&format!("Context:    {usage}"));
+        }
+        if let Some(id) = session_id {
+            log_line(&format!("Session ID: {id}"));
+        }
+        if let Some(notes) = verdict.and_then(|v| v.notes.as_deref()) {
+            log_line(&format!("Notes: {notes}"));
+        }
+    }
 }
 
 const FOOTER_BG: Color = Color::AnsiValue(236);

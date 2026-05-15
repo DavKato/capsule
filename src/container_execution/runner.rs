@@ -9,7 +9,7 @@ use crate::verdict::Verdict;
 
 use super::{
     container_name_for, post_stream_error, run_container, run_iteration, ExecutionConfig,
-    IterationOutcome, ModelUsage,
+    IterationOutcome, ModelUsage, UsageSnapshot,
 };
 
 pub struct CredentialsGuard {
@@ -97,6 +97,7 @@ pub struct DockerStageRunner {
     iteration: u32,
     session_id: Option<String>,
     model_usage: Option<ModelUsage>,
+    last_usage_snapshot: Option<UsageSnapshot>,
     credentials_guard: Option<CredentialsGuard>,
     resume_session_id: Option<String>,
 }
@@ -114,6 +115,7 @@ impl DockerStageRunner {
             iteration: 0,
             session_id: None,
             model_usage: None,
+            last_usage_snapshot: None,
             credentials_guard,
             resume_session_id,
         }
@@ -145,10 +147,13 @@ impl StageRunner for DockerStageRunner {
         let result = self.execute_stage(prompt, model);
         let duration = start.elapsed();
         crate::display::clear_stage();
-        let usage_str = self.model_usage.as_ref().map(|u| {
-            let total = u.total_tokens();
-            super::format_usage_with_percentage(total, u.context_window)
-        });
+        let usage_str = self
+            .last_usage_snapshot
+            .as_ref()
+            .zip(self.model_usage.as_ref())
+            .map(|(snap, u)| {
+                super::format_usage_with_percentage(snap.total_tokens(), u.context_window)
+            });
         match &result {
             Ok(verdict) => {
                 crate::display::session_footer(
@@ -203,6 +208,7 @@ impl DockerStageRunner {
             if let Some(u) = result.model_usage {
                 self.model_usage = Some(u);
             }
+            self.last_usage_snapshot = result.last_usage_snapshot;
             return Ok(result.verdict);
         }
         match run_iteration(&cfg, self.iteration, &self.active_container)? {
@@ -210,6 +216,7 @@ impl DockerStageRunner {
                 verdict,
                 session_id,
                 model_usage,
+                last_usage_snapshot,
             } => {
                 if let Some(id) = session_id {
                     self.session_id = Some(id);
@@ -217,11 +224,13 @@ impl DockerStageRunner {
                 if let Some(u) = model_usage {
                     self.model_usage = Some(u);
                 }
+                self.last_usage_snapshot = last_usage_snapshot;
                 Ok(Some(verdict))
             }
             IterationOutcome::Continue {
                 session_id,
                 model_usage,
+                last_usage_snapshot,
             } => {
                 if let Some(id) = session_id {
                     self.session_id = Some(id);
@@ -229,6 +238,7 @@ impl DockerStageRunner {
                 if let Some(u) = model_usage {
                     self.model_usage = Some(u);
                 }
+                self.last_usage_snapshot = last_usage_snapshot;
                 Ok(None)
             }
             IterationOutcome::AuthFailedResumable { session_id } => {
@@ -267,6 +277,7 @@ impl DockerStageRunner {
         if let Some(u) = result.model_usage {
             self.model_usage = Some(u);
         }
+        self.last_usage_snapshot = result.last_usage_snapshot;
         Ok(result.verdict)
     }
 }

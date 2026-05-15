@@ -1,6 +1,6 @@
 use super::docker_args::{build_docker_args, container_name_for};
 use super::infra::{host_token_is_expired, make_mcp_config};
-use super::stream_parser::{ModelUsage, StreamParser, TextDisplay, ToolEvent};
+use super::stream_parser::{ModelUsage, StreamParser, TextDisplay, ToolEvent, UsageSnapshot};
 use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Write};
@@ -13,6 +13,7 @@ pub struct StreamResult {
     pub verdict: Option<crate::verdict::Verdict>,
     pub session_id: Option<String>,
     pub model_usage: Option<ModelUsage>,
+    pub last_usage_snapshot: Option<UsageSnapshot>,
 }
 
 pub fn post_stream_error(
@@ -45,6 +46,7 @@ pub fn post_stream_error(
 
 fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result<StreamResult> {
     let mut parser = StreamParser::new();
+    let mut last_snapshot: Option<UsageSnapshot> = None;
 
     for line in reader.lines() {
         let line = line.context("error reading docker stdout")?;
@@ -78,6 +80,7 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         }
         if let Some(snap) = parser.last_usage_snapshot() {
             crate::display::set_usage(snap.total_tokens());
+            last_snapshot = Some(snap.clone());
         }
         if !had_text
             && !had_tool_events
@@ -95,6 +98,7 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         verdict: parser.verdict().cloned(),
         session_id: parser.session_id().map(str::to_owned),
         model_usage: parser.model_usage().cloned(),
+        last_usage_snapshot: last_snapshot,
     })
 }
 
@@ -259,10 +263,12 @@ pub fn run_iteration(
             verdict,
             session_id: result.session_id,
             model_usage: result.model_usage,
+            last_usage_snapshot: result.last_usage_snapshot,
         }),
         None => Ok(IterationOutcome::Continue {
             session_id: result.session_id,
             model_usage: result.model_usage,
+            last_usage_snapshot: result.last_usage_snapshot,
         }),
     }
 }
@@ -290,6 +296,7 @@ mod tests {
             verdict: None,
             session_id: None,
             model_usage: None,
+            last_usage_snapshot: None,
         }
     }
 

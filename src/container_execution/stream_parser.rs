@@ -23,6 +23,7 @@ pub enum TextDisplay {
     Thinking(String),
 }
 
+#[derive(Debug, Clone)]
 pub struct UsageSnapshot {
     pub input_tokens: u64,
     pub cache_creation_input_tokens: u64,
@@ -38,15 +39,6 @@ pub struct ModelUsage {
     pub cache_read_input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: f64,
-}
-
-impl ModelUsage {
-    pub fn total_tokens(&self) -> u64 {
-        self.input_tokens
-            + self.cache_creation_input_tokens
-            + self.cache_read_input_tokens
-            + self.output_tokens
-    }
 }
 
 /// Format total token usage with context window percentage, e.g. `"33.3k (16.6%) used"`.
@@ -1072,19 +1064,6 @@ mod tests {
     }
 
     #[test]
-    fn model_usage_total_tokens_sums_all_fields() {
-        let usage = ModelUsage {
-            context_window: 200000,
-            input_tokens: 388,
-            cache_creation_input_tokens: 15000,
-            cache_read_input_tokens: 5000,
-            output_tokens: 163,
-            cost_usd: 0.0,
-        };
-        assert_eq!(usage.total_tokens(), 388 + 15000 + 5000 + 163);
-    }
-
-    #[test]
     fn model_usage_missing_cache_fields_default_to_zero() {
         let json = r#"{"type":"result","subtype":"success","result":"done","modelUsage":{"claude-haiku-4-5-20251001":{"contextWindow":200000,"inputTokens":100,"outputTokens":50,"costUSD":0.01}}}"#;
         let mut p = StreamParser::new();
@@ -1092,7 +1071,6 @@ mod tests {
         let usage = p.model_usage().expect("expected model usage");
         assert_eq!(usage.cache_creation_input_tokens, 0);
         assert_eq!(usage.cache_read_input_tokens, 0);
-        assert_eq!(usage.total_tokens(), 150);
     }
 
     #[test]

@@ -182,6 +182,28 @@ fn multi_stage_default_max_stages() {
 }
 
 #[test]
+fn cli_max_stages_overrides_config_file() {
+    let dir = capsule_dir_with_config(MULTI_STAGE_YAML); // config sets max_stages: 500
+    let cli = CliOverrides {
+        max_stages: Some(42),
+        ..Default::default()
+    };
+    let cfg: Config = resolve(dir.path(), cli).unwrap();
+    assert_eq!(cfg.pipeline.max_stages, 42);
+}
+
+#[test]
+fn cli_max_stages_applies_without_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = CliOverrides {
+        max_stages: Some(7),
+        ..Default::default()
+    };
+    let cfg: Config = resolve(dir.path(), cli).unwrap();
+    assert_eq!(cfg.pipeline.max_stages, 7);
+}
+
+#[test]
 fn multi_stage_max_retries_defaults_when_omitted_in_yaml() {
     let dir = capsule_dir_with_config(MULTI_STAGE_YAML);
     let cfg: Config = resolve(dir.path(), no_cli()).unwrap();

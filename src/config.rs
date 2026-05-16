@@ -382,7 +382,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     });
     let rebuild = cli.rebuild;
 
-    let pipeline = if let Some(multi) = file_cfg {
+    let mut pipeline = if let Some(multi) = file_cfg {
         build_pipeline_from_multi_stage(multi)
             .with_context(|| format!("validating {}", config_path.display()))?
     } else {
@@ -391,6 +391,9 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
             max_stages: MAX_STAGES_DEFAULT,
         }
     };
+    if let Some(n) = cli.max_stages {
+        pipeline.max_stages = n;
+    }
 
     Ok(Config {
         capsule_dir: capsule_dir.to_path_buf(),

@@ -95,7 +95,7 @@ See [`templates/single-stage/.capsule/`](templates/single-stage/.capsule/) for a
 
 ## Prompt
 
-`capsule` is prompt-agnostic — it injects no context on its own. Place your prompt at `.capsule/prompt.md` (or pass `--prompt path/to/other.md`).
+`capsule` is prompt-agnostic — it injects no context on its own. Place your prompt at `.capsule/prompt.md`.
 
 Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See [`templates/single-stage/.capsule/before-each.sh`](templates/single-stage/.capsule/before-each.sh) for a working example.
 

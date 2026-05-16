@@ -49,7 +49,7 @@ pub(super) fn load_dotenv(capsule_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Resolve GH_TOKEN when --github is set and write it to a temp env-file so
+/// Resolve GH_TOKEN when --github-token-from is set and write it to a temp env-file so
 /// the token never appears in `docker run` args.
 pub(super) fn setup_gh_token(
     cfg: &Config,
@@ -84,7 +84,7 @@ pub(super) fn setup_gh_token(
                 if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
                     anyhow::bail!(
                         "Aborted. To avoid this prompt use 'local' mode: \
-                         add GH_TOKEN to .capsule/.env and pass --github local"
+                         add GH_TOKEN to .capsule/.env and pass --github-token-from local"
                     );
                 }
             }

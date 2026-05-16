@@ -2,15 +2,6 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// Controls which resolution path `resolve()` takes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ResolveMode {
-    /// Full run path: prompt files are read and injected into stages; iterations required for flat-form.
-    Run,
-    /// Check path: prompt files are not read; iterations default to 1 for flat-form.
-    Check,
-}
-
 pub const MAX_STAGES_DEFAULT: u32 = 1000;
 pub const MAX_RETRIES_DEFAULT: u32 = 3;
 
@@ -82,8 +73,6 @@ pub enum PipelineEntry {
 pub struct PipelineConfig {
     pub entries: Vec<PipelineEntry>,
     pub max_stages: u32,
-    /// True when hitting the loop cap should be treated as success (flat-form desugared configs).
-    pub cap_hit_is_ok: bool,
 }
 
 /// Resolved configuration used by all downstream modules.
@@ -97,7 +86,6 @@ pub struct Config {
     /// When Some, inject GH_TOKEN into the container from the specified source.
     /// When None, no token is injected.
     pub github_token_from: Option<GithubScope>,
-    /// Parsed pipeline execution graph (present for both flat-form and multi-stage configs).
     pub pipeline: PipelineConfig,
     /// When Some, tee all display output to this file path.
     pub log_file: Option<PathBuf>,
@@ -119,20 +107,6 @@ pub struct CliOverrides {
     pub env: Vec<(String, String)>,
     /// When Some, tee all display output to this file path.
     pub log_file: Option<PathBuf>,
-}
-
-// ── Flat-form serde types ─────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct FlatConfigFile {
-    iterations: Option<u32>,
-    prompt: Option<String>,
-    model: Option<String>,
-    verbose: Option<bool>,
-    commit_as: Option<String>,
-    github_token_from: Option<String>,
-    log_file: Option<String>,
 }
 
 // ── Multi-stage serde types ───────────────────────────────────────────────────
@@ -180,11 +154,6 @@ struct MultiStageConfigFile {
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
 
-enum RawConfig {
-    Flat(FlatConfigFile),
-    MultiStage(MultiStageConfigFile),
-}
-
 fn check_old_field_names(val: &serde_yaml::Value) -> Result<()> {
     const OLD_TO_NEW: &[(&str, &str)] = &[
         ("git_identity", "commit_as"),
@@ -201,16 +170,33 @@ fn check_old_field_names(val: &serde_yaml::Value) -> Result<()> {
     Ok(())
 }
 
-fn parse_config_file(yaml: &str) -> Result<RawConfig> {
+fn parse_config_file(yaml: &str) -> Result<MultiStageConfigFile> {
     let val: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(anyhow::Error::from)?;
     check_old_field_names(&val)?;
-    if val.get("stages").is_some() {
-        let cfg: MultiStageConfigFile = serde_yaml::from_value(val).map_err(anyhow::Error::from)?;
-        Ok(RawConfig::MultiStage(cfg))
-    } else {
-        let cfg: FlatConfigFile = serde_yaml::from_value(val).map_err(anyhow::Error::from)?;
-        Ok(RawConfig::Flat(cfg))
+    if val.get("stages").is_none() {
+        anyhow::bail!(
+            "config.yml is missing a `stages:` key.\n\
+             \n\
+             Flat-form config (iterations/prompt at the top level) is no longer supported.\n\
+             Migrate to multi-stage format:\n\
+             \n\
+             Before:\n\
+             \n\
+             \x20 iterations: 5\n\
+             \x20 prompt: prompts/implement.md\n\
+             \x20 model: claude-opus-4-7\n\
+             \n\
+             After:\n\
+             \n\
+             \x20 stages:\n\
+             \x20   - name: main\n\
+             \x20     prompt: prompts/implement.md\n\
+             \x20     model: claude-opus-4-7\n\
+             \x20 max_stages: 5\n"
+        );
     }
+    let cfg: MultiStageConfigFile = serde_yaml::from_value(val).map_err(anyhow::Error::from)?;
+    Ok(cfg)
 }
 
 fn parse_on_pass(s: &str) -> Option<OnPass> {
@@ -335,27 +321,7 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
     Ok(PipelineConfig {
         entries,
         max_stages: cfg.max_stages.unwrap_or(MAX_STAGES_DEFAULT),
-        cap_hit_is_ok: false,
     })
-}
-
-fn desugar_flat_form(iterations: u32, prompt: Option<&str>) -> PipelineConfig {
-    let stage = StageConfig {
-        name: "main".to_string(),
-        prompt: prompt.map(str::to_string),
-        model: None,
-        on_pass: OnPass::Next,
-        on_fail: OnFail::Exit,
-        max_retries: MAX_RETRIES_DEFAULT,
-    };
-    PipelineConfig {
-        entries: vec![PipelineEntry::Loop(LoopConfig {
-            max_iteration: Some(iterations),
-            stages: vec![stage],
-        })],
-        max_stages: MAX_STAGES_DEFAULT,
-        cap_hit_is_ok: true,
-    }
 }
 
 fn git_identity_from_str(s: &str) -> Option<GitIdentity> {
@@ -376,12 +342,9 @@ fn github_scope_from_str(s: &str) -> Option<GithubScope> {
 
 /// Resolve configuration by merging (highest → lowest priority):
 ///   CLI overrides → config file → compiled-in defaults.
-///
-/// `mode` controls whether prompt files are read (`Run`) or left as paths (`Check`),
-/// and whether flat-form configs require an explicit iterations value.
-pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Result<Config> {
+pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     let config_path = capsule_dir.join("config.yml");
-    let raw = if config_path.exists() {
+    let file_cfg = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
             .with_context(|| format!("reading {}", config_path.display()))?;
         Some(
@@ -392,74 +355,40 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
         None
     };
 
-    let (file_flat, file_multi) = match raw {
-        Some(RawConfig::Flat(f)) => (Some(f), None),
-        Some(RawConfig::MultiStage(m)) => (None, Some(m)),
-        None => (None, None),
-    };
-
-    // Shared fields (model, verbose, commit_as, github_token_from).
-    let file_model = file_flat
-        .as_ref()
-        .and_then(|f| f.model.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.model.clone()));
-    let file_verbose = file_flat
-        .as_ref()
-        .and_then(|f| f.verbose)
-        .or_else(|| file_multi.as_ref().and_then(|m| m.verbose));
-    let file_commit_as = file_flat
-        .as_ref()
-        .and_then(|f| f.commit_as.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.commit_as.clone()));
-    let file_github_token_from = file_flat
-        .as_ref()
-        .and_then(|f| f.github_token_from.clone())
-        .or_else(|| {
-            file_multi
-                .as_ref()
-                .and_then(|m| m.github_token_from.clone())
-        });
-    let file_log_file = file_flat
-        .as_ref()
-        .and_then(|f| f.log_file.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.log_file.clone()));
-
-    let model = cli.model.or(file_model);
-    let verbose = cli.verbose || file_verbose.unwrap_or(false);
+    let model = cli
+        .model
+        .or_else(|| file_cfg.as_ref().and_then(|f| f.model.clone()));
+    let verbose = cli.verbose || file_cfg.as_ref().and_then(|f| f.verbose).unwrap_or(false);
     let commit_as = cli
         .commit_as
-        .or_else(|| file_commit_as.as_deref().and_then(git_identity_from_str))
+        .or_else(|| {
+            file_cfg
+                .as_ref()
+                .and_then(|f| f.commit_as.as_deref())
+                .and_then(git_identity_from_str)
+        })
         .unwrap_or(GitIdentity::User);
     let github_token_from = cli.github_token_from.or_else(|| {
-        file_github_token_from
-            .as_deref()
+        file_cfg
+            .as_ref()
+            .and_then(|f| f.github_token_from.as_deref())
             .and_then(github_scope_from_str)
     });
-
-    let log_file = cli.log_file.or_else(|| file_log_file.map(PathBuf::from));
+    let log_file = cli.log_file.or_else(|| {
+        file_cfg
+            .as_ref()
+            .and_then(|f| f.log_file.as_ref())
+            .map(PathBuf::from)
+    });
     let rebuild = cli.rebuild;
 
-    let pipeline = if let Some(multi) = file_multi {
+    let pipeline = if let Some(multi) = file_cfg {
         build_pipeline_from_multi_stage(multi)
             .with_context(|| format!("validating {}", config_path.display()))?
     } else {
-        let file_flat = file_flat.unwrap_or_default();
-        match mode {
-            ResolveMode::Run => {
-                let iterations = file_flat.iterations.ok_or_else(|| {
-                    anyhow::anyhow!("flat-form config requires `iterations:` in config.yml")
-                })?;
-                let prompt_path = file_flat.prompt.map(PathBuf::from);
-                let prompt_path_str = prompt_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "prompt.md".to_string());
-                desugar_flat_form(iterations, Some(&prompt_path_str))
-            }
-            ResolveMode::Check => {
-                let iterations = file_flat.iterations.unwrap_or(1);
-                desugar_flat_form(iterations, file_flat.prompt.as_deref())
-            }
+        PipelineConfig {
+            entries: Vec::new(),
+            max_stages: MAX_STAGES_DEFAULT,
         }
     };
 

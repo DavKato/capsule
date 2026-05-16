@@ -159,11 +159,7 @@ enum TemplatesCommands {
 }
 
 fn build_check_report(capsule_dir: &std::path::Path) -> CheckReport {
-    let result = capsule::config::resolve(
-        capsule_dir,
-        capsule::config::CliOverrides::default(),
-        capsule::config::ResolveMode::Check,
-    );
+    let result = capsule::config::resolve(capsule_dir, capsule::config::CliOverrides::default());
     match result {
         Ok(cfg) => capsule::check::check(&cfg.pipeline, capsule_dir),
         Err(e) => {

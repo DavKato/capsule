@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use capsule::config::{resolve, CliOverrides, Config, ResolveMode};
+use capsule::config::{resolve, CliOverrides, Config};
 use capsule::container_execution::{
     detect_compose_network, token_remaining_minutes, CredentialsGuard, DockerStageRunner,
     ExecutionConfig,
@@ -51,7 +51,7 @@ impl RunSession {
     pub(crate) fn prepare(capsule_dir: PathBuf, mut overrides: CliOverrides) -> Result<Self> {
         let input = overrides.input.take();
         let env_pairs: Vec<(String, String)> = std::mem::take(&mut overrides.env);
-        let cfg = resolve(&capsule_dir, overrides, ResolveMode::Run)?;
+        let cfg = resolve(&capsule_dir, overrides)?;
 
         check_docker()?;
 

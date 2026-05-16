@@ -343,6 +343,21 @@ fn old_field_max_pipeline_iterations_produces_did_you_mean_error() {
 }
 
 #[test]
+fn old_field_min_token_lifetime_minutes_produces_removed_error() {
+    let dir = capsule_dir_with_config("stages:\n  - name: s\nmin_token_lifetime_minutes: 30\n");
+    let err = resolve(dir.path(), no_cli()).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("min_token_lifetime_minutes") && chain.contains("has been removed"),
+        "error should mention field name and removal reason; got: {chain}"
+    );
+}
+
+#[test]
 fn unknown_stage_reference_in_on_fail_is_rejected() {
     let yaml = "stages:\n  - name: foo\n    on_fail: nonexistent\n";
     let dir = capsule_dir_with_config(yaml);

@@ -160,10 +160,19 @@ fn check_old_field_names(val: &serde_yaml::Value) -> Result<()> {
         ("github", "github_token_from"),
         ("max_pipeline_iterations", "max_stages"),
     ];
+    const REMOVED: &[(&str, &str)] = &[(
+        "min_token_lifetime_minutes",
+        "this field has been removed; token lifetime is now checked automatically",
+    )];
     if let serde_yaml::Value::Mapping(map) = val {
         for (old, new) in OLD_TO_NEW {
             if map.contains_key(*old) {
                 anyhow::bail!("unknown field `{old}` — did you mean `{new}`?");
+            }
+        }
+        for (field, reason) in REMOVED {
+            if map.contains_key(*field) {
+                anyhow::bail!("unknown field `{field}` — {reason}");
             }
         }
     }

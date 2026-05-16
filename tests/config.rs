@@ -1,6 +1,6 @@
 use capsule::config::{
     resolve, CliOverrides, Config, GitIdentity, GithubScope, OnFail, OnPass, PipelineEntry,
-    ResolveMode, MAX_PIPELINE_ITERATIONS_DEFAULT, MAX_RETRIES_DEFAULT,
+    ResolveMode, MAX_RETRIES_DEFAULT, MAX_STAGES_DEFAULT,
 };
 use tempfile::TempDir;
 
@@ -205,13 +205,10 @@ fn flat_form_desugars_to_single_stage_loop() {
 }
 
 #[test]
-fn flat_form_desugar_has_default_max_pipeline_iterations() {
+fn flat_form_desugar_has_default_max_stages() {
     let dir = capsule_dir_with_config("iterations: 1\n");
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(
-        cfg.pipeline.max_pipeline_iterations,
-        MAX_PIPELINE_ITERATIONS_DEFAULT
-    );
+    assert_eq!(cfg.pipeline.max_stages, MAX_STAGES_DEFAULT);
 }
 
 // ── Multi-stage parsing tests ─────────────────────────────────────────────────
@@ -232,7 +229,7 @@ max_pipeline_iterations: 500
 fn multi_stage_parses_stages_and_routing() {
     let dir = capsule_dir_with_config(MULTI_STAGE_YAML);
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(cfg.pipeline.max_pipeline_iterations, 500);
+    assert_eq!(cfg.pipeline.max_stages, 500);
     assert_eq!(cfg.pipeline.entries.len(), 2);
 
     let PipelineEntry::Stage(ref impl_stage) = cfg.pipeline.entries[0] else {
@@ -251,13 +248,10 @@ fn multi_stage_parses_stages_and_routing() {
 }
 
 #[test]
-fn multi_stage_default_max_pipeline_iterations() {
+fn multi_stage_default_max_stages() {
     let dir = capsule_dir_with_config("stages:\n  - name: only\n    prompt: p.md\n");
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(
-        cfg.pipeline.max_pipeline_iterations,
-        MAX_PIPELINE_ITERATIONS_DEFAULT
-    );
+    assert_eq!(cfg.pipeline.max_stages, MAX_STAGES_DEFAULT);
 }
 
 #[test]

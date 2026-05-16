@@ -161,11 +161,11 @@ mod tests {
     }
 
     #[test]
-    fn json_cap_hit_max_pipeline_iterations() {
+    fn json_cap_hit_max_stages() {
         let mut s = minimal_summary(TerminalReason::CapHit);
-        s.cap_hit = Some(CapHitKind::MaxPipelineIterations);
+        s.cap_hit = Some(CapHitKind::MaxStages);
         let v = build_summary_artifact(&s, false, None);
-        assert_eq!(v["cap_hit_counter"]["type"], "max_pipeline_iterations");
+        assert_eq!(v["cap_hit_counter"]["type"], "max_stages");
         assert!(v["cap_hit_counter"]["loop_idx"].is_null());
     }
 

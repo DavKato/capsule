@@ -11,7 +11,7 @@ pub enum ResolveMode {
     Check,
 }
 
-pub const MAX_PIPELINE_ITERATIONS_DEFAULT: u32 = 1000;
+pub const MAX_STAGES_DEFAULT: u32 = 1000;
 pub const MAX_RETRIES_DEFAULT: u32 = 3;
 
 /// Git commit identity mode.
@@ -81,7 +81,7 @@ pub enum PipelineEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineConfig {
     pub entries: Vec<PipelineEntry>,
-    pub max_pipeline_iterations: u32,
+    pub max_stages: u32,
     /// True when hitting the loop cap should be treated as success (flat-form desugared configs).
     pub cap_hit_is_ok: bool,
 }
@@ -332,9 +332,7 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
 
     Ok(PipelineConfig {
         entries,
-        max_pipeline_iterations: cfg
-            .max_pipeline_iterations
-            .unwrap_or(MAX_PIPELINE_ITERATIONS_DEFAULT),
+        max_stages: cfg.max_pipeline_iterations.unwrap_or(MAX_STAGES_DEFAULT),
         cap_hit_is_ok: false,
     })
 }
@@ -353,7 +351,7 @@ fn desugar_flat_form(iterations: u32, prompt: Option<&str>) -> PipelineConfig {
             max_iteration: Some(iterations),
             stages: vec![stage],
         })],
-        max_pipeline_iterations: MAX_PIPELINE_ITERATIONS_DEFAULT,
+        max_stages: MAX_STAGES_DEFAULT,
         cap_hit_is_ok: true,
     }
 }
@@ -445,8 +443,8 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
     let (iterations, pipeline) = if let Some(multi) = file_multi {
         let pipeline = build_pipeline_from_multi_stage(multi)
             .with_context(|| format!("validating {}", config_path.display()))?;
-        // iterations is not applicable for multi-stage; use max_pipeline_iterations.
-        (pipeline.max_pipeline_iterations, pipeline)
+        // iterations is not applicable for multi-stage; use max_stages.
+        (pipeline.max_stages, pipeline)
     } else {
         let file_flat = file_flat.unwrap_or_default();
         match mode {

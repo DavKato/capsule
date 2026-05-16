@@ -35,8 +35,8 @@ pub enum TerminalReason {
 pub enum CapHitKind {
     /// A loop's `max_iteration` was exceeded; `loop_idx` is the entry index.
     LoopMaxIteration(usize),
-    /// The global `max_pipeline_iterations` was exceeded.
-    MaxPipelineIterations,
+    /// The global `max_stages` was exceeded.
+    MaxStages,
 }
 
 /// Snapshot of iteration counters at pipeline exit.
@@ -78,8 +78,8 @@ pub fn build_summary_artifact(
             "type": "max_iteration",
             "loop_idx": idx,
         }),
-        Some(CapHitKind::MaxPipelineIterations) => serde_json::json!({
-            "type": "max_pipeline_iterations",
+        Some(CapHitKind::MaxStages) => serde_json::json!({
+            "type": "max_stages",
         }),
     };
     let last_verdict = summary

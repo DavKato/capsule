@@ -262,10 +262,7 @@ fn check_docker() -> Result<()> {
     Ok(())
 }
 
-/// Runs the top-level `setup` value if present. When `setup` resolves to an existing
-/// file path relative to `capsule_dir`, it is executed via `bash <path>`; otherwise
-/// it is treated as an inline command and run via `bash -c "<value>"`.
-/// Absent setup (`None`) is Ok; non-zero exit aborts with a descriptive error.
+/// Runs the host-level setup command if configured.
 fn run_host_setup(
     setup: Option<&str>,
     capsule_dir: &std::path::Path,

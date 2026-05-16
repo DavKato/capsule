@@ -20,5 +20,5 @@ stages:
       prompt: prompts/documentor.md
 
 model: claude-opus-4-6
-github: local
-git_identity: capsule
+github_token_from: local
+commit_as: capsule

@@ -6,7 +6,7 @@ Available topics. Load only what your current task needs.
   setup-files      What each file in .capsule/ owns.
                    Load before editing any .capsule/ file.
 
-  pipeline-shapes  Decision tree: single-iter vs ralph-loop vs other.
+  pipeline-shapes  Decision tree: single-stage vs ralph-loop vs other.
                    Load before picking a template or proposing a shape change.
 
   prompt-writing   Verdict contract, note-injection, role framing.

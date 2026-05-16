@@ -55,8 +55,7 @@ fn single_stage_config(prompt: Option<&str>) -> PipelineConfig {
             on_fail: OnFail::Exit,
             max_retries: capsule::config::MAX_RETRIES_DEFAULT,
         })],
-        max_pipeline_iterations: 10,
-        cap_hit_is_ok: false,
+        max_stages: 10,
     }
 }
 
@@ -73,8 +72,7 @@ fn loop_stage_config(prompt: Option<&str>) -> PipelineConfig {
                 max_retries: capsule::config::MAX_RETRIES_DEFAULT,
             }],
         })],
-        max_pipeline_iterations: 10,
-        cap_hit_is_ok: true,
+        max_stages: 10,
     }
 }
 

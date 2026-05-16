@@ -10,8 +10,8 @@ fn templates_list_shows_all_templates() {
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("ralph-loop"), "missing ralph-loop template");
     assert!(
-        stdout.contains("single-iter"),
-        "missing single-iter template"
+        stdout.contains("single-stage"),
+        "missing single-stage template"
     );
 }
 
@@ -25,7 +25,7 @@ fn templates_list_shows_descriptions() {
     );
     assert!(
         stdout.contains("Single Claude invocation"),
-        "missing single-iter description"
+        "missing single-stage description"
     );
 }
 

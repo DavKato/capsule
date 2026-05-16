@@ -7,7 +7,7 @@ use super::ExitDecision;
 
 pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
     match summary.terminal_reason {
-        TerminalReason::Done | TerminalReason::Exit | TerminalReason::Ok => ExitDecision::Success,
+        TerminalReason::Done | TerminalReason::Exit => ExitDecision::Success,
         ref reason @ (TerminalReason::FailExit | TerminalReason::CapHit) => {
             let fallback = match reason {
                 TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
@@ -144,13 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn json_ok_terminal_reason() {
-        let s = minimal_summary(TerminalReason::Ok);
-        let v = build_summary_artifact(&s, false, None);
-        assert_eq!(v["terminal_reason"], "ok");
-    }
-
-    #[test]
     fn json_cap_hit_loop_max_iteration() {
         let mut s = minimal_summary(TerminalReason::CapHit);
         s.cap_hit = Some(CapHitKind::LoopMaxIteration(0));
@@ -161,11 +154,11 @@ mod tests {
     }
 
     #[test]
-    fn json_cap_hit_max_pipeline_iterations() {
+    fn json_cap_hit_max_stages() {
         let mut s = minimal_summary(TerminalReason::CapHit);
-        s.cap_hit = Some(CapHitKind::MaxPipelineIterations);
+        s.cap_hit = Some(CapHitKind::MaxStages);
         let v = build_summary_artifact(&s, false, None);
-        assert_eq!(v["cap_hit_counter"]["type"], "max_pipeline_iterations");
+        assert_eq!(v["cap_hit_counter"]["type"], "max_stages");
         assert!(v["cap_hit_counter"]["loop_idx"].is_null());
     }
 
@@ -253,7 +246,6 @@ mod tests {
     #[test]
     fn resume_hint_none_on_success() {
         assert!(resume_hint(Some("sess_abc"), &TerminalReason::Done).is_none());
-        assert!(resume_hint(Some("sess_abc"), &TerminalReason::Ok).is_none());
         assert!(resume_hint(Some("sess_abc"), &TerminalReason::Exit).is_none());
     }
 

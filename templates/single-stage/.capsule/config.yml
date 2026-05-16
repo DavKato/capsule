@@ -1,3 +1,5 @@
 stages:
   - name: main
+    prompt: prompt.md
 model: claude-sonnet-4-6
+github_token_from: local

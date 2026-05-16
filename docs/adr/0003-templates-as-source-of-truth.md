@@ -1,6 +1,6 @@
 # Templates as the source of truth for user-facing scaffolds
 
-Capsule ships a small set of pre-built `.capsule/` skeletons (`single-iter`,
+Capsule ships a small set of pre-built `.capsule/` skeletons (`single-stage`,
 `ralph-loop`, etc.) under `templates/` in the repo. `capsule init --template
 <name>` copies the chosen template byte-for-byte into the user's repo — no
 substitution, no scaffolding logic, no template engine. Templates replace the

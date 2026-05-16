@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use capsule::config::{resolve, CliOverrides, Config, ResolveMode};
+use capsule::config::{resolve, CliOverrides, Config};
 use capsule::container_execution::{
     detect_compose_network, token_remaining_minutes, CredentialsGuard, DockerStageRunner,
     ExecutionConfig,
@@ -8,7 +8,6 @@ use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use capsule::pipeline::{PipelineExecutor, PipelineState, TerminalReason};
 use capsule::update_check;
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -52,7 +51,7 @@ impl RunSession {
     pub(crate) fn prepare(capsule_dir: PathBuf, mut overrides: CliOverrides) -> Result<Self> {
         let input = overrides.input.take();
         let env_pairs: Vec<(String, String)> = std::mem::take(&mut overrides.env);
-        let cfg = resolve(&capsule_dir, overrides, ResolveMode::Run)?;
+        let cfg = resolve(&capsule_dir, overrides)?;
 
         check_docker()?;
 
@@ -79,7 +78,7 @@ impl RunSession {
 
         let process_env: HashMap<String, String> = std::env::vars().collect();
         let (git_author_name, git_author_email) =
-            git::resolve_git_identity(&cfg.git_identity, &process_env);
+            git::resolve_git_identity(&cfg.commit_as, &process_env);
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;
@@ -176,20 +175,11 @@ impl RunSession {
     /// before the process terminates (ensures NamedTempFile cleanup runs).
     pub(crate) fn execute(mut self) -> Result<ExitDecision> {
         let update_rx = update_check::spawn_check();
-        if let Some(warning) = env::token_lifetime_warning(
-            token_remaining_minutes(&self.claude_dir),
-            self.cfg.min_token_lifetime_minutes,
-        ) {
+        if let Some(warning) =
+            env::token_lifetime_warning(token_remaining_minutes(&self.claude_dir))
+        {
             capsule::display::warning(&warning);
-            eprint!("Continue anyway? [y/N] ");
-            let _ = std::io::stderr().flush();
-            let mut answer = String::new();
-            std::io::stdin()
-                .read_line(&mut answer)
-                .context("failed to read confirmation")?;
-            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-                anyhow::bail!("Aborted. Refresh token with `claude auth login` and retry.");
-            }
+            capsule::display::set_token_warning(Some(&warning));
         }
         // Move the guard into the runner so it can reset the baseline after a
         // resume-retry re-copies host credentials.

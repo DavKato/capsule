@@ -88,9 +88,9 @@ _Avoid_: Loop budget
 Per-stage cap on consecutive `fail` verdicts; resets on `pass`; independent of loop position.
 _Avoid_: Retry limit
 
-**`max_pipeline_iterations`**:
-Global circuit breaker across all stage invocations in a run.
-_Avoid_: Total budget
+**`max_stages`**:
+Global circuit breaker across all stage invocations in a run; top-level only.
+_Avoid_: Total budget, max_pipeline_iterations
 
 **Cap-hit**:
 Any counter exceeding its cap; pipeline terminates non-zero, writes summary artifact, no `on_fail` routing applies.
@@ -144,9 +144,6 @@ _Avoid_: Snapshot, credential isolation
 On `authentication_failed`, capsule re-copies the host's current credentials and re-launches with `claude --resume <session_id>`, recovering conversation context in one attempt.
 _Avoid_: Auth retry, credential refresh
 
-**`min_token_lifetime_minutes`**:
-Optional config.yml field (with CLI override). At `prepare()`, if the access token's `expiresAt` is within this threshold, capsule prompts the user before starting.
-_Avoid_: Token threshold, expiry check
 
 ### Workflow patterns
 
@@ -234,7 +231,7 @@ _Avoid_: Templates (the directory was renamed in 2026-04 to free the name for us
 
 ## Flagged ambiguities
 
-- **"Iteration"** was used loosely for both "one pass through a loop body" (canonical) and "the flat-form `iterations:` config keyword." Canonical: **Iteration** always means one loop-body pass. The flat-form `iterations:` desugars internally to a single-stage loop with `max_iteration: N`.
+- **"Iteration"** always means one pass through a loop body. Flat-form config (which used `iterations:` as a top-level keyword) was removed; all configs now use `stages:`.
 - **"Pipeline" vs "process" vs "run"**: Canonical: **Pipeline** = the configured execution graph; **Run** = one invocation executing it. Avoid "process" (conflates with OS processes).
 - **"Scope"**: Canonical: **Scope** = nearest enclosing loop or pipeline (the thing a `done` verdict exits). Not a synonym for "workflow shape."
 - **"Feedback"** was renamed: the verdict field is **Notes**; the delivery mechanism is **Note injection** / **Previous-stage block**. Drop "feedback" from new code and docs.

@@ -19,7 +19,6 @@ Central configuration file. Defines stages, loops, routing rules, models, and co
 
 - `prompt:` is a path relative to `.capsule/`; conventionally `prompts/<stage-name>.md`.
 - Stage names drive prompt filenames — rename a stage, rename its prompt file to match.
-- Flat-form config (no `stages:` key) defaults to `prompt.md` in `.capsule/`.
 - Run `capsule check` after every structural edit.
 
 ## Dockerfile
@@ -55,6 +54,5 @@ Env-var defaults and secrets (`KEY=value`, one per line). Should be gitignored �
 
 One `.md` file per stage. Capsule prepends the system preamble and, where applicable, the previous-stage block before injecting the file into Claude.
 
-- Flat-form default: `.capsule/prompt.md`
-- Multi-stage convention: `.capsule/prompts/<stage-name>.md`
+- Convention: `.capsule/prompts/<stage-name>.md`
 - The `prompt:` path in `config.yml` is authoritative — keep it in sync with the actual filename.

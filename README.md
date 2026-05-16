@@ -51,18 +51,19 @@ npx skills@latest add davkat/capsule/capsule
 ## Usage
 
 ```sh
-capsule run --iterations 5
+capsule run
 ```
 
 ```sh
-capsule run --iterations 1 --rebuild          # force-rebuild the Docker image
-capsule run --iterations 3 --verbose          # show unfiltered container output
-capsule run --model claude-opus-4-6 --iterations 2
-capsule run --capsule-dir path/to/.capsule    # use a non-default config directory
-capsule run --log-file run.log --iterations 3  # tee run output to a file
-capsule run --env PARENT=79 --iterations 3    # inject run-scoped parameters into containers and hooks
-capsule completion bash | source              # enable tab-completion in the current shell
-capsule update                                # download and install the latest release
+capsule run --rebuild                              # force-rebuild the Docker image
+capsule run --verbose                              # show unfiltered container output
+capsule run --model claude-opus-4-6
+capsule run --capsule-dir path/to/.capsule         # use a non-default config directory
+capsule run --log-file run.log                     # tee run output to a file
+capsule run --env PARENT=79                        # inject run-scoped parameters into containers and hooks
+capsule run --max-stages 5                         # override the global stage safety cap
+capsule completion bash | source                   # enable tab-completion in the current shell
+capsule update                                     # download and install the latest release
 ```
 
 ```sh
@@ -103,9 +104,13 @@ Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `
 `.capsule/config.yml` accepts the same keys as the CLI flags, as defaults:
 
 ```yaml
-iterations: 3
+stages:
+  - name: main
+    prompt: prompt.md
 model: claude-sonnet-4-6
-git_identity: user  # or: capsule
+commit_as: user       # or: capsule
+github_token_from: local  # or: env
+max_stages: 50
 ```
 
 Precedence: **CLI flag → config.yml → default**.

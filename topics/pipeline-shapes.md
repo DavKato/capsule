@@ -63,9 +63,11 @@ Bootstrap: `capsule init --template ralph-loop`
 ## Decision criteria
 
 1. **Does the task need a review gate?** If yes → ralph-loop. If no → single-stage.
-2. **Does failure mean "retry the whole thing"?** single-stage with `max_stages: N` is simpler.
+2. **Does failure mean "retry the whole thing"?** single-stage with `on_fail: retry` on the stage is simpler.
 3. **Do you need stages after the iterative work?** ralph-loop supports post-loop stages; single-stage does not.
 4. **Is the task queue-draining (many items, each simple)?** single-stage per item; orchestrate externally.
+
+`max_stages` is a global safety cap on total stage invocations across the entire run — not a retry count or iteration limit for any individual stage or loop. Set it high enough to cover your expected pipeline depth; the defaults are conservative.
 
 ## Customizing after init
 

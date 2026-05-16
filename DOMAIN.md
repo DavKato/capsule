@@ -170,7 +170,7 @@ _Avoid_: Parallel, shard
 ### Setup and discovery *(planned — surface not yet implemented)*
 
 **Template**:
-A pre-built `.capsule/` skeleton (e.g., `single-iter`, `ralph-loop`) shipped in the capsule repo's `templates/` directory; `capsule init --template <name>` copies it byte-for-byte into the user's repo. Templates replace the former `examples/` directory and are validated in CI via `capsule check`.
+A pre-built `.capsule/` skeleton (e.g., `single-stage`, `ralph-loop`) shipped in the capsule repo's `templates/` directory; `capsule init --template <name>` copies it byte-for-byte into the user's repo. Templates replace the former `examples/` directory and are validated in CI via `capsule check`.
 _Avoid_: Example, scaffold, preset, starter
 
 **`capsule init`**:

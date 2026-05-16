@@ -69,7 +69,7 @@ Enumerate available templates, then bootstrap `.capsule/` from one. Agent path: 
 ```sh
 capsule templates list                            # list templates (deterministic, no TTY required)
 capsule init --template ralph-loop                # copy template into .capsule/
-capsule init --template single-iter --force       # overwrite existing .capsule/
+capsule init --template single-stage --force      # overwrite existing .capsule/
 ```
 
 Do not run bare `capsule init` from a script or agent — it requires a TTY and blocks on interactive input.

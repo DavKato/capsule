@@ -90,13 +90,13 @@ Place a `.capsule/` directory in your repo to configure behaviour:
 | `before-all.sh` | Runs once on the host before any container starts |
 | `before-each.sh` | Runs inside the container before Claude starts each iteration |
 
-See [`templates/single-iter/.capsule/`](templates/single-iter/.capsule/) for a flat-form setup and [`templates/ralph-loop/.capsule/`](templates/ralph-loop/.capsule/) for a multi-stage pipeline.
+See [`templates/single-stage/.capsule/`](templates/single-stage/.capsule/) for a minimal single-stage setup and [`templates/ralph-loop/.capsule/`](templates/ralph-loop/.capsule/) for a multi-stage pipeline.
 
 ## Prompt
 
 `capsule` is prompt-agnostic — it injects no context on its own. Place your prompt at `.capsule/prompt.md` (or pass `--prompt path/to/other.md`).
 
-Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See [`templates/single-iter/.capsule/before-each.sh`](templates/single-iter/.capsule/before-each.sh) for a working example.
+Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See [`templates/single-stage/.capsule/before-each.sh`](templates/single-stage/.capsule/before-each.sh) for a working example.
 
 ## Config file
 

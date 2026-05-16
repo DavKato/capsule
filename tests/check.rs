@@ -16,7 +16,7 @@ fn fixture(name: &str) -> std::path::PathBuf {
 fn check_valid_single_iter_passes() {
     cmd()
         .args(["check", "--capsule-dir"])
-        .arg(fixture("valid-single-iter"))
+        .arg(fixture("valid-single-stage"))
         .assert()
         .success();
 }

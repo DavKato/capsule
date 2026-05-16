@@ -1,6 +1,6 @@
 # common-edits
 
-Load when making structural changes to `config.yml` — renaming stages, adding or removing stages, adding hooks, or changing routing rules.
+Load when making structural changes to `config.yml` — renaming stages, adding or removing stages, adding setup commands, or changing routing rules.
 
 ## Rename a stage
 
@@ -39,18 +39,22 @@ stages:
 3. Delete the prompt file if no longer referenced.
 4. Run `capsule check`.
 
-## Add a hook
+## Add a setup command
 
-Create `.capsule/before-all.sh` (runs once on host before any container) or `.capsule/before-each.sh` (runs inside each container before the prompt). Both must be executable (`chmod +x`). No `config.yml` change needed — capsule discovers hooks by filename.
+Add a `setup` field to `config.yml`. The value can be an inline shell command or a path to a script file relative to `.capsule/`.
 
-```sh
-#!/usr/bin/env bash
-set -euo pipefail
-# before-all.sh: host-side setup (clone repos, create issues, set external state)
-# before-each.sh: can write /home/claude/prompt.txt to mutate the prompt
+```yaml
+# Top-level: runs once on host before any container
+setup: scripts/bootstrap.sh
+
+stages:
+  - name: main
+    prompt: prompts/main.md
+    # Per-stage: runs inside each container before the prompt
+    setup: pip install -r requirements.txt
 ```
 
-Run `capsule check` after adding a hook.
+Script files must be executable (`chmod +x`). Run `capsule check` after adding a setup field.
 
 ## Change routing
 

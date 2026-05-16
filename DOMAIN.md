@@ -103,7 +103,7 @@ String passed via `capsule run --input "..."`, injected into the first stage's p
 _Avoid_: Argument, seed
 
 **Run environment**:
-User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and hook script for the duration of the run. Persisted in pipeline state on resumable exits so `capsule resume` restores them; `--env` on resume merges on top (last writer wins per key). Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (gitignored defaults and secrets). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
+User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and setup command for the duration of the run. Persisted in pipeline state on resumable exits so `capsule resume` restores them; `--env` on resume merges on top (last writer wins per key). Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (gitignored defaults and secrets). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
 _Avoid_: Run args, run parameters, heap
 
 **Note injection**:
@@ -182,7 +182,7 @@ Agent-facing enumeration of available templates with one-line descriptions. The 
 _Avoid_: Template index
 
 **`capsule check`**:
-Validates a `.capsule/` setup. Level 2 structural checks (route targets resolve, prompt files exist, hook scripts present, loop nesting rules hold) plus opportunistic Level 3 hints (typo suggestions, missing-env-var warnings). The feedback loop that makes "edit + validate" a viable migration workflow.
+Validates a `.capsule/` setup. Level 2 structural checks (route targets resolve, prompt files exist, setup fields valid, migration guards for old hook scripts, loop nesting rules hold) plus opportunistic Level 3 hints (typo suggestions, missing-env-var warnings). The feedback loop that makes "edit + validate" a viable migration workflow.
 _Avoid_: Validate, lint, verify
 
 **`capsule explain`**:

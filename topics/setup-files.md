@@ -4,13 +4,13 @@ Load before editing any `.capsule/` file — maps each file to its ownership, pu
 
 ## Quick reference
 
-| File | Owns | When it runs |
+| File / Field | Owns | When it runs |
 |------|------|--------------|
-| `config.yml` | Pipeline structure, routing, models, counters | — |
+| `config.yml` | Pipeline structure, routing, models, counters, setup | — |
 | `Dockerfile` | Container OS packages and tools | At image build time |
-| `before-all.sh` | Host-side setup (optional) | Once on host, before any stage |
-| `before-each.sh` | Per-invocation container setup (optional) | Inside each container, before prompt |
-| `.env` | Env-var defaults and secrets (gitignore) | Sourced on host before `before-all.sh` |
+| `setup` (top-level) | Host-side setup command or script (optional) | Once on host, before any stage |
+| `setup` (per-stage) | Per-invocation container setup (optional) | Inside each container, before prompt |
+| `.env` | Env-var defaults and secrets (gitignore) | Sourced on host before top-level `setup` |
 | `prompts/<stage>.md` | Stage prompt content | Mounted into container per invocation |
 
 ## config.yml
@@ -26,17 +26,30 @@ Central configuration file. Defines stages, loops, routing rules, models, and co
 
 Extends `FROM capsule` (base image ships `claude`, git, bash). Add runtime deps with `RUN pacman -Syu --noconfirm <pkg>`. Rebuilt on `capsule run --rebuild`.
 
-## before-all.sh
+## setup (top-level)
 
 Runs **once on the host** before any container starts. Receives `.env` defaults plus `--env` overrides. Use for host-side bootstrapping: cloning repos, creating GitHub issues, setting up external state. Non-zero exit aborts the run.
 
-## before-each.sh
+The value can be an inline shell command (contains whitespace) or a path to a script file relative to `.capsule/`. Script files must be executable (`chmod +x`).
+
+```yaml
+setup: scripts/bootstrap.sh
+```
+
+## setup (per-stage)
 
 Runs **inside each container** before Claude reads the prompt. Receives the same env as the stage. Can write to `/home/claude/prompt.txt` to mutate the prompt before the stage sees it. Runs on every invocation — keep it fast.
 
+```yaml
+stages:
+  - name: main
+    prompt: prompts/main.md
+    setup: pip install -r requirements.txt
+```
+
 ## .env
 
-Env-var defaults and secrets (`KEY=value`, one per line). Should be gitignored — may hold tokens (e.g. `GH_TOKEN` with `--github-token-from local`). Loaded on the host before `before-all.sh` runs; values flow into all containers and hook scripts. Override at runtime with `capsule run --env KEY=value`.
+Env-var defaults and secrets (`KEY=value`, one per line). Should be gitignored — may hold tokens (e.g. `GH_TOKEN` with `--github-token-from local`). Loaded on the host before the top-level `setup` runs; values flow into all containers and setup commands. Override at runtime with `capsule run --env KEY=value`.
 
 ## Prompt files
 

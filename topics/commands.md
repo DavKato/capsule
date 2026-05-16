@@ -10,7 +10,7 @@ Starts a pipeline run. Executes `config.yml` inside a Docker container.
 capsule run                                    # run with config.yml defaults
 capsule run --max-stages 5                     # cap at 5 total pipeline stages
 capsule run --input "fix issue #42"            # pipeline input: injected into first stage, first invocation only
-capsule run --env PARENT=79                    # run environment: available in all containers and hooks
+capsule run --env PARENT=79                    # run environment: available in all containers and setup commands
 capsule run --model claude-opus-4-7            # override Claude model
 capsule run --rebuild                          # force-rebuild Docker image (bypass layer cache)
 capsule run --verbose                          # show unfiltered container output
@@ -20,7 +20,7 @@ capsule run --verbose                          # show unfiltered container outpu
 |------|---------|---------|
 | `--max-stages` | config | Maximum total pipeline stages to execute |
 | `--input` | — | Pipeline input; first stage, first invocation only |
-| `--env KEY=VALUE` | — | Run environment; injected into all containers and hooks. Repeatable |
+| `--env KEY=VALUE` | — | Run environment; injected into all containers and setup commands. Repeatable |
 | `--model` | config | Claude model override |
 | `--rebuild` | false | Bypass Docker layer cache |
 | `--verbose` | false | Print verbose diagnostic output |
@@ -47,7 +47,7 @@ capsule check
 capsule check --capsule-dir path/to/.capsule
 ```
 
-Exits non-zero on errors. Checks: route targets resolve, prompt files exist, hook scripts present, loop nesting valid.
+Exits non-zero on errors. Checks: route targets resolve, prompt files exist, setup fields valid, old hook scripts absent, loop nesting valid.
 
 ## capsule explain
 

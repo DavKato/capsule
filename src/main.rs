@@ -51,7 +51,7 @@ enum Commands {
         #[arg(long)]
         max_stages: Option<u32>,
 
-        /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
+        /// Directory containing config, prompt, and setup scripts (default: ./.capsule)
         #[arg(long, default_value = ".capsule")]
         capsule_dir: PathBuf,
 
@@ -81,7 +81,7 @@ enum Commands {
         #[arg(long)]
         input: Option<String>,
 
-        /// Inject KEY=VALUE into the container environment and hook scripts for this run.
+        /// Inject KEY=VALUE into the container environment and setup commands for this run.
         /// Repeatable. Values override same-named keys in .capsule/.env.
         /// CAPSULE_* keys are reserved and rejected.
         #[arg(long = "env", value_name = "KEY=VALUE")]
@@ -94,7 +94,7 @@ enum Commands {
 
     /// Resume pipeline from the last interrupted run (reads last-run.json)
     Resume {
-        /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
+        /// Directory containing config, prompt, and setup scripts (default: ./.capsule)
         #[arg(long, default_value = ".capsule")]
         capsule_dir: PathBuf,
 
@@ -115,7 +115,7 @@ enum Commands {
 
     /// Validate the .capsule/ directory structure
     Check {
-        /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
+        /// Directory containing config, prompt, and setup scripts (default: ./.capsule)
         #[arg(long, default_value = ".capsule")]
         capsule_dir: PathBuf,
     },

@@ -70,7 +70,6 @@ fn check_hook_scripts(cfg: &Config, issues: &mut CheckReport) {
         }
     }
 
-    // Validate new-style setup fields.
     if let Some(ref value) = cfg.setup {
         check_setup_value(value, "setup", &cfg.capsule_dir, issues);
     }

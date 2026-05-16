@@ -106,7 +106,7 @@ pub struct CliOverrides {
     pub commit_as: Option<GitIdentity>,
     pub github_token_from: Option<GithubScope>,
     pub input: Option<String>,
-    /// KEY=VALUE pairs injected into every container and hook invocation for this run.
+    /// KEY=VALUE pairs injected into every container and setup command for this run.
     pub env: Vec<(String, String)>,
     /// When Some, tee all display output to this file path.
     pub log_file: Option<PathBuf>,

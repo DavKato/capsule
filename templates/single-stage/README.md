@@ -17,7 +17,7 @@ The simplest capsule setup: a single-stage config running one prompt per contain
 ## Running it
 
 ```sh
-cd examples/single-stage
+capsule init --template single-stage
 capsule run
 ```
 

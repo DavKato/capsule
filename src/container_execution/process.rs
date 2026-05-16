@@ -170,7 +170,7 @@ pub fn run_container(
         container_name,
     );
 
-    let mut docker_args = build_docker_args(cfg, &prompt_path, container_name);
+    let mut docker_args = build_docker_args(cfg, &prompt_path, container_name)?;
     let image = docker_args
         .pop()
         .expect("docker args must end with image name");

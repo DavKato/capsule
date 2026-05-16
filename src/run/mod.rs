@@ -78,7 +78,7 @@ impl RunSession {
 
         let process_env: HashMap<String, String> = std::env::vars().collect();
         let (git_author_name, git_author_email) =
-            git::resolve_git_identity(&cfg.git_identity, &process_env);
+            git::resolve_git_identity(&cfg.commit_as, &process_env);
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;

@@ -47,13 +47,9 @@ struct Cli {
 enum Commands {
     /// Run the Claude iteration loop
     Run {
-        /// Number of iterations to run
-        #[arg(short = 'i', long)]
-        iterations: Option<u32>,
-
-        /// Path to the prompt file (default: <capsule-dir>/prompt.md)
-        #[arg(short = 'p', long)]
-        prompt: Option<PathBuf>,
+        /// Maximum number of pipeline stages to execute
+        #[arg(long)]
+        max_stages: Option<u32>,
 
         /// Directory containing config, prompt, and hook scripts (default: ./.capsule)
         #[arg(long, default_value = ".capsule")]
@@ -73,13 +69,13 @@ enum Commands {
 
         /// Git commit identity: host user config or a generic Capsule identity
         #[arg(long, value_enum, default_value = "user")]
-        git_identity: CliGitIdentity,
+        commit_as: CliGitIdentity,
 
         /// Inject GH_TOKEN into the container: 'local' reads from .capsule/.env,
         /// 'global' reads from process env (falls back to gh auth token).
         /// When absent, no token is injected.
         #[arg(long, value_enum)]
-        github: Option<CliGithubScope>,
+        github_token_from: Option<CliGithubScope>,
 
         /// Runtime input injected into the first stage's first invocation only.
         #[arg(long)]
@@ -445,35 +441,33 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Run {
-            iterations,
-            prompt,
+            max_stages,
             capsule_dir,
             rebuild,
             model,
             verbose,
-            git_identity,
-            github,
+            commit_as,
+            github_token_from,
             input,
             env,
             log_file,
         } => {
-            let git_identity = match git_identity {
+            let commit_as = match commit_as {
                 CliGitIdentity::User => Some(GitIdentity::User),
                 CliGitIdentity::Capsule => Some(GitIdentity::Capsule),
             };
-            let github = github.map(|s| match s {
+            let github_token_from = github_token_from.map(|s| match s {
                 CliGithubScope::Local => GithubScope::Local,
                 CliGithubScope::Global => GithubScope::Global,
             });
             let env = parse_env_pairs(env)?;
             let overrides = CliOverrides {
-                iterations,
-                prompt,
+                max_stages,
                 rebuild,
                 model,
                 verbose,
-                git_identity,
-                github,
+                commit_as,
+                github_token_from,
                 input,
                 env,
                 log_file,

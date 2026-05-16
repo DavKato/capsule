@@ -89,15 +89,14 @@ pub struct PipelineConfig {
 /// Resolved configuration used by all downstream modules.
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub iterations: u32,
     pub capsule_dir: PathBuf,
     pub rebuild: bool,
     pub model: Option<String>,
     pub verbose: bool,
-    pub git_identity: GitIdentity,
+    pub commit_as: GitIdentity,
     /// When Some, inject GH_TOKEN into the container from the specified source.
     /// When None, no token is injected.
-    pub github: Option<GithubScope>,
+    pub github_token_from: Option<GithubScope>,
     /// Parsed pipeline execution graph (present for both flat-form and multi-stage configs).
     pub pipeline: PipelineConfig,
     /// When Some, tee all display output to this file path.
@@ -109,13 +108,12 @@ pub struct Config {
 /// but callers may leave them false when they were not passed).
 #[derive(Debug, Default)]
 pub struct CliOverrides {
-    pub iterations: Option<u32>,
-    pub prompt: Option<PathBuf>,
+    pub max_stages: Option<u32>,
     pub rebuild: bool,
     pub model: Option<String>,
     pub verbose: bool,
-    pub git_identity: Option<GitIdentity>,
-    pub github: Option<GithubScope>,
+    pub commit_as: Option<GitIdentity>,
+    pub github_token_from: Option<GithubScope>,
     pub input: Option<String>,
     /// KEY=VALUE pairs injected into every container and hook invocation for this run.
     pub env: Vec<(String, String)>,
@@ -132,8 +130,8 @@ struct FlatConfigFile {
     prompt: Option<String>,
     model: Option<String>,
     verbose: Option<bool>,
-    git_identity: Option<String>,
-    github: Option<String>,
+    commit_as: Option<String>,
+    github_token_from: Option<String>,
     log_file: Option<String>,
 }
 
@@ -172,14 +170,12 @@ enum PipelineEntryRaw {
 #[serde(deny_unknown_fields)]
 struct MultiStageConfigFile {
     stages: Vec<PipelineEntryRaw>,
-    max_pipeline_iterations: Option<u32>,
+    max_stages: Option<u32>,
     model: Option<String>,
     verbose: Option<bool>,
-    git_identity: Option<String>,
-    github: Option<String>,
+    commit_as: Option<String>,
+    github_token_from: Option<String>,
     log_file: Option<String>,
-    /// Present to produce a clear error when combined with `stages:`.
-    iterations: Option<u32>,
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -189,8 +185,25 @@ enum RawConfig {
     MultiStage(MultiStageConfigFile),
 }
 
+fn check_old_field_names(val: &serde_yaml::Value) -> Result<()> {
+    const OLD_TO_NEW: &[(&str, &str)] = &[
+        ("git_identity", "commit_as"),
+        ("github", "github_token_from"),
+        ("max_pipeline_iterations", "max_stages"),
+    ];
+    if let serde_yaml::Value::Mapping(map) = val {
+        for (old, new) in OLD_TO_NEW {
+            if map.contains_key(*old) {
+                anyhow::bail!("unknown field `{old}` — did you mean `{new}`?");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse_config_file(yaml: &str) -> Result<RawConfig> {
     let val: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(anyhow::Error::from)?;
+    check_old_field_names(&val)?;
     if val.get("stages").is_some() {
         let cfg: MultiStageConfigFile = serde_yaml::from_value(val).map_err(anyhow::Error::from)?;
         Ok(RawConfig::MultiStage(cfg))
@@ -304,13 +317,6 @@ fn validate_route_targets(entries: &[PipelineEntry]) -> Result<()> {
 }
 
 fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<PipelineConfig> {
-    if cfg.iterations.is_some() {
-        anyhow::bail!(
-            "config.yml: `iterations:` cannot be combined with `stages:` — \
-             use `loop: {{ max_iteration: N }}` instead"
-        );
-    }
-
     let mut entries: Vec<PipelineEntry> = Vec::new();
     for raw_entry in cfg.stages {
         match raw_entry {
@@ -328,7 +334,7 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
 
     Ok(PipelineConfig {
         entries,
-        max_stages: cfg.max_pipeline_iterations.unwrap_or(MAX_STAGES_DEFAULT),
+        max_stages: cfg.max_stages.unwrap_or(MAX_STAGES_DEFAULT),
         cap_hit_is_ok: false,
     })
 }
@@ -392,7 +398,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
         None => (None, None),
     };
 
-    // Shared fields (model, verbose, git_identity, github).
+    // Shared fields (model, verbose, commit_as, github_token_from).
     let file_model = file_flat
         .as_ref()
         .and_then(|f| f.model.clone())
@@ -401,14 +407,18 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
         .as_ref()
         .and_then(|f| f.verbose)
         .or_else(|| file_multi.as_ref().and_then(|m| m.verbose));
-    let file_git_identity = file_flat
+    let file_commit_as = file_flat
         .as_ref()
-        .and_then(|f| f.git_identity.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.git_identity.clone()));
-    let file_github = file_flat
+        .and_then(|f| f.commit_as.clone())
+        .or_else(|| file_multi.as_ref().and_then(|m| m.commit_as.clone()));
+    let file_github_token_from = file_flat
         .as_ref()
-        .and_then(|f| f.github.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.github.clone()));
+        .and_then(|f| f.github_token_from.clone())
+        .or_else(|| {
+            file_multi
+                .as_ref()
+                .and_then(|m| m.github_token_from.clone())
+        });
     let file_log_file = file_flat
         .as_ref()
         .and_then(|f| f.log_file.clone())
@@ -416,55 +426,50 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
 
     let model = cli.model.or(file_model);
     let verbose = cli.verbose || file_verbose.unwrap_or(false);
-    let git_identity = cli
-        .git_identity
-        .or_else(|| file_git_identity.as_deref().and_then(git_identity_from_str))
+    let commit_as = cli
+        .commit_as
+        .or_else(|| file_commit_as.as_deref().and_then(git_identity_from_str))
         .unwrap_or(GitIdentity::User);
-    let github = cli
-        .github
-        .or_else(|| file_github.as_deref().and_then(github_scope_from_str));
+    let github_token_from = cli.github_token_from.or_else(|| {
+        file_github_token_from
+            .as_deref()
+            .and_then(github_scope_from_str)
+    });
 
     let log_file = cli.log_file.or_else(|| file_log_file.map(PathBuf::from));
     let rebuild = cli.rebuild;
 
-    let (iterations, pipeline) = if let Some(multi) = file_multi {
-        let pipeline = build_pipeline_from_multi_stage(multi)
-            .with_context(|| format!("validating {}", config_path.display()))?;
-        // iterations is not applicable for multi-stage; use max_stages.
-        (pipeline.max_stages, pipeline)
+    let pipeline = if let Some(multi) = file_multi {
+        build_pipeline_from_multi_stage(multi)
+            .with_context(|| format!("validating {}", config_path.display()))?
     } else {
         let file_flat = file_flat.unwrap_or_default();
         match mode {
             ResolveMode::Run => {
-                let iterations = cli.iterations.or(file_flat.iterations).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "--iterations is required (no CLI flag or config.yml value found)"
-                    )
+                let iterations = file_flat.iterations.ok_or_else(|| {
+                    anyhow::anyhow!("flat-form config requires `iterations:` in config.yml")
                 })?;
-                let prompt_path = cli.prompt.or_else(|| file_flat.prompt.map(PathBuf::from));
+                let prompt_path = file_flat.prompt.map(PathBuf::from);
                 let prompt_path_str = prompt_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "prompt.md".to_string());
-                let pipeline = desugar_flat_form(iterations, Some(&prompt_path_str));
-                (iterations, pipeline)
+                desugar_flat_form(iterations, Some(&prompt_path_str))
             }
             ResolveMode::Check => {
                 let iterations = file_flat.iterations.unwrap_or(1);
-                let pipeline = desugar_flat_form(iterations, file_flat.prompt.as_deref());
-                (iterations, pipeline)
+                desugar_flat_form(iterations, file_flat.prompt.as_deref())
             }
         }
     };
 
     Ok(Config {
-        iterations,
         capsule_dir: capsule_dir.to_path_buf(),
         rebuild,
         model,
         verbose,
-        git_identity,
-        github,
+        commit_as,
+        github_token_from,
         pipeline,
         log_file,
     })

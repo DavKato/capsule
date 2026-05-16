@@ -9,14 +9,7 @@ fn help_lists_all_flags() {
     let output = cmd().args(["run", "--help"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
-    assert!(
-        stdout.contains("--iterations") || stdout.contains("-i"),
-        "missing --iterations"
-    );
-    assert!(
-        stdout.contains("--prompt") || stdout.contains("-p"),
-        "missing --prompt"
-    );
+    assert!(stdout.contains("--max-stages"), "missing --max-stages");
     assert!(stdout.contains("--capsule-dir"), "missing --capsule-dir");
     assert!(stdout.contains("--rebuild"), "missing --rebuild");
     assert!(
@@ -27,7 +20,11 @@ fn help_lists_all_flags() {
         stdout.contains("--verbose") || stdout.contains("-v"),
         "missing --verbose"
     );
-    assert!(stdout.contains("--git-identity"), "missing --git-identity");
+    assert!(stdout.contains("--commit-as"), "missing --commit-as");
+    assert!(
+        stdout.contains("--github-token-from"),
+        "missing --github-token-from"
+    );
 }
 
 #[test]

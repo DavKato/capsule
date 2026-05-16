@@ -56,7 +56,7 @@ pub(super) fn setup_gh_token(
     pre_dotenv_env: &HashMap<String, String>,
     dotenv_map: &HashMap<String, String>,
 ) -> Result<Option<tempfile::NamedTempFile>> {
-    let scope = match &cfg.github {
+    let scope = match &cfg.github_token_from {
         None => return Ok(None),
         Some(s) => s,
     };

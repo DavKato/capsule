@@ -30,14 +30,18 @@ fn no_config_file_shared_defaults() {
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
     assert!(!cfg.rebuild);
     assert!(!cfg.verbose);
-    assert_eq!(cfg.git_identity, GitIdentity::User);
+    assert_eq!(cfg.commit_as, GitIdentity::User);
 }
 
 #[test]
 fn config_file_iterations_used_when_no_cli_flag() {
     let dir = capsule_dir_with_config("iterations: 5\n");
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(cfg.iterations, 5);
+    // iterations is desugared into the flat-form pipeline loop
+    let PipelineEntry::Loop(ref lp) = cfg.pipeline.entries[0] else {
+        panic!("expected Loop entry");
+    };
+    assert_eq!(lp.max_iteration, Some(5));
 }
 
 #[test]
@@ -66,31 +70,31 @@ fn config_file_model_and_verbose() {
 }
 
 #[test]
-fn git_identity_capsule_from_config_file() {
-    let dir = capsule_dir_with_config("iterations: 1\ngit_identity: capsule\n");
+fn commit_as_capsule_from_config_file() {
+    let dir = capsule_dir_with_config("iterations: 1\ncommit_as: capsule\n");
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(cfg.git_identity, GitIdentity::Capsule);
+    assert_eq!(cfg.commit_as, GitIdentity::Capsule);
 }
 
 #[test]
-fn github_absent_by_default() {
+fn github_token_from_absent_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert!(cfg.github.is_none());
+    assert!(cfg.github_token_from.is_none());
 }
 
 #[test]
-fn github_local_from_config_file() {
-    let dir = capsule_dir_with_config("iterations: 1\ngithub: local\n");
+fn github_token_from_local_from_config_file() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub_token_from: local\n");
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(cfg.github, Some(GithubScope::Local));
+    assert_eq!(cfg.github_token_from, Some(GithubScope::Local));
 }
 
 #[test]
-fn github_global_from_config_file() {
-    let dir = capsule_dir_with_config("iterations: 1\ngithub: global\n");
+fn github_token_from_global_from_config_file() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub_token_from: global\n");
     let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(cfg.github, Some(GithubScope::Global));
+    assert_eq!(cfg.github_token_from, Some(GithubScope::Global));
 }
 
 #[test]
@@ -124,42 +128,35 @@ fn removed_rebuild_key_produces_clear_error() {
 }
 
 #[test]
-fn github_cli_overrides_config() {
-    let dir = capsule_dir_with_config("iterations: 1\ngithub: global\n");
+fn github_token_from_cli_overrides_config() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub_token_from: global\n");
     let cli = CliOverrides {
-        github: Some(GithubScope::Local),
+        github_token_from: Some(GithubScope::Local),
         ..Default::default()
     };
     let cfg: Config = resolve(dir.path(), cli, ResolveMode::Check).unwrap();
-    assert_eq!(cfg.github, Some(GithubScope::Local));
+    assert_eq!(cfg.github_token_from, Some(GithubScope::Local));
 }
 
-// ── Run mode — CLI iterations override (prompt file required) ─────────────────
+// ── Run mode — flat-form config behavior ──────────────────────────────────────
 
 #[test]
-fn run_mode_cli_iterations_override_config_file() {
+fn run_mode_config_file_iterations_used() {
     let dir = capsule_dir_with_config_and_prompt("iterations: 5\n");
-    let cli = CliOverrides {
-        iterations: Some(20),
-        ..Default::default()
+    let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Run).unwrap();
+    let PipelineEntry::Loop(ref lp) = cfg.pipeline.entries[0] else {
+        panic!("expected Loop entry");
     };
-    let cfg: Config = resolve(dir.path(), cli, ResolveMode::Run).unwrap();
-    assert_eq!(cfg.iterations, 20);
+    assert_eq!(lp.max_iteration, Some(5));
 }
 
 #[test]
-fn run_mode_cli_iterations_used_when_no_config_file() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("prompt.md"), b"test prompt").unwrap();
-    let cli = CliOverrides {
-        iterations: Some(3),
-        ..Default::default()
-    };
-    let cfg: Config = resolve(dir.path(), cli, ResolveMode::Run).unwrap();
-    assert_eq!(cfg.iterations, 3);
+fn run_mode_defaults_are_correct() {
+    let dir = capsule_dir_with_config_and_prompt("iterations: 3\n");
+    let cfg: Config = resolve(dir.path(), no_cli(), ResolveMode::Run).unwrap();
     assert!(!cfg.rebuild);
     assert!(!cfg.verbose);
-    assert_eq!(cfg.git_identity, GitIdentity::User);
+    assert_eq!(cfg.commit_as, GitIdentity::User);
 }
 
 #[test]
@@ -167,8 +164,8 @@ fn run_mode_requires_iterations_when_flat_form() {
     let dir = capsule_dir_with_config_and_prompt("model: claude-opus-4-6\n");
     let err = resolve(dir.path(), no_cli(), ResolveMode::Run).unwrap_err();
     assert!(
-        err.to_string().contains("--iterations"),
-        "error should mention --iterations; got: {err}"
+        err.to_string().contains("iterations"),
+        "error should mention iterations; got: {err}"
     );
 }
 
@@ -178,7 +175,11 @@ fn run_mode_requires_iterations_when_flat_form() {
 fn check_mode_flat_form_does_not_require_iterations() {
     let dir = capsule_dir_with_config("prompt: prompt.md\n");
     let cfg = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap();
-    assert_eq!(cfg.iterations, 1);
+    // defaults to a single iteration when omitted
+    let PipelineEntry::Loop(ref lp) = cfg.pipeline.entries[0] else {
+        panic!("expected Loop entry");
+    };
+    assert_eq!(lp.max_iteration, Some(1));
 }
 
 #[test]
@@ -222,7 +223,7 @@ stages:
   - name: reviewer
     prompt: prompts/review.md
     on_fail: implementer
-max_pipeline_iterations: 500
+max_stages: 500
 ";
 
 #[test]
@@ -342,8 +343,54 @@ fn iterations_combined_with_stages_is_rejected() {
         .collect::<Vec<_>>()
         .join(": ");
     assert!(
-        chain.contains("iterations") && chain.contains("stages"),
-        "error should mention both fields; got: {chain}"
+        chain.contains("iterations"),
+        "error should mention the unknown field; got: {chain}"
+    );
+}
+
+#[test]
+fn old_field_git_identity_produces_did_you_mean_error() {
+    let dir = capsule_dir_with_config("iterations: 1\ngit_identity: capsule\n");
+    let err = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("git_identity") && chain.contains("commit_as"),
+        "error should mention old and new field names; got: {chain}"
+    );
+}
+
+#[test]
+fn old_field_github_produces_did_you_mean_error() {
+    let dir = capsule_dir_with_config("iterations: 1\ngithub: local\n");
+    let err = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("github") && chain.contains("github_token_from"),
+        "error should mention old and new field names; got: {chain}"
+    );
+}
+
+#[test]
+fn old_field_max_pipeline_iterations_produces_did_you_mean_error() {
+    let yaml = "stages:\n  - name: foo\nmax_pipeline_iterations: 100\n";
+    let dir = capsule_dir_with_config(yaml);
+    let err = resolve(dir.path(), no_cli(), ResolveMode::Check).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("max_pipeline_iterations") && chain.contains("max_stages"),
+        "error should mention old and new field names; got: {chain}"
     );
 }
 

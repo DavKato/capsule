@@ -30,7 +30,6 @@ pub(crate) struct RunSession {
     git_author_name: String,
     git_author_email: String,
     env_file: Option<PathBuf>,
-    before_each_path: Option<PathBuf>,
     compose_network: Option<String>,
     // Held here so the temp files stay alive through execute().
     gh_token_tempfile: Option<tempfile::NamedTempFile>,
@@ -105,13 +104,6 @@ impl RunSession {
             None
         };
 
-        let before_each_script = cfg.capsule_dir.join("before-each.sh");
-        let before_each_path = if before_each_script.exists() {
-            Some(before_each_script)
-        } else {
-            None
-        };
-
         let compose_network = detect_compose_network(&pwd);
 
         let active_container: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -137,7 +129,6 @@ impl RunSession {
             git_author_name,
             git_author_email,
             env_file,
-            before_each_path,
             compose_network,
             gh_token_tempfile,
             extra_env_tempfile,
@@ -202,7 +193,8 @@ impl RunSession {
                 .map(|f| f.path().to_path_buf()),
             git_author_name: self.git_author_name.clone(),
             git_author_email: self.git_author_email.clone(),
-            before_each_path: self.before_each_path.clone(),
+            setup: None,
+            capsule_dir: self.cfg.capsule_dir.clone(),
             compose_network: self.compose_network.clone(),
             claude_dir: self.claude_dir.clone(),
             credentials_file,

@@ -34,6 +34,7 @@ pub trait StageRunner {
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
+        setup: Option<&str>,
         retry: Option<&RetryInfo>,
     ) -> anyhow::Result<Option<crate::verdict::Verdict>>;
 }
@@ -246,6 +247,7 @@ mod tests {
             _stage_name: &str,
             _prompt: &str,
             _model: Option<&str>,
+            _setup: Option<&str>,
             _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             Ok(self
@@ -510,6 +512,7 @@ mod tests {
             _stage_name: &str,
             prompt: &str,
             _model: Option<&str>,
+            _setup: Option<&str>,
             _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             self.prompts.lock().unwrap().push(prompt.to_string());

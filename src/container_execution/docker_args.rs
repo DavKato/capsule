@@ -76,11 +76,17 @@ pub fn build_docker_args(
     args.push(format!("-e=GIT_COMMITTER_NAME={}", cfg.git_author_name));
     args.push(format!("-e=GIT_COMMITTER_EMAIL={}", cfg.git_author_email));
 
-    if let Some(before_each) = &cfg.before_each_path {
-        args.push(format!(
-            "-v={}:/home/claude/before-each.sh:ro",
-            before_each.display()
-        ));
+    if let Some(value) = &cfg.setup {
+        let candidate = cfg.capsule_dir.join(value);
+        if candidate.exists() {
+            args.push(format!(
+                "-v={}:/home/claude/stage-setup.sh:ro",
+                candidate.display()
+            ));
+            args.push("-e=CAPSULE_STAGE_SETUP=/home/claude/stage-setup.sh".to_string());
+        } else {
+            args.push(format!("-e=CAPSULE_STAGE_SETUP={value}"));
+        }
     }
 
     if let Some(network) = &cfg.compose_network {
@@ -121,7 +127,7 @@ mod tests {
         let prompt_arg = args.iter().find(|a| a.contains("prompt.txt")).unwrap();
         assert!(
             !prompt_arg.ends_with(":ro"),
-            "prompt.txt must not be mounted read-only so before-each.sh can mutate it: {prompt_arg}"
+            "prompt.txt must not be mounted read-only so setup can mutate it: {prompt_arg}"
         );
     }
 
@@ -413,30 +419,59 @@ mod tests {
     }
 
     #[test]
-    fn before_each_mounted_when_path_provided() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let before_each = dir.path().join("before-each.sh");
-        std::fs::write(&before_each, "#!/bin/sh\n").unwrap();
+    fn setup_file_path_mounted_and_env_var_set() {
+        let capsule_dir = tempfile::tempdir().expect("capsule temp dir");
+        let script = capsule_dir.path().join("setup.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let pwd = tempfile::tempdir().expect("pwd temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
         let cfg = ExecutionConfig {
-            pwd: dir.path().to_path_buf(),
-            before_each_path: Some(before_each.clone()),
+            pwd: pwd.path().to_path_buf(),
+            capsule_dir: capsule_dir.path().to_path_buf(),
+            setup: Some("setup.sh".to_string()),
             ..ExecutionConfig::default()
         };
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
         assert!(
-            joined.contains("/home/claude/before-each.sh:ro"),
-            "expected before-each.sh mount in args: {joined}"
+            joined.contains("/home/claude/stage-setup.sh:ro"),
+            "expected stage-setup.sh read-only mount: {joined}"
         );
         assert!(
-            joined.contains(before_each.to_string_lossy().as_ref()),
-            "expected host path in mount: {joined}"
+            joined.contains(capsule_dir.path().to_string_lossy().as_ref()),
+            "expected host script path in mount: {joined}"
+        );
+        assert!(
+            joined.contains("CAPSULE_STAGE_SETUP=/home/claude/stage-setup.sh"),
+            "expected CAPSULE_STAGE_SETUP set to container path: {joined}"
         );
     }
 
     #[test]
-    fn before_each_not_mounted_when_absent() {
+    fn setup_inline_command_sets_env_var_without_mount() {
+        let capsule_dir = tempfile::tempdir().expect("capsule temp dir");
+        let pwd = tempfile::tempdir().expect("pwd temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: pwd.path().to_path_buf(),
+            capsule_dir: capsule_dir.path().to_path_buf(),
+            setup: Some("pip install -r requirements.txt".to_string()),
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("CAPSULE_STAGE_SETUP=pip install -r requirements.txt"),
+            "expected CAPSULE_STAGE_SETUP set to inline command: {joined}"
+        );
+        assert!(
+            !joined.contains("stage-setup.sh"),
+            "inline command must not produce a file mount: {joined}"
+        );
+    }
+
+    #[test]
+    fn setup_absent_means_no_capsule_stage_setup_env_var() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
         let cfg = ExecutionConfig {
@@ -446,8 +481,12 @@ mod tests {
         let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
         let joined = args.join(" ");
         assert!(
-            !joined.contains("before-each.sh"),
-            "before-each.sh must not appear in args when path is None: {joined}"
+            !joined.contains("CAPSULE_STAGE_SETUP"),
+            "CAPSULE_STAGE_SETUP must not appear when setup is None: {joined}"
+        );
+        assert!(
+            !joined.contains("stage-setup.sh"),
+            "stage-setup.sh must not appear when setup is None: {joined}"
         );
     }
 

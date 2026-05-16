@@ -136,6 +136,7 @@ impl StageRunner for DockerStageRunner {
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
+        setup: Option<&str>,
         retry: Option<&RetryInfo>,
     ) -> anyhow::Result<Option<Verdict>> {
         self.iteration += 1;
@@ -144,7 +145,7 @@ impl StageRunner for DockerStageRunner {
             .unwrap_or("unknown");
         crate::display::stage_header(stage_name, self.iteration, effective_model, retry);
         let start = std::time::Instant::now();
-        let result = self.execute_stage(prompt, model);
+        let result = self.execute_stage(prompt, model, setup);
         let duration = start.elapsed();
         crate::display::clear_stage();
         let usage_str = self
@@ -189,12 +190,14 @@ impl DockerStageRunner {
         &mut self,
         prompt: &str,
         model: Option<&str>,
+        setup: Option<&str>,
     ) -> anyhow::Result<Option<Verdict>> {
         let mut cfg = self.base_cfg.clone();
         cfg.prompt = prompt.to_string();
         if let Some(m) = model {
             cfg.model = Some(m.to_string());
         }
+        cfg.setup = setup.map(|s| s.to_string());
         if let Some(session_id) = self.resume_session_id.take() {
             let name = format!("{}-resume-pipeline", container_name_for(self.iteration));
             let (result, status) =

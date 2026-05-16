@@ -26,8 +26,6 @@ pub enum TerminalReason {
     FailExit,
     /// Iteration cap hit in a multi-stage pipeline.
     CapHit,
-    /// Flat-form iteration limit reached (expected terminal for flat configs).
-    Ok,
 }
 
 /// Identifies which counter tripped when `CapHit` is the terminal reason.
@@ -70,7 +68,6 @@ pub fn build_summary_artifact(
         TerminalReason::Exit => "exit",
         TerminalReason::FailExit => "fail-exit",
         TerminalReason::CapHit => "cap-hit",
-        TerminalReason::Ok => "ok",
     };
     let cap_hit_counter = match &summary.cap_hit {
         None => serde_json::Value::Null,

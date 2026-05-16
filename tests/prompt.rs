@@ -54,6 +54,7 @@ fn single_stage_config(prompt: Option<&str>) -> PipelineConfig {
             on_pass: OnPass::Next,
             on_fail: OnFail::Exit,
             max_retries: capsule::config::MAX_RETRIES_DEFAULT,
+            setup: None,
         })],
         max_stages: 10,
     }
@@ -70,6 +71,7 @@ fn loop_stage_config(prompt: Option<&str>) -> PipelineConfig {
                 on_pass: OnPass::Next,
                 on_fail: OnFail::Exit,
                 max_retries: capsule::config::MAX_RETRIES_DEFAULT,
+                setup: None,
             }],
         })],
         max_stages: 10,

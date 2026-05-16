@@ -284,6 +284,7 @@ mod tests {
             on_pass: OnPass::Next,
             on_fail: OnFail::Exit,
             max_retries: MAX_RETRIES_DEFAULT,
+            setup: None,
         }
     }
 

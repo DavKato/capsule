@@ -52,6 +52,7 @@ pub struct StageConfig {
     pub on_pass: OnPass,
     pub on_fail: OnFail,
     pub max_retries: u32,
+    pub setup: Option<String>,
 }
 
 /// A `loop:` block containing an ordered list of stages.
@@ -89,6 +90,8 @@ pub struct Config {
     pub pipeline: PipelineConfig,
     /// When Some, tee all display output to this file path.
     pub log_file: Option<PathBuf>,
+    /// Host-side setup command or script path, run before any container starts.
+    pub setup: Option<String>,
 }
 
 /// CLI-supplied overrides. `None` means "not provided on the command line".
@@ -119,12 +122,14 @@ struct StageConfigRaw {
     on_pass: Option<String>,
     on_fail: Option<String>,
     max_retries: Option<u32>,
+    setup: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LoopConfigRaw {
     max_iteration: Option<u32>,
     stages: Vec<StageConfigRaw>,
+    setup: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +155,7 @@ struct MultiStageConfigFile {
     commit_as: Option<String>,
     github_token_from: Option<String>,
     log_file: Option<String>,
+    setup: Option<String>,
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -241,14 +247,21 @@ fn convert_stage(raw: StageConfigRaw) -> StageConfig {
         on_pass,
         on_fail,
         max_retries: raw.max_retries.unwrap_or(MAX_RETRIES_DEFAULT),
+        setup: raw.setup,
     }
 }
 
-fn convert_loop(raw: LoopConfigRaw) -> LoopConfig {
-    LoopConfig {
+fn convert_loop(raw: LoopConfigRaw) -> Result<LoopConfig> {
+    if raw.setup.is_some() {
+        anyhow::bail!(
+            "config.yml: `setup` is not supported inside a `loop:` block — \
+             set `setup` on each stage individually instead"
+        );
+    }
+    Ok(LoopConfig {
         max_iteration: raw.max_iteration,
         stages: raw.stages.into_iter().map(convert_stage).collect(),
-    }
+    })
 }
 
 /// Collect all stage names across all pipeline entries (including loop bodies).
@@ -316,7 +329,7 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
     for raw_entry in cfg.stages {
         match raw_entry {
             PipelineEntryRaw::Loop(l) => {
-                entries.push(PipelineEntry::Loop(convert_loop(l.loop_block)));
+                entries.push(PipelineEntry::Loop(convert_loop(l.loop_block)?));
             }
             PipelineEntryRaw::Stage(s) => {
                 entries.push(PipelineEntry::Stage(convert_stage(s)));
@@ -390,6 +403,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
             .map(PathBuf::from)
     });
     let rebuild = cli.rebuild;
+    let setup = file_cfg.as_ref().and_then(|f| f.setup.clone());
 
     let mut pipeline = if let Some(multi) = file_cfg {
         build_pipeline_from_multi_stage(multi)
@@ -413,6 +427,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
         github_token_from,
         pipeline,
         log_file,
+        setup,
     })
 }
 

@@ -453,3 +453,108 @@ stages:
         "error should name the duplicate stage; got: {chain}"
     );
 }
+
+// ── Setup field tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn top_level_setup_is_parsed() {
+    let yaml = "\
+setup: scripts/bootstrap.sh
+stages:
+  - name: main
+    prompt: prompts/main.md
+";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    assert_eq!(cfg.setup.as_deref(), Some("scripts/bootstrap.sh"));
+}
+
+#[test]
+fn per_stage_setup_is_parsed() {
+    let yaml = "\
+stages:
+  - name: builder
+    prompt: prompts/build.md
+    setup: pip install -r requirements.txt
+  - name: tester
+    prompt: prompts/test.md
+    setup: scripts/test-setup.sh
+";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    let PipelineEntry::Stage(ref builder) = cfg.pipeline.entries[0] else {
+        panic!("expected Stage entry");
+    };
+    assert_eq!(
+        builder.setup.as_deref(),
+        Some("pip install -r requirements.txt")
+    );
+    let PipelineEntry::Stage(ref tester) = cfg.pipeline.entries[1] else {
+        panic!("expected Stage entry");
+    };
+    assert_eq!(tester.setup.as_deref(), Some("scripts/test-setup.sh"));
+}
+
+#[test]
+fn top_level_and_per_stage_setup_together() {
+    let yaml = "\
+setup: scripts/bootstrap.sh
+stages:
+  - name: main
+    prompt: prompts/main.md
+    setup: pip install -r requirements.txt
+";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    assert_eq!(cfg.setup.as_deref(), Some("scripts/bootstrap.sh"));
+    let PipelineEntry::Stage(ref stage) = cfg.pipeline.entries[0] else {
+        panic!("expected Stage entry");
+    };
+    assert_eq!(
+        stage.setup.as_deref(),
+        Some("pip install -r requirements.txt")
+    );
+}
+
+#[test]
+fn setup_absent_is_none() {
+    let yaml = "\
+stages:
+  - name: main
+    prompt: prompts/main.md
+";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    assert!(cfg.setup.is_none());
+    let PipelineEntry::Stage(ref stage) = cfg.pipeline.entries[0] else {
+        panic!("expected Stage entry");
+    };
+    assert!(stage.setup.is_none());
+}
+
+#[test]
+fn loop_level_setup_is_rejected() {
+    let yaml = "\
+stages:
+  - loop:
+      setup: scripts/loop-setup.sh
+      stages:
+        - name: worker
+          prompt: prompts/work.md
+";
+    let dir = capsule_dir_with_config(yaml);
+    let err = resolve(dir.path(), no_cli()).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("loop"),
+        "error should mention loop; got: {chain}"
+    );
+    assert!(
+        chain.contains("setup"),
+        "error should mention setup; got: {chain}"
+    );
+}

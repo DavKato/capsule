@@ -52,7 +52,7 @@ pub struct RunSummary {
     pub last_stage: Option<String>,
     pub last_verdict: Option<Verdict>,
     pub iteration_counters: IterationCounters,
-    /// Which counter tripped, if `terminal_reason` is `CapHit` or `Ok`.
+    /// Which counter tripped, if `terminal_reason` is `CapHit`.
     pub cap_hit: Option<CapHitKind>,
     pub session_id: Option<String>,
 }

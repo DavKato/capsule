@@ -8,7 +8,7 @@ Starts a pipeline run. Executes `config.yml` inside a Docker container.
 
 ```sh
 capsule run                                    # run with config.yml defaults
-capsule run --iterations 5                     # cap at 5 loop iterations (flat-form)
+capsule run --max-stages 5                     # cap at 5 total pipeline stages
 capsule run --input "fix issue #42"            # pipeline input: injected into first stage, first invocation only
 capsule run --env PARENT=79                    # run environment: available in all containers and hooks
 capsule run --model claude-opus-4-7            # override Claude model
@@ -18,18 +18,16 @@ capsule run --verbose                          # show unfiltered container outpu
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `--iterations` | config | Flat-form iteration cap |
+| `--max-stages` | config | Maximum total pipeline stages to execute |
 | `--input` | — | Pipeline input; first stage, first invocation only |
 | `--env KEY=VALUE` | — | Run environment; injected into all containers and hooks. Repeatable |
 | `--model` | config | Claude model override |
-| `--prompt` | `<capsule-dir>/prompt.md` | Path to the prompt file |
 | `--rebuild` | false | Bypass Docker layer cache |
 | `--verbose` | false | Print verbose diagnostic output |
 | `--capsule-dir` | `.capsule` | Config directory path |
-| `--git-identity` | `user` | Git commit identity: `user` (host config) or `capsule` (generic) |
-| `--github local\|global` | — | Inject `GH_TOKEN` into containers |
+| `--commit-as` | `user` | Git commit identity: `user` (host config) or `capsule` (generic) |
+| `--github-token-from local\|global` | — | Inject `GH_TOKEN` into containers |
 | `--log-file` | — | Write run output to a file in addition to the terminal |
-| `--min-token-lifetime-minutes` | — | Prompt before starting if access token expires within threshold |
 
 ## capsule resume
 

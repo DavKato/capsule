@@ -36,7 +36,7 @@ Runs **inside each container** before Claude reads the prompt. Receives the same
 
 ## .env
 
-Env-var defaults and secrets (`KEY=value`, one per line). Should be gitignored — may hold tokens (e.g. `GH_TOKEN` with `--github local`). Loaded on the host before `before-all.sh` runs; values flow into all containers and hook scripts. Override at runtime with `capsule run --env KEY=value`.
+Env-var defaults and secrets (`KEY=value`, one per line). Should be gitignored — may hold tokens (e.g. `GH_TOKEN` with `--github-token-from local`). Loaded on the host before `before-all.sh` runs; values flow into all containers and hook scripts. Override at runtime with `capsule run --env KEY=value`.
 
 ## Prompt files
 

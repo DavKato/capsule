@@ -85,10 +85,6 @@ enum Commands {
         #[arg(long)]
         input: Option<String>,
 
-        /// Minimum remaining token lifetime (minutes) before prompting to refresh.
-        #[arg(long)]
-        min_token_lifetime_minutes: Option<u32>,
-
         /// Inject KEY=VALUE into the container environment and hook scripts for this run.
         /// Repeatable. Values override same-named keys in .capsule/.env.
         /// CAPSULE_* keys are reserved and rejected.
@@ -458,7 +454,6 @@ fn main() -> Result<()> {
             git_identity,
             github,
             input,
-            min_token_lifetime_minutes,
             env,
             log_file,
         } => {
@@ -480,7 +475,6 @@ fn main() -> Result<()> {
                 git_identity,
                 github,
                 input,
-                min_token_lifetime_minutes,
                 env,
                 log_file,
             };

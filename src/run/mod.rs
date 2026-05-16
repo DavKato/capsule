@@ -8,7 +8,6 @@ use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use capsule::pipeline::{PipelineExecutor, PipelineState, TerminalReason};
 use capsule::update_check;
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -176,20 +175,11 @@ impl RunSession {
     /// before the process terminates (ensures NamedTempFile cleanup runs).
     pub(crate) fn execute(mut self) -> Result<ExitDecision> {
         let update_rx = update_check::spawn_check();
-        if let Some(warning) = env::token_lifetime_warning(
-            token_remaining_minutes(&self.claude_dir),
-            self.cfg.min_token_lifetime_minutes,
-        ) {
+        if let Some(warning) =
+            env::token_lifetime_warning(token_remaining_minutes(&self.claude_dir))
+        {
             capsule::display::warning(&warning);
-            eprint!("Continue anyway? [y/N] ");
-            let _ = std::io::stderr().flush();
-            let mut answer = String::new();
-            std::io::stdin()
-                .read_line(&mut answer)
-                .context("failed to read confirmation")?;
-            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-                anyhow::bail!("Aborted. Refresh token with `claude auth login` and retry.");
-            }
+            capsule::display::set_token_warning(Some(&warning));
         }
         // Move the guard into the runner so it can reset the baseline after a
         // resume-retry re-copies host credentials.

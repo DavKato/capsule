@@ -52,6 +52,7 @@ impl RunSession {
         let env_pairs: Vec<(String, String)> = std::mem::take(&mut overrides.env);
         let cfg = resolve(&capsule_dir, overrides)?;
 
+        check_old_scripts(&cfg.capsule_dir)?;
         check_docker()?;
 
         if let Some(warning) = env::env_gitignore_warning(&cfg.capsule_dir) {
@@ -291,9 +292,25 @@ fn run_host_setup(
     Ok(())
 }
 
+fn check_old_scripts(capsule_dir: &std::path::Path) -> anyhow::Result<()> {
+    for name in ["before-all.sh", "before-each.sh"] {
+        if capsule_dir.join(name).exists() {
+            anyhow::bail!(
+                "{name} is no longer used.\n\
+                 Migrate to the `setup` field in config.yml:\n\
+                 \n\
+                 \x20 setup: <command-or-script-path>\n\
+                 \n\
+                 Remove {name} from .capsule/ after migrating."
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{check_docker, run_host_setup};
+    use super::{check_docker, check_old_scripts, run_host_setup};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
@@ -394,5 +411,42 @@ mod tests {
     #[capsule_macros::requires_docker]
     fn docker_available_check_succeeds() {
         check_docker().expect("docker check should succeed when Docker is running");
+    }
+
+    #[test]
+    fn old_scripts_absent_is_ok() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let result = check_old_scripts(dir.path());
+        assert!(result.is_ok(), "no old scripts must return Ok: {result:?}");
+    }
+
+    #[test]
+    fn old_before_all_present_is_err() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join("before-all.sh"), "#!/bin/sh\n").unwrap();
+        let result = check_old_scripts(dir.path());
+        assert!(result.is_err(), "before-all.sh present must return Err");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("before-all.sh"),
+            "error must mention script name, got: {msg}"
+        );
+        assert!(
+            msg.contains("setup"),
+            "error must mention setup field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn old_before_each_present_is_err() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join("before-each.sh"), "#!/bin/sh\n").unwrap();
+        let result = check_old_scripts(dir.path());
+        assert!(result.is_err(), "before-each.sh present must return Err");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("before-each.sh"),
+            "error must mention script name, got: {msg}"
+        );
     }
 }

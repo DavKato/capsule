@@ -1,0 +1,4 @@
+stages:
+  - name: main
+    prompt: prompt.md
+model: claude-sonnet-4-6

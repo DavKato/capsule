@@ -161,7 +161,7 @@ enum TemplatesCommands {
 fn build_check_report(capsule_dir: &std::path::Path) -> CheckReport {
     let result = capsule::config::resolve(capsule_dir, capsule::config::CliOverrides::default());
     match result {
-        Ok(cfg) => capsule::check::check(&cfg.pipeline, capsule_dir),
+        Ok(cfg) => capsule::check::check(&cfg),
         Err(e) => {
             // Use the full error chain so callers see all context (e.g., "unknown stage `X`").
             let msg = format!("{e:#}");

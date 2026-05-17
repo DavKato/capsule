@@ -265,11 +265,18 @@ fn run_host_setup(
 
     let mut cmd = Command::new("bash");
 
-    let candidate = capsule_dir.join(value);
-    if candidate.exists() {
-        cmd.arg(&candidate);
-    } else {
+    if value.contains(char::is_whitespace) {
         cmd.args(["-c", value]);
+    } else {
+        let candidate = capsule_dir.join(value);
+        if !candidate.exists() {
+            anyhow::bail!(
+                "setup file not found: {value} (resolved to {}). \
+                 To use an inline command, include a space (e.g. \"bash {value}\").",
+                candidate.display()
+            );
+        }
+        cmd.arg(&candidate);
     }
 
     for (k, v) in env_pairs {
@@ -402,6 +409,19 @@ mod tests {
         assert!(
             content.trim() == "hello_env",
             "env var should be injected into setup: got {content:?}"
+        );
+    }
+
+    #[test]
+    fn host_setup_missing_file_is_err() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // "setup.sh" has no whitespace → treated as file path, but file does not exist.
+        let result = run_host_setup(Some("setup.sh"), dir.path(), &[]);
+        assert!(result.is_err(), "missing file path must return Err");
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("not found"),
+            "error must mention file not found, got: {msg}"
         );
     }
 

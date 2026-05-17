@@ -29,7 +29,7 @@ Extends `FROM capsule` (base image ships `claude`, git, bash). Add runtime deps 
 
 Runs **once on the host** before any container starts. Receives `.env` defaults plus `--env` overrides. Use for host-side bootstrapping: cloning repos, creating GitHub issues, setting up external state. Non-zero exit aborts the run.
 
-The value can be an inline shell command (contains whitespace) or a path to a script file relative to `.capsule/`. Script files must be executable (`chmod +x`).
+The value can be an inline shell command (contains whitespace) or a path to a script file relative to `.capsule/`.
 
 ```yaml
 setup: scripts/bootstrap.sh

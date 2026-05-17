@@ -54,7 +54,7 @@ stages:
     setup: pip install -r requirements.txt
 ```
 
-Script files must be executable (`chmod +x`). Run `capsule check` after adding a setup field.
+Run `capsule check` after adding a setup field.
 
 ## Change routing
 

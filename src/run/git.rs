@@ -1,55 +1,57 @@
 use capsule::config::GitIdentity;
-use std::collections::HashMap;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
-pub(super) fn resolve_git_identity(
-    identity: &GitIdentity,
-    env: &HashMap<String, String>,
-) -> (String, String) {
+pub(super) fn resolve_git_identity(identity: &GitIdentity) -> (String, String) {
     match identity {
         GitIdentity::Capsule => ("Capsule".to_string(), "capsule@localhost".to_string()),
         GitIdentity::User => {
-            let name = git_config_get("user.name", env);
-            let email = git_config_get("user.email", env);
-            (name, email)
+            let path = std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".gitconfig"))
+                .unwrap_or_default();
+            parse_user_identity(&path)
         }
     }
 }
 
-fn git_config_get(key: &str, env: &HashMap<String, String>) -> String {
-    // env_clear() is intentionally absent: git needs HOME to locate ~/.gitconfig.
-    // The caller supplies a curated env; .envs() merges it on top of the inherited env.
-    Command::new("git")
-        .args(["config", key])
-        .envs(env)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+fn parse_user_identity(path: &Path) -> (String, String) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (String::new(), String::new()),
+    };
+
+    let mut in_user_section = false;
+    let mut name = String::new();
+    let mut email = String::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_user_section = trimmed.eq_ignore_ascii_case("[user]");
+            continue;
+        }
+        if !in_user_section {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once('=') {
+            match key.trim() {
+                "name" => name = value.trim().to_string(),
+                "email" => email = value.trim().to_string(),
+                _ => {}
+            }
+        }
+    }
+
+    (name, email)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_git_identity;
+    use super::{parse_user_identity, resolve_git_identity};
     use capsule::config::GitIdentity;
-    use std::collections::HashMap;
-
-    fn env_with_git_config(config_path: &str, home: &str) -> HashMap<String, String> {
-        let git_dir = format!("{home}/.git");
-        std::fs::create_dir_all(&git_dir).ok();
-        let mut env = HashMap::new();
-        env.insert("GIT_CONFIG_GLOBAL".to_string(), config_path.to_string());
-        env.insert("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string());
-        env.insert("GIT_DIR".to_string(), git_dir);
-        env
-    }
 
     #[test]
     fn capsule_identity_returns_fixed_name_and_email() {
-        let env = HashMap::new();
-        let (name, email) = resolve_git_identity(&GitIdentity::Capsule, &env);
+        let (name, email) = resolve_git_identity(&GitIdentity::Capsule);
         assert_eq!(name, "Capsule");
         assert_eq!(email, "capsule@localhost");
     }
@@ -64,10 +66,7 @@ mod tests {
         )
         .unwrap();
 
-        let home = dir.path().to_str().unwrap();
-        let env = env_with_git_config(config_path.to_str().unwrap(), home);
-        let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
-
+        let (name, email) = parse_user_identity(&config_path);
         assert_eq!(name, "Alice Dev");
         assert_eq!(email, "alice@example.com");
     }
@@ -77,10 +76,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let nonexistent = dir.path().join("does_not_exist");
 
-        let home = dir.path().to_str().unwrap();
-        let env = env_with_git_config(nonexistent.to_str().unwrap(), home);
-        let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
-
+        let (name, email) = parse_user_identity(&nonexistent);
         assert_eq!(name, "");
         assert_eq!(email, "");
     }
@@ -91,10 +87,7 @@ mod tests {
         let config_path = dir.path().join("gitconfig");
         std::fs::write(&config_path, "[core]\n\tpager = \n").unwrap();
 
-        let home = dir.path().to_str().unwrap();
-        let env = env_with_git_config(config_path.to_str().unwrap(), home);
-        let (name, email) = resolve_git_identity(&GitIdentity::User, &env);
-
+        let (name, email) = parse_user_identity(&config_path);
         assert_eq!(name, "");
         assert_eq!(email, "");
     }

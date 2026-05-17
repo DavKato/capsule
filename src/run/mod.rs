@@ -76,9 +76,7 @@ impl RunSession {
 
         let gh_token_tempfile = env::setup_gh_token(&cfg, &pre_dotenv_env, &dotenv_map)?;
 
-        let process_env: HashMap<String, String> = std::env::vars().collect();
-        let (git_author_name, git_author_email) =
-            git::resolve_git_identity(&cfg.commit_as, &process_env);
+        let (git_author_name, git_author_email) = git::resolve_git_identity(&cfg.commit_as);
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;

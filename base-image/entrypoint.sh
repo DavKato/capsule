@@ -10,7 +10,11 @@ _email="${GIT_AUTHOR_EMAIL:-capsule@localhost}"
 git config --global user.name "${_name}"
 git config --global user.email "${_email}"
 if [ -n "${CAPSULE_STAGE_SETUP}" ]; then
-  bash -c "${CAPSULE_STAGE_SETUP}"
+  if [ -f "${CAPSULE_STAGE_SETUP}" ]; then
+    bash "${CAPSULE_STAGE_SETUP}"
+  else
+    bash -c "${CAPSULE_STAGE_SETUP}"
+  fi
 fi
 MODEL_FLAG=""
 if [ -n "${CAPSULE_MODEL}" ]; then

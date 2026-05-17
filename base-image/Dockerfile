@@ -31,6 +31,6 @@ ENV PATH="/home/claude/.local/bin:/home/claude/.npm-global/bin:${PATH}"
 ENV CI=true
 
 # Entrypoint: configure git credentials from GH_TOKEN and git identity from
-# GIT_AUTHOR_* env vars, run optional before-each.sh, then launch Claude Code.
+# GIT_AUTHOR_* env vars, run optional CAPSULE_STAGE_SETUP command, then launch Claude Code.
 COPY --chmod=755 entrypoint.sh /home/claude/entrypoint.sh
 ENTRYPOINT ["/home/claude/entrypoint.sh"]

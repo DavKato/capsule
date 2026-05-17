@@ -4,7 +4,7 @@ Runs Claude Code inside a Docker container against your repo, working through Gi
 
 > **Note:** This is for my own simple usage for now. It works for me and my setup (Arch Linux) but if you're going to use it you'll probably need some tweaking.
 
-Each iteration runs Claude Code in an isolated container. You control what Claude sees via a prompt file and optional hook scripts. The loop runs until Claude signals completion or the iteration limit is reached.
+Each iteration runs Claude Code in an isolated container. You control what Claude sees via a prompt file and optional setup commands. The loop runs until Claude signals completion or the iteration limit is reached.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ capsule run --verbose                              # show unfiltered container o
 capsule run --model claude-opus-4-6
 capsule run --capsule-dir path/to/.capsule         # use a non-default config directory
 capsule run --log-file run.log                     # tee run output to a file
-capsule run --env PARENT=79                        # inject run-scoped parameters into containers and hooks
+capsule run --env PARENT=79                        # inject run-scoped parameters into containers and setup commands
 capsule run --max-stages 5                         # override the global stage safety cap
 capsule completion bash | source                   # enable tab-completion in the current shell
 capsule update                                     # download and install the latest release
@@ -88,8 +88,7 @@ Place a `.capsule/` directory in your repo to configure behaviour:
 | `config.yml` | Default flag values (overridden by CLI flags and env vars) |
 | `.env` | Secrets and per-container env vars (should be gitignored) |
 | `Dockerfile` | Extends the base image with repo-specific tooling |
-| `before-all.sh` | Runs once on the host before any container starts |
-| `before-each.sh` | Runs inside the container before Claude starts each iteration |
+| `setup` (in config.yml) | Setup command or script path, run on the host before containers start and/or inside each container before Claude starts |
 
 See [`templates/single-stage/.capsule/`](templates/single-stage/.capsule/) for a minimal single-stage setup and [`templates/ralph-loop/.capsule/`](templates/ralph-loop/.capsule/) for a multi-stage pipeline.
 
@@ -97,7 +96,7 @@ See [`templates/single-stage/.capsule/`](templates/single-stage/.capsule/) for a
 
 `capsule` is prompt-agnostic — it injects no context on its own. Place your prompt at `.capsule/prompt.md`.
 
-Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See [`templates/single-stage/.capsule/before-each.sh`](templates/single-stage/.capsule/before-each.sh) for a working example.
+Use the `setup` field in `config.yml` to run commands before Claude starts. A per-stage `setup` runs inside the container and can modify `/home/claude/prompt.txt` to inject dynamic context (e.g. git log, open issues).
 
 ## Config file
 
@@ -111,25 +110,30 @@ model: claude-sonnet-4-6
 commit_as: user       # or: capsule
 github_token_from: local  # or: env
 max_stages: 50
+setup: scripts/bootstrap.sh  # optional: host-side setup command or script path
 ```
 
 Precedence: **CLI flag → config.yml → default**.
 
 See [`templates/ralph-loop/.capsule/config.yml`](templates/ralph-loop/.capsule/config.yml) for a multi-stage example.
 
-## Hooks
+## Setup
 
-**`before-all.sh`** — runs once on the host before the first container starts. Use it for pre-flight checks (e.g. verifying a database container is up). Non-zero exit aborts the entire run.
+The `setup` field in `config.yml` runs a command or script at two levels:
 
-**`before-each.sh`** — runs inside the container before Claude starts each iteration. Can modify `/home/claude/prompt.txt` to inject dynamic context. Non-zero exit aborts that iteration.
+**Top-level `setup`** — runs once on the host before the first container starts. Use it for pre-flight checks (e.g. verifying a database container is up). Non-zero exit aborts the entire run. Receives `.env` defaults plus `--env` overrides.
 
-The following environment variables are available inside `before-each.sh`:
+**Per-stage `setup`** — runs inside the container before Claude starts each stage invocation. Can modify `/home/claude/prompt.txt` to inject dynamic context. Non-zero exit aborts that invocation.
 
-| Variable | Description |
-|---|---|
-| `CAPSULE_WORKSPACE` | Absolute path to the workspace inside the container (mirrors the host path) |
+```yaml
+setup: scripts/bootstrap.sh             # top-level: runs on host
+stages:
+  - name: main
+    prompt: prompts/main.md
+    setup: pip install -r requirements.txt  # per-stage: runs in container
+```
 
-Both hooks receive variables from `.capsule/.env`. Variables passed via `--env KEY=VALUE` on `capsule run` or `capsule resume` are also injected into both hooks, overriding same-named `.env` keys.
+The value can be an inline shell command (contains whitespace) or a path to a script file relative to `.capsule/`. Script files must be executable (`chmod +x`). `capsule check` validates both forms.
 
 ## Development
 
@@ -165,6 +169,6 @@ This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub 
 3. Sources `.capsule/.env` into the host environment
 4. Builds the base `capsule` image if not cached (or if `--rebuild` is passed)
 5. Builds a repo-specific `capsule-<basename>` image if `.capsule/Dockerfile` exists
-6. Runs `before-all.sh` if present
-7. For each iteration: mounts the prompt, runs `before-each.sh` inside the container, pipes the prompt to Claude Code, and renders streaming output with color-coded status
+6. Runs the top-level `setup` command if configured
+7. For each stage invocation: mounts the prompt, runs per-stage `setup` inside the container (if configured), pipes the prompt to Claude Code, and renders streaming output with color-coded status
 8. Exits early when Claude calls `submit_verdict` (pass exits 0, fail exits non-zero) or the iteration budget is exhausted (implicit fail)

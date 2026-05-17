@@ -6,10 +6,8 @@ The simplest capsule setup: a single-stage config running one prompt per contain
 
 ```
 .capsule/
-  config.yml        # single stage: stages: + prompt, model, github_token_from
+  config.yml        # single stage: stages: + prompt, model, github_token_from, setup
   prompt.md         # what Claude does each run
-  before-all.sh     # host pre-flight checks (runs once before the first container)
-  before-each.sh    # injects AFK issues + recent commits into prompt.txt each run
   Dockerfile        # extends the base capsule image with project-specific tooling
   .env              # GH_TOKEN and other secrets (not committed)
 ```
@@ -30,8 +28,7 @@ capsule run --model claude-opus-4-7
 ## Key concepts shown
 
 - **Single-stage config** — `stages:` with one named stage; simplest possible pipeline
-- **`before-each.sh`** — injects dynamic context (open AFK issues, recent commits) into `prompt.txt` before each container starts; Claude sees fresh state every run
-- **`before-all.sh`** — runs on the host before any container starts; use it for pre-flight checks (services up, env vars set)
+- **`setup` field** — runs a command or script before the stage starts; use for injecting dynamic context or installing dependencies
 - **Custom `Dockerfile`** — extends the base image with project-specific runtimes or tools
 
 For multi-stage pipelines and the full ralph loop pattern, see [`../ralph-loop`](../ralph-loop).

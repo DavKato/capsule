@@ -31,6 +31,7 @@ impl StageRunner for RecordingRunner {
         _stage_name: &str,
         prompt: &str,
         _model: Option<&str>,
+        _setup: Option<&str>,
         _retry: Option<&capsule::pipeline::RetryInfo>,
     ) -> anyhow::Result<Option<Verdict>> {
         self.prompts.lock().unwrap().push(prompt.to_string());
@@ -54,6 +55,7 @@ fn single_stage_config(prompt: Option<&str>) -> PipelineConfig {
             on_pass: OnPass::Next,
             on_fail: OnFail::Exit,
             max_retries: capsule::config::MAX_RETRIES_DEFAULT,
+            setup: None,
         })],
         max_stages: 10,
     }
@@ -70,6 +72,7 @@ fn loop_stage_config(prompt: Option<&str>) -> PipelineConfig {
                 on_pass: OnPass::Next,
                 on_fail: OnFail::Exit,
                 max_retries: capsule::config::MAX_RETRIES_DEFAULT,
+                setup: None,
             }],
         })],
         max_stages: 10,

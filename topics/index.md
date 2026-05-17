@@ -12,7 +12,7 @@ Available topics. Load only what your current task needs.
   prompt-writing   Verdict contract, note-injection, role framing.
                    Load before authoring or editing a stage prompt.
 
-  common-edits     Rename / add / remove a stage; add a hook.
+  common-edits     Rename / add / remove a stage; add a setup command.
                    Load before structural changes to config.yml.
 
   commands         capsule subcommands the agent uses (templates, init, check, run).

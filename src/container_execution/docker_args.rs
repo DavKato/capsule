@@ -1,3 +1,5 @@
+use anyhow::Context as _;
+
 use super::ExecutionConfig;
 
 /// Returns a unique container name for the given iteration.
@@ -17,7 +19,7 @@ pub fn build_docker_args(
     cfg: &ExecutionConfig,
     prompt_path: &std::path::Path,
     container_name: &str,
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
     let workspace = cfg.pwd.to_string_lossy();
     let mut args = vec![
         "run".to_string(),
@@ -76,11 +78,28 @@ pub fn build_docker_args(
     args.push(format!("-e=GIT_COMMITTER_NAME={}", cfg.git_author_name));
     args.push(format!("-e=GIT_COMMITTER_EMAIL={}", cfg.git_author_email));
 
-    if let Some(before_each) = &cfg.before_each_path {
-        args.push(format!(
-            "-v={}:/home/claude/before-each.sh:ro",
-            before_each.display()
-        ));
+    if let Some(value) = &cfg.setup {
+        if value.contains(char::is_whitespace) {
+            // Inline command — pass directly.
+            args.push(format!("-e=CAPSULE_STAGE_SETUP={value}"));
+        } else {
+            // No whitespace → must be a file path. Error clearly if the file is missing
+            // so the user gets a useful message instead of a confusing shell error from
+            // `bash -c "<nonexistent>"` inside the container.
+            let candidate = cfg.capsule_dir.join(value);
+            candidate.exists().then_some(()).with_context(|| {
+                format!(
+                    "setup file not found: {value} (resolved to {}). \
+                     To use an inline command, include a space (e.g. \"bash {value}\").",
+                    candidate.display()
+                )
+            })?;
+            args.push(format!(
+                "-v={}:/home/claude/stage-setup.sh:ro",
+                candidate.display()
+            ));
+            args.push("-e=CAPSULE_STAGE_SETUP=/home/claude/stage-setup.sh".to_string());
+        }
     }
 
     if let Some(network) = &cfg.compose_network {
@@ -89,7 +108,7 @@ pub fn build_docker_args(
     }
 
     args.push(cfg.image.clone());
-    args
+    Ok(args)
 }
 
 #[cfg(test)]
@@ -117,11 +136,11 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let prompt_arg = args.iter().find(|a| a.contains("prompt.txt")).unwrap();
         assert!(
             !prompt_arg.ends_with(":ro"),
-            "prompt.txt must not be mounted read-only so before-each.sh can mutate it: {prompt_arg}"
+            "prompt.txt must not be mounted read-only so setup can mutate it: {prompt_arg}"
         );
     }
 
@@ -133,7 +152,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         let pwd_str = dir.path().to_string_lossy();
         assert!(
@@ -154,7 +173,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         let pwd_str = dir.path().to_string_lossy();
         assert!(
@@ -171,7 +190,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         let pwd_str = dir.path().to_string_lossy();
         assert!(
@@ -190,7 +209,7 @@ mod tests {
             env_file: Some(dir.path().join(".env")),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains("--env-file"),
@@ -210,7 +229,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             !joined.contains("--env-file"),
@@ -229,7 +248,7 @@ mod tests {
             gh_token_env_file: Some(token_file.clone()),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains("--env-file"),
@@ -255,7 +274,7 @@ mod tests {
             extra_env_file: Some(extra.clone()),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let primary_pos = args
             .iter()
             .position(|a| a.contains(".env") && !a.contains("extra"))
@@ -278,7 +297,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             !joined.contains("extra"),
@@ -294,7 +313,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             !joined.contains("GH_TOKEN"),
@@ -313,7 +332,7 @@ mod tests {
             gh_token_env_file: Some(token_file),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         for arg in &args {
             assert!(
                 !arg.contains("ghs_secret"),
@@ -337,7 +356,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         let pwd_str = dir.path().to_string_lossy();
         assert!(
@@ -354,7 +373,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             !joined.contains(".git/config"),
@@ -372,7 +391,7 @@ mod tests {
             git_author_email: "bob@example.com".to_string(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains("GIT_AUTHOR_NAME=Bob Builder"),
@@ -400,7 +419,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains("GIT_AUTHOR_NAME="),
@@ -413,41 +432,94 @@ mod tests {
     }
 
     #[test]
-    fn before_each_mounted_when_path_provided() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let before_each = dir.path().join("before-each.sh");
-        std::fs::write(&before_each, "#!/bin/sh\n").unwrap();
+    fn setup_file_path_mounted_and_env_var_set() {
+        let capsule_dir = tempfile::tempdir().expect("capsule temp dir");
+        let script = capsule_dir.path().join("setup.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let pwd = tempfile::tempdir().expect("pwd temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
         let cfg = ExecutionConfig {
-            pwd: dir.path().to_path_buf(),
-            before_each_path: Some(before_each.clone()),
+            pwd: pwd.path().to_path_buf(),
+            capsule_dir: capsule_dir.path().to_path_buf(),
+            setup: Some("setup.sh".to_string()),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
-            joined.contains("/home/claude/before-each.sh:ro"),
-            "expected before-each.sh mount in args: {joined}"
+            joined.contains("/home/claude/stage-setup.sh:ro"),
+            "expected stage-setup.sh read-only mount: {joined}"
         );
         assert!(
-            joined.contains(before_each.to_string_lossy().as_ref()),
-            "expected host path in mount: {joined}"
+            joined.contains(capsule_dir.path().to_string_lossy().as_ref()),
+            "expected host script path in mount: {joined}"
+        );
+        assert!(
+            joined.contains("CAPSULE_STAGE_SETUP=/home/claude/stage-setup.sh"),
+            "expected CAPSULE_STAGE_SETUP set to container path: {joined}"
         );
     }
 
     #[test]
-    fn before_each_not_mounted_when_absent() {
+    fn setup_inline_command_sets_env_var_without_mount() {
+        let capsule_dir = tempfile::tempdir().expect("capsule temp dir");
+        let pwd = tempfile::tempdir().expect("pwd temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: pwd.path().to_path_buf(),
+            capsule_dir: capsule_dir.path().to_path_buf(),
+            setup: Some("pip install -r requirements.txt".to_string()),
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("CAPSULE_STAGE_SETUP=pip install -r requirements.txt"),
+            "expected CAPSULE_STAGE_SETUP set to inline command: {joined}"
+        );
+        assert!(
+            !joined.contains("stage-setup.sh"),
+            "inline command must not produce a file mount: {joined}"
+        );
+    }
+
+    #[test]
+    fn setup_missing_file_returns_clear_error() {
+        let capsule_dir = tempfile::tempdir().expect("capsule temp dir");
+        let pwd = tempfile::tempdir().expect("pwd temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: pwd.path().to_path_buf(),
+            capsule_dir: capsule_dir.path().to_path_buf(),
+            setup: Some("nonexistent.sh".to_string()),
+            ..ExecutionConfig::default()
+        };
+        let err = build_docker_args(&cfg, prompt_file.path(), "capsule-test")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("setup file not found: nonexistent.sh"),
+            "expected clear error message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn setup_absent_means_no_capsule_stage_setup_env_var() {
         let dir = tempfile::tempdir().expect("temp dir");
         let prompt_file = tempfile::NamedTempFile::new().unwrap();
         let cfg = ExecutionConfig {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
-            !joined.contains("before-each.sh"),
-            "before-each.sh must not appear in args when path is None: {joined}"
+            !joined.contains("CAPSULE_STAGE_SETUP"),
+            "CAPSULE_STAGE_SETUP must not appear when setup is None: {joined}"
+        );
+        assert!(
+            !joined.contains("stage-setup.sh"),
+            "stage-setup.sh must not appear when setup is None: {joined}"
         );
     }
 
@@ -460,7 +532,7 @@ mod tests {
             model: Some("claude-opus-4-6".to_string()),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains("-e=CAPSULE_MODEL=claude-opus-4-6"),
@@ -476,7 +548,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             !joined.contains("CAPSULE_MODEL"),
@@ -497,8 +569,9 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args_verbose = build_docker_args(&cfg_verbose, prompt_file.path(), "capsule-test");
-        let args_quiet = build_docker_args(&cfg_quiet, prompt_file.path(), "capsule-test");
+        let args_verbose =
+            build_docker_args(&cfg_verbose, prompt_file.path(), "capsule-test").unwrap();
+        let args_quiet = build_docker_args(&cfg_quiet, prompt_file.path(), "capsule-test").unwrap();
         assert_eq!(
             args_verbose, args_quiet,
             "verbose flag must not alter docker args"
@@ -513,7 +586,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-run-12345-1");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-run-12345-1").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains("--name capsule-run-12345-1"),
@@ -530,7 +603,7 @@ mod tests {
             compose_network: Some("myproject_default".to_string()),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains("--network myproject_default"),
@@ -546,7 +619,7 @@ mod tests {
             pwd: dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             !joined.contains("--network"),
@@ -564,7 +637,7 @@ mod tests {
             credentials_file: Some(creds_file.path().to_path_buf()),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains(":/home/claude/.claude/.credentials.json"),
@@ -585,7 +658,7 @@ mod tests {
             credentials_file: None,
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             !joined.contains(".credentials.json"),
@@ -603,7 +676,7 @@ mod tests {
             claude_dir: claude_dir.path().to_path_buf(),
             ..ExecutionConfig::default()
         };
-        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test");
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
         let joined = args.join(" ");
         assert!(
             joined.contains(":/home/claude/.claude"),

@@ -122,20 +122,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn copy_to_sets_executable_on_shell_scripts() {
-        let dir = tempfile::tempdir().unwrap();
-        copy_to("single-stage", dir.path()).unwrap();
-        for name in ["before-all.sh", "before-each.sh"] {
-            let path = dir.path().join(name);
-            if path.exists() {
-                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-                assert!(mode & 0o111 != 0, "{name} should be executable");
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn copy_to_does_not_set_executable_on_non_scripts() {
         let dir = tempfile::tempdir().unwrap();
         copy_to("single-stage", dir.path()).unwrap();

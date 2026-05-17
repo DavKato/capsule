@@ -22,3 +22,4 @@ stages:
 model: claude-opus-4-6
 github_token_from: local
 commit_as: capsule
+setup: ": \"${PARENT:?PARENT is required}\" && echo \"working on: #${PARENT}\""

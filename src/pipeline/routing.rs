@@ -122,6 +122,7 @@ pub(super) fn run_loop(
             &stage.name,
             &effective_prompt,
             stage.model.as_deref(),
+            stage.setup.as_deref(),
             retry.as_ref(),
         )?;
         progress.last_verdict = verdict.clone();
@@ -282,6 +283,7 @@ pub(super) fn run_stage(
         &stage.name,
         &effective_prompt,
         stage.model.as_deref(),
+        stage.setup.as_deref(),
         retry.as_ref(),
     )?;
     progress.last_verdict = verdict.clone();

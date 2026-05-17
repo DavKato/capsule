@@ -30,7 +30,6 @@ pub(crate) struct RunSession {
     git_author_name: String,
     git_author_email: String,
     env_file: Option<PathBuf>,
-    before_each_path: Option<PathBuf>,
     compose_network: Option<String>,
     // Held here so the temp files stay alive through execute().
     gh_token_tempfile: Option<tempfile::NamedTempFile>,
@@ -53,6 +52,7 @@ impl RunSession {
         let env_pairs: Vec<(String, String)> = std::mem::take(&mut overrides.env);
         let cfg = resolve(&capsule_dir, overrides)?;
 
+        check_old_scripts(&cfg.capsule_dir)?;
         check_docker()?;
 
         if let Some(warning) = env::env_gitignore_warning(&cfg.capsule_dir) {
@@ -76,9 +76,7 @@ impl RunSession {
 
         let gh_token_tempfile = env::setup_gh_token(&cfg, &pre_dotenv_env, &dotenv_map)?;
 
-        let process_env: HashMap<String, String> = std::env::vars().collect();
-        let (git_author_name, git_author_email) =
-            git::resolve_git_identity(&cfg.commit_as, &process_env);
+        let (git_author_name, git_author_email) = git::resolve_git_identity(&cfg.commit_as);
 
         let pwd = std::env::current_dir().context("failed to get current directory")?;
         let home = std::env::var("HOME").context("HOME environment variable not set")?;
@@ -94,20 +92,13 @@ impl RunSession {
         };
         let image = build_derived_image(&build_cfg)?.unwrap_or_else(|| "capsule".to_string());
 
-        run_before_all(&cfg.capsule_dir, &env_pairs)?;
+        run_host_setup(cfg.setup.as_deref(), &cfg.capsule_dir, &env_pairs)?;
 
         let extra_env_tempfile = env::build_extra_env_tempfile(&env_pairs)?;
 
         let env_file_path = cfg.capsule_dir.join(".env");
         let env_file = if env_file_path.exists() {
             Some(env_file_path)
-        } else {
-            None
-        };
-
-        let before_each_script = cfg.capsule_dir.join("before-each.sh");
-        let before_each_path = if before_each_script.exists() {
-            Some(before_each_script)
         } else {
             None
         };
@@ -137,7 +128,6 @@ impl RunSession {
             git_author_name,
             git_author_email,
             env_file,
-            before_each_path,
             compose_network,
             gh_token_tempfile,
             extra_env_tempfile,
@@ -202,7 +192,8 @@ impl RunSession {
                 .map(|f| f.path().to_path_buf()),
             git_author_name: self.git_author_name.clone(),
             git_author_email: self.git_author_email.clone(),
-            before_each_path: self.before_each_path.clone(),
+            setup: None,
+            capsule_dir: self.cfg.capsule_dir.clone(),
             compose_network: self.compose_network.clone(),
             claude_dir: self.claude_dir.clone(),
             credentials_file,
@@ -262,26 +253,36 @@ fn check_docker() -> Result<()> {
     Ok(())
 }
 
-/// Runs `before-all.sh` if present. Absent script is Ok; non-zero exit is Err.
-fn run_before_all(capsule_dir: &std::path::Path, env_pairs: &[(String, String)]) -> Result<()> {
-    let script = capsule_dir.join("before-all.sh");
-    if !script.exists() {
+/// Runs the host-level setup command if configured.
+fn run_host_setup(
+    setup: Option<&str>,
+    capsule_dir: &std::path::Path,
+    env_pairs: &[(String, String)],
+) -> Result<()> {
+    let Some(value) = setup else {
         return Ok(());
-    }
+    };
 
     let mut cmd = Command::new("bash");
-    cmd.arg(&script);
+
+    let candidate = capsule_dir.join(value);
+    if candidate.exists() {
+        cmd.arg(&candidate);
+    } else {
+        cmd.args(["-c", value]);
+    }
+
     for (k, v) in env_pairs {
         cmd.env(k, v);
     }
 
     let status = cmd
         .status()
-        .with_context(|| format!("failed to run before-all.sh at {}", script.display()))?;
+        .with_context(|| format!("failed to run setup: {value}"))?;
 
     if !status.success() {
         anyhow::bail!(
-            "before-all.sh exited with code {}",
+            "setup exited with code {} (value: {value:?})",
             status.code().unwrap_or(-1)
         );
     }
@@ -289,86 +290,118 @@ fn run_before_all(capsule_dir: &std::path::Path, env_pairs: &[(String, String)])
     Ok(())
 }
 
+fn check_old_scripts(capsule_dir: &std::path::Path) -> anyhow::Result<()> {
+    for name in ["before-all.sh", "before-each.sh"] {
+        if capsule_dir.join(name).exists() {
+            anyhow::bail!(
+                "{name} is no longer used.\n\
+                 Migrate to the `setup` field in config.yml:\n\
+                 \n\
+                 \x20 setup: <command-or-script-path>\n\
+                 \n\
+                 Remove {name} from .capsule/ after migrating."
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{check_docker, run_before_all};
+    use super::{check_docker, check_old_scripts, run_host_setup};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn before_all_absent_is_ok() {
+    fn host_setup_none_is_ok() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let result = run_before_all(dir.path(), &[]);
-        assert!(
-            result.is_ok(),
-            "absent before-all.sh must return Ok: {result:?}"
-        );
+        let result = run_host_setup(None, dir.path(), &[]);
+        assert!(result.is_ok(), "None setup must return Ok: {result:?}");
     }
 
     #[test]
-    fn before_all_success_is_ok() {
+    fn host_setup_file_path_success_is_ok() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let script = dir.path().join("before-all.sh");
+        let script = dir.path().join("setup.sh");
         fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let result = run_before_all(dir.path(), &[]);
+        let result = run_host_setup(Some("setup.sh"), dir.path(), &[]);
         assert!(
             result.is_ok(),
-            "before-all.sh exit 0 must return Ok: {result:?}"
+            "file-path setup exit 0 must return Ok: {result:?}"
         );
     }
 
     #[test]
-    fn before_all_failure_is_err() {
+    fn host_setup_file_path_failure_is_err() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let script = dir.path().join("before-all.sh");
+        let script = dir.path().join("setup.sh");
         fs::write(&script, "#!/bin/sh\nexit 42\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let result = run_before_all(dir.path(), &[]);
-        assert!(result.is_err(), "before-all.sh exit 42 must return Err");
+        let result = run_host_setup(Some("setup.sh"), dir.path(), &[]);
+        assert!(result.is_err(), "file-path setup exit 42 must return Err");
         let msg = format!("{:?}", result.unwrap_err());
         assert!(
-            msg.contains("42") || msg.contains("before-all"),
-            "error must mention exit code or script name, got: {msg}"
+            msg.contains("42"),
+            "error must mention exit code, got: {msg}"
         );
     }
 
     #[test]
-    fn before_all_runs_on_host() {
+    fn host_setup_inline_command_success_is_ok() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let script = dir.path().join("before-all.sh");
+        let result = run_host_setup(Some("exit 0"), dir.path(), &[]);
+        assert!(
+            result.is_ok(),
+            "inline command exit 0 must return Ok: {result:?}"
+        );
+    }
+
+    #[test]
+    fn host_setup_inline_command_failure_is_err() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let result = run_host_setup(Some("exit 7"), dir.path(), &[]);
+        assert!(result.is_err(), "inline command exit 7 must return Err");
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("7"),
+            "error must mention exit code, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn host_setup_runs_on_host() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("setup.sh");
         let sentinel = dir.path().join("ran");
         let sentinel_str = sentinel.to_string_lossy();
         let script_body = format!("#!/bin/sh\ntouch {sentinel_str}\nexit 0\n");
         fs::write(&script, script_body).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        run_before_all(dir.path(), &[]).expect("should succeed");
+        run_host_setup(Some("setup.sh"), dir.path(), &[]).expect("should succeed");
         assert!(
             sentinel.exists(),
-            "before-all.sh should have created sentinel file"
+            "file-path setup should have created sentinel file"
         );
     }
 
     #[test]
-    fn before_all_env_pairs_injected() {
+    fn host_setup_env_pairs_injected() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let script = dir.path().join("before-all.sh");
         let out_file = dir.path().join("env_value.txt");
         let out_str = out_file.to_string_lossy();
-        let script_body = format!("#!/bin/sh\necho \"$MY_TEST_VAR\" > {out_str}\n");
-        fs::write(&script, script_body).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let inline = format!("echo \"$MY_TEST_VAR\" > {out_str}");
 
         let pairs = vec![("MY_TEST_VAR".to_string(), "hello_env".to_string())];
-        run_before_all(dir.path(), &pairs).expect("should succeed");
+        run_host_setup(Some(&inline), dir.path(), &pairs).expect("should succeed");
 
         let content = fs::read_to_string(&out_file).expect("output file should exist");
         assert!(
             content.trim() == "hello_env",
-            "env var should be injected into hook: got {content:?}"
+            "env var should be injected into setup: got {content:?}"
         );
     }
 
@@ -376,5 +409,42 @@ mod tests {
     #[capsule_macros::requires_docker]
     fn docker_available_check_succeeds() {
         check_docker().expect("docker check should succeed when Docker is running");
+    }
+
+    #[test]
+    fn old_scripts_absent_is_ok() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let result = check_old_scripts(dir.path());
+        assert!(result.is_ok(), "no old scripts must return Ok: {result:?}");
+    }
+
+    #[test]
+    fn old_before_all_present_is_err() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join("before-all.sh"), "#!/bin/sh\n").unwrap();
+        let result = check_old_scripts(dir.path());
+        assert!(result.is_err(), "before-all.sh present must return Err");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("before-all.sh"),
+            "error must mention script name, got: {msg}"
+        );
+        assert!(
+            msg.contains("setup"),
+            "error must mention setup field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn old_before_each_present_is_err() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join("before-each.sh"), "#!/bin/sh\n").unwrap();
+        let result = check_old_scripts(dir.path());
+        assert!(result.is_err(), "before-each.sh present must return Err");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("before-each.sh"),
+            "error must mention script name, got: {msg}"
+        );
     }
 }

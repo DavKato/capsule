@@ -4,6 +4,7 @@ stages:
       stages:
         - name: implementer
           prompt: prompts/implementer.md
+          setup: scripts/inject-context.sh
           on_fail: retry
           max_retries: 3
 

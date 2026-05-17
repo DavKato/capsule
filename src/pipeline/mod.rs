@@ -34,6 +34,7 @@ pub trait StageRunner {
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
+        setup: Option<&str>,
         retry: Option<&RetryInfo>,
     ) -> anyhow::Result<Option<crate::verdict::Verdict>>;
 }
@@ -246,6 +247,7 @@ mod tests {
             _stage_name: &str,
             _prompt: &str,
             _model: Option<&str>,
+            _setup: Option<&str>,
             _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             Ok(self
@@ -284,6 +286,7 @@ mod tests {
             on_pass: OnPass::Next,
             on_fail: OnFail::Exit,
             max_retries: MAX_RETRIES_DEFAULT,
+            setup: None,
         }
     }
 
@@ -509,6 +512,7 @@ mod tests {
             _stage_name: &str,
             prompt: &str,
             _model: Option<&str>,
+            _setup: Option<&str>,
             _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             self.prompts.lock().unwrap().push(prompt.to_string());

@@ -5,12 +5,23 @@ pub(super) fn resolve_git_identity(identity: &GitIdentity) -> (String, String) {
     match identity {
         GitIdentity::Capsule => ("Capsule".to_string(), "capsule@localhost".to_string()),
         GitIdentity::User => {
-            let path = std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".gitconfig"))
-                .unwrap_or_default();
-            parse_user_identity(&path)
+            let home = std::env::var("HOME").unwrap_or_default();
+            let gitconfig = PathBuf::from(&home).join(".gitconfig");
+            let xdg_config = std::env::var("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(&home).join(".config"))
+                .join("git/config");
+            resolve_user_identity(&gitconfig, &xdg_config)
         }
     }
+}
+
+fn resolve_user_identity(gitconfig: &Path, xdg_config: &Path) -> (String, String) {
+    let (name, email) = parse_user_identity(gitconfig);
+    if !name.is_empty() || !email.is_empty() {
+        return (name, email);
+    }
+    parse_user_identity(xdg_config)
 }
 
 fn parse_user_identity(path: &Path) -> (String, String) {
@@ -46,7 +57,7 @@ fn parse_user_identity(path: &Path) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_user_identity, resolve_git_identity};
+    use super::{parse_user_identity, resolve_git_identity, resolve_user_identity};
     use capsule::config::GitIdentity;
 
     #[test]
@@ -90,5 +101,26 @@ mod tests {
         let (name, email) = parse_user_identity(&config_path);
         assert_eq!(name, "");
         assert_eq!(email, "");
+    }
+
+    #[test]
+    fn xdg_config_used_as_fallback_when_gitconfig_has_no_user_section() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let gitconfig = dir.path().join(".gitconfig");
+        std::fs::write(&gitconfig, "[core]\n\tpager = \n").unwrap();
+
+        let xdg_git_dir = dir.path().join("xdg/git");
+        std::fs::create_dir_all(&xdg_git_dir).unwrap();
+        let xdg_config = xdg_git_dir.join("config");
+        std::fs::write(
+            &xdg_config,
+            "[user]\n\tname = XDG User\n\temail = xdg@example.com\n",
+        )
+        .unwrap();
+
+        let (name, email) = resolve_user_identity(&gitconfig, &xdg_config);
+        assert_eq!(name, "XDG User");
+        assert_eq!(email, "xdg@example.com");
     }
 }

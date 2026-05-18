@@ -431,6 +431,31 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     })
 }
 
+/// Parsed representation of the `setup` config field.
+#[derive(Debug, Clone)]
+pub enum SetupCommand {
+    Inline(String),
+    File(PathBuf),
+}
+
+impl SetupCommand {
+    /// Whitespace means inline shell command; no whitespace means file path.
+    pub fn parse(raw: &str, capsule_dir: &Path) -> Result<Self> {
+        if raw.contains(char::is_whitespace) {
+            return Ok(Self::Inline(raw.to_string()));
+        }
+        let resolved = capsule_dir.join(raw);
+        if !resolved.exists() {
+            anyhow::bail!(
+                "setup file not found: {raw} (resolved to {}). \
+                 To use an inline command, include a space (e.g. \"bash {raw}\").",
+                resolved.display()
+            );
+        }
+        Ok(Self::File(resolved))
+    }
+}
+
 /// Extract all stage names from a raw YAML string without strict validation.
 /// Used to compute typo suggestions when route-target validation fails.
 pub fn raw_stage_names_from_yaml(yaml: &str) -> Vec<String> {

@@ -81,32 +81,35 @@ fn check_hook_scripts(cfg: &Config, issues: &mut CheckReport) {
 }
 
 fn check_setup_value(value: &str, location: &str, capsule_dir: &Path, issues: &mut CheckReport) {
-    if value.contains(char::is_whitespace) {
-        return;
-    }
+    use crate::config::SetupCommand;
 
-    let path = capsule_dir.join(value);
-    if !path.exists() {
-        issues.push(CheckIssue {
-            severity: Severity::Error,
-            location: location.to_string(),
-            message: format!("setup file not found: {value}"),
-            fix_hint: Some(format!("create the file at {}", path.display())),
-        });
-        return;
-    }
+    let parsed = match SetupCommand::parse(value, capsule_dir) {
+        Ok(p) => p,
+        Err(_) => {
+            let path = capsule_dir.join(value);
+            issues.push(CheckIssue {
+                severity: Severity::Error,
+                location: location.to_string(),
+                message: format!("setup file not found: {value}"),
+                fix_hint: Some(format!("create the file at {}", path.display())),
+            });
+            return;
+        }
+    };
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if meta.permissions().mode() & 0o111 == 0 {
-                issues.push(CheckIssue {
-                    severity: Severity::Hint,
-                    location: location.to_string(),
-                    message: format!("{value} is not executable"),
-                    fix_hint: Some(format!("chmod +x {}", path.display())),
-                });
+    if let SetupCommand::File(path) = parsed {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.permissions().mode() & 0o111 == 0 {
+                    issues.push(CheckIssue {
+                        severity: Severity::Hint,
+                        location: location.to_string(),
+                        message: format!("{value} is not executable"),
+                        fix_hint: Some(format!("chmod +x {}", path.display())),
+                    });
+                }
             }
         }
     }

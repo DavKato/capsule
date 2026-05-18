@@ -1,5 +1,3 @@
-use anyhow::Context as _;
-
 use super::ExecutionConfig;
 
 /// Returns a unique container name for the given iteration.
@@ -79,25 +77,17 @@ pub fn build_docker_args(
     args.push(format!("-e=GIT_COMMITTER_EMAIL={}", cfg.git_author_email));
 
     if let Some(value) = &cfg.setup {
-        if value.contains(char::is_whitespace) {
-            args.push(format!("-e=CAPSULE_STAGE_SETUP={value}"));
-        } else {
-            // No whitespace → must be a file path. Error clearly if the file is missing
-            // so the user gets a useful message instead of a confusing shell error from
-            // `bash -c "<nonexistent>"` inside the container.
-            let candidate = cfg.capsule_dir.join(value);
-            candidate.exists().then_some(()).with_context(|| {
-                format!(
-                    "setup file not found: {value} (resolved to {}). \
-                     To use an inline command, include a space (e.g. \"bash {value}\").",
-                    candidate.display()
-                )
-            })?;
-            args.push(format!(
-                "-v={}:/home/claude/stage-setup.sh:ro",
-                candidate.display()
-            ));
-            args.push("-e=CAPSULE_STAGE_SETUP=/home/claude/stage-setup.sh".to_string());
+        match crate::config::SetupCommand::parse(value, &cfg.capsule_dir)? {
+            crate::config::SetupCommand::Inline(cmd) => {
+                args.push(format!("-e=CAPSULE_STAGE_SETUP={cmd}"));
+            }
+            crate::config::SetupCommand::File(path) => {
+                args.push(format!(
+                    "-v={}:/home/claude/stage-setup.sh:ro",
+                    path.display()
+                ));
+                args.push("-e=CAPSULE_STAGE_SETUP=/home/claude/stage-setup.sh".to_string());
+            }
         }
     }
 

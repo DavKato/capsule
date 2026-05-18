@@ -265,18 +265,13 @@ fn run_host_setup(
 
     let mut cmd = Command::new("bash");
 
-    if value.contains(char::is_whitespace) {
-        cmd.args(["-c", value]);
-    } else {
-        let candidate = capsule_dir.join(value);
-        if !candidate.exists() {
-            anyhow::bail!(
-                "setup file not found: {value} (resolved to {}). \
-                 To use an inline command, include a space (e.g. \"bash {value}\").",
-                candidate.display()
-            );
+    match capsule::config::SetupCommand::parse(value, capsule_dir)? {
+        capsule::config::SetupCommand::Inline(s) => {
+            cmd.args(["-c", &s]);
         }
-        cmd.arg(&candidate);
+        capsule::config::SetupCommand::File(path) => {
+            cmd.arg(&path);
+        }
     }
 
     for (k, v) in env_pairs {

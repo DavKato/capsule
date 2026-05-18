@@ -1,6 +1,6 @@
-# Single-stage example
+# Single-stage template
 
-The simplest capsule setup: a single-stage config running one prompt per container. Each run picks an open GitHub issue, implements it, and commits.
+The simplest capsule setup: one stage, one prompt, one container. A starting point you can customize for any workflow.
 
 ## Structure
 

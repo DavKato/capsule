@@ -1,2 +1,3 @@
 push = true
 publish = false
+allow-branch = ["main"]

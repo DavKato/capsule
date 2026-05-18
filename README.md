@@ -171,4 +171,4 @@ This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub 
 5. Builds a repo-specific `capsule-<basename>` image if `.capsule/Dockerfile` exists
 6. Runs the top-level `setup` command if configured
 7. For each stage invocation: mounts the prompt, runs per-stage `setup` inside the container (if configured), pipes the prompt to Claude Code, and renders streaming output with color-coded status
-8. Exits early when Claude calls `submit_verdict` (pass exits 0, fail exits non-zero) or the iteration budget is exhausted (implicit fail)
+8. Exits early when Claude calls `submit_verdict` (pass exits 0, fail exits non-zero) or the stage budget is exhausted (implicit fail)

@@ -16,11 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Config-driven `setup` field replaces `before-*.sh` hooks
-- Modernized CLI options for multi-stage builds
 
 ### Changed
 
-- CLI options audited and updated for multi-stage era
+- Renamed `--git-identity` to `--commit-as`
+- Renamed `--github` to `--github-token-from`
+
+### Removed
+
+- `--iterations` (replaced by `max_iteration` in config)
+- `--prompt` (replaced by `prompt` field in stage config)
+- `--min-token-lifetime-minutes` (credential lifetime is now managed internally)
 
 [Unreleased]: https://github.com/DavKato/capsule/compare/v0.4.2...HEAD
 [0.4.2]: https://github.com/DavKato/capsule/releases/tag/v0.4.2

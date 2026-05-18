@@ -6,7 +6,7 @@ The simplest capsule setup: a single-stage config running one prompt per contain
 
 ```
 .capsule/
-  config.yml        # single stage: stages: + prompt, model, github_token_from, setup
+  config.yml        # single stage: stages: + prompt, model, github_token_from
   prompt.md         # what Claude does each run
   Dockerfile        # extends the base capsule image with project-specific tooling
   .env              # GH_TOKEN and other secrets (not committed)
@@ -28,7 +28,6 @@ capsule run --model claude-opus-4-7
 ## Key concepts shown
 
 - **Single-stage config** — `stages:` with one named stage; simplest possible pipeline
-- **`setup` field** — runs a command or script before the stage starts; use for injecting dynamic context or installing dependencies
 - **Custom `Dockerfile`** — extends the base image with project-specific runtimes or tools
 
 For multi-stage pipelines and the full ralph loop pattern, see [`../ralph-loop`](../ralph-loop).

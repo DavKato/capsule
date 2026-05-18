@@ -7,26 +7,9 @@ on:
   pull_request:
 
 jobs:
-  check:
-    name: Check, fmt, clippy, test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: cargo fmt
-        run: cargo fmt --check
-
-      - name: cargo clippy
-        run: cargo clippy --locked --tests -- -D warnings
-
-      - name: cargo test
-        run: cargo test --locked
+  ci:
+    name: CI Check
+    uses: ./.github/workflows/ci-check.yml
 
   lint-stdout:
     name: No direct stdout writes outside display module

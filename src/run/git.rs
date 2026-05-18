@@ -1,5 +1,6 @@
 use capsule::config::GitIdentity;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub(super) fn resolve_git_identity(identity: &GitIdentity) -> (String, String) {
     match identity {
@@ -11,7 +12,14 @@ pub(super) fn resolve_git_identity(identity: &GitIdentity) -> (String, String) {
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(&home).join(".config"))
                 .join("git/config");
-            resolve_user_identity(&gitconfig, &xdg_config)
+            let (mut name, mut email) = resolve_user_identity(&gitconfig, &xdg_config);
+            if name.is_empty() {
+                name = git_config_get("user.name");
+            }
+            if email.is_empty() {
+                email = git_config_get("user.email");
+            }
+            (name, email)
         }
     }
 }
@@ -33,6 +41,16 @@ fn resolve_user_identity(gitconfig: &Path, xdg_config: &Path) -> (String, String
         primary_email
     };
     (name, email)
+}
+
+fn git_config_get(key: &str) -> String {
+    Command::new("git")
+        .args(["config", "--get", key])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 fn parse_user_identity(path: &Path) -> (String, String) {
@@ -68,7 +86,7 @@ fn parse_user_identity(path: &Path) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_user_identity, resolve_git_identity, resolve_user_identity};
+    use super::{git_config_get, parse_user_identity, resolve_git_identity, resolve_user_identity};
     use capsule::config::GitIdentity;
 
     #[test]
@@ -133,6 +151,20 @@ mod tests {
         let (name, email) = resolve_user_identity(&gitconfig, &xdg_config);
         assert_eq!(name, "XDG User");
         assert_eq!(email, "xdg@example.com");
+    }
+
+    #[test]
+    fn git_config_get_falls_back_to_subprocess() {
+        let name = git_config_get("user.name");
+        let email = git_config_get("user.email");
+        assert!(
+            !name.is_empty(),
+            "git config --get user.name should return a value on dev machines"
+        );
+        assert!(
+            !email.is_empty(),
+            "git config --get user.email should return a value on dev machines"
+        );
     }
 
     #[test]

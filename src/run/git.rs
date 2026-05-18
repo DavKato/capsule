@@ -17,11 +17,22 @@ pub(super) fn resolve_git_identity(identity: &GitIdentity) -> (String, String) {
 }
 
 fn resolve_user_identity(gitconfig: &Path, xdg_config: &Path) -> (String, String) {
-    let (name, email) = parse_user_identity(gitconfig);
-    if !name.is_empty() || !email.is_empty() {
-        return (name, email);
+    let (primary_name, primary_email) = parse_user_identity(gitconfig);
+    if !primary_name.is_empty() && !primary_email.is_empty() {
+        return (primary_name, primary_email);
     }
-    parse_user_identity(xdg_config)
+    let (xdg_name, xdg_email) = parse_user_identity(xdg_config);
+    let name = if primary_name.is_empty() {
+        xdg_name
+    } else {
+        primary_name
+    };
+    let email = if primary_email.is_empty() {
+        xdg_email
+    } else {
+        primary_email
+    };
+    (name, email)
 }
 
 fn parse_user_identity(path: &Path) -> (String, String) {
@@ -121,6 +132,23 @@ mod tests {
 
         let (name, email) = resolve_user_identity(&gitconfig, &xdg_config);
         assert_eq!(name, "XDG User");
+        assert_eq!(email, "xdg@example.com");
+    }
+
+    #[test]
+    fn identity_fields_resolved_independently_across_configs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let gitconfig = dir.path().join(".gitconfig");
+        std::fs::write(&gitconfig, "[user]\n\tname = Primary User\n").unwrap();
+
+        let xdg_git_dir = dir.path().join("xdg/git");
+        std::fs::create_dir_all(&xdg_git_dir).unwrap();
+        let xdg_config = xdg_git_dir.join("config");
+        std::fs::write(&xdg_config, "[user]\n\temail = xdg@example.com\n").unwrap();
+
+        let (name, email) = resolve_user_identity(&gitconfig, &xdg_config);
+        assert_eq!(name, "Primary User");
         assert_eq!(email, "xdg@example.com");
     }
 }

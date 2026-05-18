@@ -10,7 +10,7 @@ tmpfile=$(mktemp)
     echo ""
 
     echo "Open issues (JSON):"
-    gh issue list --state open --json number,title,body,labels
+    gh issue list --state open --json number,title,body,labels,comments
     echo ""
 
     cat /home/claude/prompt.txt

@@ -7,20 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Renamed `single-iter` template to `single-stage`
-
-## [0.4.2] - 2026-05-17
-
 ### Added
 
 - Config-driven `setup` field replaces `before-*.sh` hooks
 
 ### Changed
 
+- Renamed `single-iter` template to `single-stage`
 - Renamed `--git-identity` to `--commit-as`
 - Renamed `--github` to `--github-token-from`
+- Summary artifact schema: removed `terminal_reason` value `"ok"`, renamed `cap_hit_kind` value `"max_pipeline_iterations"` to `"max_stages"`
 
 ### Removed
 
@@ -28,5 +24,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--prompt` (replaced by `prompt` field in stage config)
 - `--min-token-lifetime-minutes` (credential lifetime is now managed internally)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.4.2...HEAD
-[0.4.2]: https://github.com/DavKato/capsule/releases/tag/v0.4.2
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.4.1...HEAD

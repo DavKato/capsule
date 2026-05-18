@@ -1,1 +1,1 @@
-Implement ↔ review loop draining AFK GitHub issues, then PR review and docs.
+Implement ↔ review loop draining open GitHub issues, then PR review and docs.

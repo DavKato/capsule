@@ -80,7 +80,7 @@ mod tests {
     fn list_includes_all_templates() {
         let names: HashSet<String> = list().into_iter().map(|e| e.name).collect();
         assert!(names.contains("ralph-loop"));
-        assert!(names.contains("single-iter"));
+        assert!(names.contains("single-stage"));
     }
 
     #[test]
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn copy_to_produces_capsule_files() {
         let dir = tempfile::tempdir().unwrap();
-        copy_to("single-iter", dir.path()).unwrap();
+        copy_to("single-stage", dir.path()).unwrap();
         assert!(
             dir.path().join("config.yml").exists(),
             "config.yml missing after copy_to"
@@ -111,9 +111,9 @@ mod tests {
     #[test]
     fn copy_to_file_contents_are_identical() {
         let dir = tempfile::tempdir().unwrap();
-        copy_to("single-iter", dir.path()).unwrap();
+        copy_to("single-stage", dir.path()).unwrap();
         let embedded = TEMPLATES_DIR
-            .get_file("single-iter/.capsule/config.yml")
+            .get_file("single-stage/.capsule/config.yml")
             .unwrap()
             .contents();
         let written = std::fs::read(dir.path().join("config.yml")).unwrap();
@@ -122,23 +122,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn copy_to_sets_executable_on_shell_scripts() {
-        let dir = tempfile::tempdir().unwrap();
-        copy_to("single-iter", dir.path()).unwrap();
-        for name in ["before-all.sh", "before-each.sh"] {
-            let path = dir.path().join(name);
-            if path.exists() {
-                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-                assert!(mode & 0o111 != 0, "{name} should be executable");
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn copy_to_does_not_set_executable_on_non_scripts() {
         let dir = tempfile::tempdir().unwrap();
-        copy_to("single-iter", dir.path()).unwrap();
+        copy_to("single-stage", dir.path()).unwrap();
         for name in ["Dockerfile", "config.yml", ".env"] {
             let path = dir.path().join(name);
             if path.exists() {

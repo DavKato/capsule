@@ -26,8 +26,6 @@ pub enum TerminalReason {
     FailExit,
     /// Iteration cap hit in a multi-stage pipeline.
     CapHit,
-    /// Flat-form iteration limit reached (expected terminal for flat configs).
-    Ok,
 }
 
 /// Identifies which counter tripped when `CapHit` is the terminal reason.
@@ -35,8 +33,8 @@ pub enum TerminalReason {
 pub enum CapHitKind {
     /// A loop's `max_iteration` was exceeded; `loop_idx` is the entry index.
     LoopMaxIteration(usize),
-    /// The global `max_pipeline_iterations` was exceeded.
-    MaxPipelineIterations,
+    /// The global `max_stages` was exceeded.
+    MaxStages,
 }
 
 /// Snapshot of iteration counters at pipeline exit.
@@ -54,7 +52,7 @@ pub struct RunSummary {
     pub last_stage: Option<String>,
     pub last_verdict: Option<Verdict>,
     pub iteration_counters: IterationCounters,
-    /// Which counter tripped, if `terminal_reason` is `CapHit` or `Ok`.
+    /// Which counter tripped, if `terminal_reason` is `CapHit`.
     pub cap_hit: Option<CapHitKind>,
     pub session_id: Option<String>,
 }
@@ -70,7 +68,6 @@ pub fn build_summary_artifact(
         TerminalReason::Exit => "exit",
         TerminalReason::FailExit => "fail-exit",
         TerminalReason::CapHit => "cap-hit",
-        TerminalReason::Ok => "ok",
     };
     let cap_hit_counter = match &summary.cap_hit {
         None => serde_json::Value::Null,
@@ -78,8 +75,8 @@ pub fn build_summary_artifact(
             "type": "max_iteration",
             "loop_idx": idx,
         }),
-        Some(CapHitKind::MaxPipelineIterations) => serde_json::json!({
-            "type": "max_pipeline_iterations",
+        Some(CapHitKind::MaxStages) => serde_json::json!({
+            "type": "max_stages",
         }),
     };
     let last_verdict = summary

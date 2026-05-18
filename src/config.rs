@@ -2,16 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// Controls which resolution path `resolve()` takes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ResolveMode {
-    /// Full run path: prompt files are read and injected into stages; iterations required for flat-form.
-    Run,
-    /// Check path: prompt files are not read; iterations default to 1 for flat-form.
-    Check,
-}
-
-pub const MAX_PIPELINE_ITERATIONS_DEFAULT: u32 = 1000;
+pub const MAX_STAGES_DEFAULT: u32 = 1000;
 pub const MAX_RETRIES_DEFAULT: u32 = 3;
 
 /// Git commit identity mode.
@@ -61,6 +52,7 @@ pub struct StageConfig {
     pub on_pass: OnPass,
     pub on_fail: OnFail,
     pub max_retries: u32,
+    pub setup: Option<String>,
 }
 
 /// A `loop:` block containing an ordered list of stages.
@@ -81,28 +73,25 @@ pub enum PipelineEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineConfig {
     pub entries: Vec<PipelineEntry>,
-    pub max_pipeline_iterations: u32,
-    /// True when hitting the loop cap should be treated as success (flat-form desugared configs).
-    pub cap_hit_is_ok: bool,
+    pub max_stages: u32,
 }
 
 /// Resolved configuration used by all downstream modules.
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub iterations: u32,
     pub capsule_dir: PathBuf,
     pub rebuild: bool,
     pub model: Option<String>,
     pub verbose: bool,
-    pub git_identity: GitIdentity,
+    pub commit_as: GitIdentity,
     /// When Some, inject GH_TOKEN into the container from the specified source.
     /// When None, no token is injected.
-    pub github: Option<GithubScope>,
-    /// Parsed pipeline execution graph (present for both flat-form and multi-stage configs).
+    pub github_token_from: Option<GithubScope>,
     pub pipeline: PipelineConfig,
-    pub min_token_lifetime_minutes: Option<u32>,
     /// When Some, tee all display output to this file path.
     pub log_file: Option<PathBuf>,
+    /// Host-side setup command or script path, run before any container starts.
+    pub setup: Option<String>,
 }
 
 /// CLI-supplied overrides. `None` means "not provided on the command line".
@@ -110,34 +99,17 @@ pub struct Config {
 /// but callers may leave them false when they were not passed).
 #[derive(Debug, Default)]
 pub struct CliOverrides {
-    pub iterations: Option<u32>,
-    pub prompt: Option<PathBuf>,
+    pub max_stages: Option<u32>,
     pub rebuild: bool,
     pub model: Option<String>,
     pub verbose: bool,
-    pub git_identity: Option<GitIdentity>,
-    pub github: Option<GithubScope>,
+    pub commit_as: Option<GitIdentity>,
+    pub github_token_from: Option<GithubScope>,
     pub input: Option<String>,
-    pub min_token_lifetime_minutes: Option<u32>,
-    /// KEY=VALUE pairs injected into every container and hook invocation for this run.
+    /// KEY=VALUE pairs injected into every container and setup command for this run.
     pub env: Vec<(String, String)>,
     /// When Some, tee all display output to this file path.
     pub log_file: Option<PathBuf>,
-}
-
-// ── Flat-form serde types ─────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct FlatConfigFile {
-    iterations: Option<u32>,
-    prompt: Option<String>,
-    model: Option<String>,
-    verbose: Option<bool>,
-    git_identity: Option<String>,
-    github: Option<String>,
-    min_token_lifetime_minutes: Option<u32>,
-    log_file: Option<String>,
 }
 
 // ── Multi-stage serde types ───────────────────────────────────────────────────
@@ -150,12 +122,14 @@ struct StageConfigRaw {
     on_pass: Option<String>,
     on_fail: Option<String>,
     max_retries: Option<u32>,
+    setup: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LoopConfigRaw {
     max_iteration: Option<u32>,
     stages: Vec<StageConfigRaw>,
+    setup: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,33 +149,69 @@ enum PipelineEntryRaw {
 #[serde(deny_unknown_fields)]
 struct MultiStageConfigFile {
     stages: Vec<PipelineEntryRaw>,
-    max_pipeline_iterations: Option<u32>,
+    max_stages: Option<u32>,
     model: Option<String>,
     verbose: Option<bool>,
-    git_identity: Option<String>,
-    github: Option<String>,
-    min_token_lifetime_minutes: Option<u32>,
+    commit_as: Option<String>,
+    github_token_from: Option<String>,
     log_file: Option<String>,
-    /// Present to produce a clear error when combined with `stages:`.
-    iterations: Option<u32>,
+    setup: Option<String>,
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
 
-enum RawConfig {
-    Flat(FlatConfigFile),
-    MultiStage(MultiStageConfigFile),
+fn check_old_field_names(val: &serde_yaml::Value) -> Result<()> {
+    const OLD_TO_NEW: &[(&str, &str)] = &[
+        ("git_identity", "commit_as"),
+        ("github", "github_token_from"),
+        ("max_pipeline_iterations", "max_stages"),
+    ];
+    const REMOVED: &[(&str, &str)] = &[(
+        "min_token_lifetime_minutes",
+        "this field has been removed; token lifetime is now checked automatically",
+    )];
+    if let serde_yaml::Value::Mapping(map) = val {
+        for (old, new) in OLD_TO_NEW {
+            if map.contains_key(*old) {
+                anyhow::bail!("unknown field `{old}` — did you mean `{new}`?");
+            }
+        }
+        for (field, reason) in REMOVED {
+            if map.contains_key(*field) {
+                anyhow::bail!("unknown field `{field}` — {reason}");
+            }
+        }
+    }
+    Ok(())
 }
 
-fn parse_config_file(yaml: &str) -> Result<RawConfig> {
+fn parse_config_file(yaml: &str) -> Result<MultiStageConfigFile> {
     let val: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(anyhow::Error::from)?;
-    if val.get("stages").is_some() {
-        let cfg: MultiStageConfigFile = serde_yaml::from_value(val).map_err(anyhow::Error::from)?;
-        Ok(RawConfig::MultiStage(cfg))
-    } else {
-        let cfg: FlatConfigFile = serde_yaml::from_value(val).map_err(anyhow::Error::from)?;
-        Ok(RawConfig::Flat(cfg))
+    check_old_field_names(&val)?;
+    if val.get("stages").is_none() {
+        anyhow::bail!(
+            "config.yml is missing a `stages:` key.\n\
+             \n\
+             Flat-form config (iterations/prompt at the top level) is no longer supported.\n\
+             Migrate to multi-stage format:\n\
+             \n\
+             Before:\n\
+             \n\
+             \x20 iterations: 5\n\
+             \x20 prompt: prompts/implement.md\n\
+             \x20 model: claude-opus-4-7\n\
+             \n\
+             After:\n\
+             \n\
+             \x20 stages:\n\
+             \x20   - name: main\n\
+             \x20     prompt: prompts/implement.md\n\
+             \x20     model: claude-opus-4-7\n\
+             \x20 max_stages: 5\n"
+        );
     }
+    let cfg: MultiStageConfigFile = serde_yaml::from_value(val).map_err(anyhow::Error::from)?;
+    Ok(cfg)
 }
 
 fn parse_on_pass(s: &str) -> Option<OnPass> {
@@ -237,14 +247,21 @@ fn convert_stage(raw: StageConfigRaw) -> StageConfig {
         on_pass,
         on_fail,
         max_retries: raw.max_retries.unwrap_or(MAX_RETRIES_DEFAULT),
+        setup: raw.setup,
     }
 }
 
-fn convert_loop(raw: LoopConfigRaw) -> LoopConfig {
-    LoopConfig {
+fn convert_loop(raw: LoopConfigRaw) -> Result<LoopConfig> {
+    if raw.setup.is_some() {
+        anyhow::bail!(
+            "config.yml: `setup` is not supported inside a `loop:` block — \
+             set `setup` on each stage individually instead"
+        );
+    }
+    Ok(LoopConfig {
         max_iteration: raw.max_iteration,
         stages: raw.stages.into_iter().map(convert_stage).collect(),
-    }
+    })
 }
 
 /// Collect all stage names across all pipeline entries (including loop bodies).
@@ -308,18 +325,11 @@ fn validate_route_targets(entries: &[PipelineEntry]) -> Result<()> {
 }
 
 fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<PipelineConfig> {
-    if cfg.iterations.is_some() {
-        anyhow::bail!(
-            "config.yml: `iterations:` cannot be combined with `stages:` — \
-             use `loop: {{ max_iteration: N }}` instead"
-        );
-    }
-
     let mut entries: Vec<PipelineEntry> = Vec::new();
     for raw_entry in cfg.stages {
         match raw_entry {
             PipelineEntryRaw::Loop(l) => {
-                entries.push(PipelineEntry::Loop(convert_loop(l.loop_block)));
+                entries.push(PipelineEntry::Loop(convert_loop(l.loop_block)?));
             }
             PipelineEntryRaw::Stage(s) => {
                 entries.push(PipelineEntry::Stage(convert_stage(s)));
@@ -332,30 +342,8 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
 
     Ok(PipelineConfig {
         entries,
-        max_pipeline_iterations: cfg
-            .max_pipeline_iterations
-            .unwrap_or(MAX_PIPELINE_ITERATIONS_DEFAULT),
-        cap_hit_is_ok: false,
+        max_stages: cfg.max_stages.unwrap_or(MAX_STAGES_DEFAULT),
     })
-}
-
-fn desugar_flat_form(iterations: u32, prompt: Option<&str>) -> PipelineConfig {
-    let stage = StageConfig {
-        name: "main".to_string(),
-        prompt: prompt.map(str::to_string),
-        model: None,
-        on_pass: OnPass::Next,
-        on_fail: OnFail::Exit,
-        max_retries: MAX_RETRIES_DEFAULT,
-    };
-    PipelineConfig {
-        entries: vec![PipelineEntry::Loop(LoopConfig {
-            max_iteration: Some(iterations),
-            stages: vec![stage],
-        })],
-        max_pipeline_iterations: MAX_PIPELINE_ITERATIONS_DEFAULT,
-        cap_hit_is_ok: true,
-    }
 }
 
 fn git_identity_from_str(s: &str) -> Option<GitIdentity> {
@@ -376,12 +364,9 @@ fn github_scope_from_str(s: &str) -> Option<GithubScope> {
 
 /// Resolve configuration by merging (highest → lowest priority):
 ///   CLI overrides → config file → compiled-in defaults.
-///
-/// `mode` controls whether prompt files are read (`Run`) or left as paths (`Check`),
-/// and whether flat-form configs require an explicit iterations value.
-pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Result<Config> {
+pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     let config_path = capsule_dir.join("config.yml");
-    let raw = if config_path.exists() {
+    let file_cfg = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
             .with_context(|| format!("reading {}", config_path.display()))?;
         Some(
@@ -392,98 +377,83 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides, mode: ResolveMode) -> Resu
         None
     };
 
-    let (file_flat, file_multi) = match raw {
-        Some(RawConfig::Flat(f)) => (Some(f), None),
-        Some(RawConfig::MultiStage(m)) => (None, Some(m)),
-        None => (None, None),
-    };
-
-    // Shared fields (model, verbose, git_identity, github).
-    let file_model = file_flat
-        .as_ref()
-        .and_then(|f| f.model.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.model.clone()));
-    let file_verbose = file_flat
-        .as_ref()
-        .and_then(|f| f.verbose)
-        .or_else(|| file_multi.as_ref().and_then(|m| m.verbose));
-    let file_git_identity = file_flat
-        .as_ref()
-        .and_then(|f| f.git_identity.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.git_identity.clone()));
-    let file_github = file_flat
-        .as_ref()
-        .and_then(|f| f.github.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.github.clone()));
-    let file_min_token = file_flat
-        .as_ref()
-        .and_then(|f| f.min_token_lifetime_minutes)
+    let model = cli
+        .model
+        .or_else(|| file_cfg.as_ref().and_then(|f| f.model.clone()));
+    let verbose = cli.verbose || file_cfg.as_ref().and_then(|f| f.verbose).unwrap_or(false);
+    let commit_as = cli
+        .commit_as
         .or_else(|| {
-            file_multi
+            file_cfg
                 .as_ref()
-                .and_then(|m| m.min_token_lifetime_minutes)
-        });
-    let file_log_file = file_flat
-        .as_ref()
-        .and_then(|f| f.log_file.clone())
-        .or_else(|| file_multi.as_ref().and_then(|m| m.log_file.clone()));
-
-    let model = cli.model.or(file_model);
-    let verbose = cli.verbose || file_verbose.unwrap_or(false);
-    let git_identity = cli
-        .git_identity
-        .or_else(|| file_git_identity.as_deref().and_then(git_identity_from_str))
+                .and_then(|f| f.commit_as.as_deref())
+                .and_then(git_identity_from_str)
+        })
         .unwrap_or(GitIdentity::User);
-    let github = cli
-        .github
-        .or_else(|| file_github.as_deref().and_then(github_scope_from_str));
-
-    let min_token_lifetime_minutes = cli.min_token_lifetime_minutes.or(file_min_token);
-    let log_file = cli.log_file.or_else(|| file_log_file.map(PathBuf::from));
+    let github_token_from = cli.github_token_from.or_else(|| {
+        file_cfg
+            .as_ref()
+            .and_then(|f| f.github_token_from.as_deref())
+            .and_then(github_scope_from_str)
+    });
+    let log_file = cli.log_file.or_else(|| {
+        file_cfg
+            .as_ref()
+            .and_then(|f| f.log_file.as_ref())
+            .map(PathBuf::from)
+    });
     let rebuild = cli.rebuild;
+    let setup = file_cfg.as_ref().and_then(|f| f.setup.clone());
 
-    let (iterations, pipeline) = if let Some(multi) = file_multi {
-        let pipeline = build_pipeline_from_multi_stage(multi)
-            .with_context(|| format!("validating {}", config_path.display()))?;
-        // iterations is not applicable for multi-stage; use max_pipeline_iterations.
-        (pipeline.max_pipeline_iterations, pipeline)
+    let mut pipeline = if let Some(multi) = file_cfg {
+        build_pipeline_from_multi_stage(multi)
+            .with_context(|| format!("validating {}", config_path.display()))?
     } else {
-        let file_flat = file_flat.unwrap_or_default();
-        match mode {
-            ResolveMode::Run => {
-                let iterations = cli.iterations.or(file_flat.iterations).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "--iterations is required (no CLI flag or config.yml value found)"
-                    )
-                })?;
-                let prompt_path = cli.prompt.or_else(|| file_flat.prompt.map(PathBuf::from));
-                let prompt_path_str = prompt_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "prompt.md".to_string());
-                let pipeline = desugar_flat_form(iterations, Some(&prompt_path_str));
-                (iterations, pipeline)
-            }
-            ResolveMode::Check => {
-                let iterations = file_flat.iterations.unwrap_or(1);
-                let pipeline = desugar_flat_form(iterations, file_flat.prompt.as_deref());
-                (iterations, pipeline)
-            }
+        PipelineConfig {
+            entries: Vec::new(),
+            max_stages: MAX_STAGES_DEFAULT,
         }
     };
+    if let Some(n) = cli.max_stages {
+        pipeline.max_stages = n;
+    }
 
     Ok(Config {
-        iterations,
         capsule_dir: capsule_dir.to_path_buf(),
         rebuild,
         model,
         verbose,
-        git_identity,
-        github,
+        commit_as,
+        github_token_from,
         pipeline,
-        min_token_lifetime_minutes,
         log_file,
+        setup,
     })
+}
+
+/// Parsed representation of the `setup` config field.
+#[derive(Debug, Clone)]
+pub enum SetupCommand {
+    Inline(String),
+    File(PathBuf),
+}
+
+impl SetupCommand {
+    /// Whitespace means inline shell command; no whitespace means file path.
+    pub fn parse(raw: &str, capsule_dir: &Path) -> Result<Self> {
+        if raw.contains(char::is_whitespace) {
+            return Ok(Self::Inline(raw.to_string()));
+        }
+        let resolved = capsule_dir.join(raw);
+        if !resolved.exists() {
+            anyhow::bail!(
+                "setup file not found: {raw} (resolved to {}). \
+                 To use an inline command, include a space (e.g. \"bash {raw}\").",
+                resolved.display()
+            );
+        }
+        Ok(Self::File(resolved))
+    }
 }
 
 /// Extract all stage names from a raw YAML string without strict validation.

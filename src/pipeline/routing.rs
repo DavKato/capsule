@@ -37,7 +37,7 @@ pub(super) enum ExitKind {
 
 pub(super) enum LoopCapKind {
     MaxIteration,
-    MaxPipelineIterations,
+    MaxStages,
 }
 
 pub(super) enum StageOutcome {
@@ -67,7 +67,7 @@ pub(super) fn run_loop(
     runner: &mut dyn StageRunner,
     loop_config: &LoopConfig,
     progress: &mut PipelineProgress,
-    max_pipeline: u32,
+    max_stages: u32,
     start_stage_idx: usize,
 ) -> anyhow::Result<LoopOutcome> {
     let loop_name_to_idx: HashMap<String, usize> = loop_config
@@ -100,9 +100,9 @@ pub(super) fn run_loop(
         }
         retrying_top = false;
 
-        if progress.global_counter >= max_pipeline {
+        if progress.global_counter >= max_stages {
             return Ok(LoopOutcome::CapHit {
-                kind: LoopCapKind::MaxPipelineIterations,
+                kind: LoopCapKind::MaxStages,
                 iterations: iteration_count,
             });
         }
@@ -122,6 +122,7 @@ pub(super) fn run_loop(
             &stage.name,
             &effective_prompt,
             stage.model.as_deref(),
+            stage.setup.as_deref(),
             retry.as_ref(),
         )?;
         progress.last_verdict = verdict.clone();
@@ -254,14 +255,11 @@ pub(super) fn handle_loop_outcome(
             )
         }
         LoopOutcome::CapHit {
-            kind: LoopCapKind::MaxPipelineIterations,
+            kind: LoopCapKind::MaxStages,
             iterations,
         } => {
             loop_iterations.insert(entry_idx, iterations);
-            LoopControl::Break(
-                PipelineOutcome::CapHit,
-                Some(CapHitKind::MaxPipelineIterations),
-            )
+            LoopControl::Break(PipelineOutcome::CapHit, Some(CapHitKind::MaxStages))
         }
     }
 }
@@ -285,6 +283,7 @@ pub(super) fn run_stage(
         &stage.name,
         &effective_prompt,
         stage.model.as_deref(),
+        stage.setup.as_deref(),
         retry.as_ref(),
     )?;
     progress.last_verdict = verdict.clone();

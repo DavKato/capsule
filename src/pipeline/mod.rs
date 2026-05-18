@@ -34,6 +34,7 @@ pub trait StageRunner {
         stage_name: &str,
         prompt: &str,
         model: Option<&str>,
+        setup: Option<&str>,
         retry: Option<&RetryInfo>,
     ) -> anyhow::Result<Option<crate::verdict::Verdict>>;
 }
@@ -89,8 +90,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
         prompt::resolve_all_prompts(&mut self.config.entries, self.capsule_dir.as_deref())?;
 
         let name_to_entry = build_name_index(&self.config);
-        let max_pipeline = self.config.max_pipeline_iterations;
-        let cap_hit_is_ok = self.config.cap_hit_is_ok;
+        let max_pipeline = self.config.max_stages;
 
         let (mut current_idx, mut loop_iterations, mut progress) = match self.initial_state.take() {
             Some(s) => (
@@ -125,7 +125,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             match &self.config.entries[current_idx] {
                 PipelineEntry::Stage(stage) => {
                     if progress.global_counter >= max_pipeline {
-                        break (PipelineOutcome::CapHit, Some(CapHit::MaxPipelineIterations));
+                        break (PipelineOutcome::CapHit, Some(CapHit::MaxStages));
                     }
                     progress.global_counter += 1;
                     match run_stage(&mut self.runner, stage, &name_to_entry, &mut progress)? {
@@ -182,12 +182,11 @@ impl<R: StageRunner> PipelineExecutor<R> {
             }
         };
 
-        let terminal_reason = match (&outcome, cap_hit_is_ok) {
-            (PipelineOutcome::Done, _) => TerminalReason::Done,
-            (PipelineOutcome::Exit { from_fail: false }, _) => TerminalReason::Exit,
-            (PipelineOutcome::Exit { from_fail: true }, _) => TerminalReason::FailExit,
-            (PipelineOutcome::CapHit, true) => TerminalReason::Ok,
-            (PipelineOutcome::CapHit, false) => TerminalReason::CapHit,
+        let terminal_reason = match &outcome {
+            PipelineOutcome::Done => TerminalReason::Done,
+            PipelineOutcome::Exit { from_fail: false } => TerminalReason::Exit,
+            PipelineOutcome::Exit { from_fail: true } => TerminalReason::FailExit,
+            PipelineOutcome::CapHit => TerminalReason::CapHit,
         };
 
         let pipeline_state = PipelineState {
@@ -248,6 +247,7 @@ mod tests {
             _stage_name: &str,
             _prompt: &str,
             _model: Option<&str>,
+            _setup: Option<&str>,
             _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             Ok(self
@@ -286,14 +286,14 @@ mod tests {
             on_pass: OnPass::Next,
             on_fail: OnFail::Exit,
             max_retries: MAX_RETRIES_DEFAULT,
+            setup: None,
         }
     }
 
     fn pipeline(entries: Vec<PipelineEntry>) -> PipelineConfig {
         PipelineConfig {
             entries,
-            max_pipeline_iterations: 1000,
-            cap_hit_is_ok: false,
+            max_stages: 1000,
         }
     }
 
@@ -397,13 +397,12 @@ mod tests {
     }
 
     #[test]
-    fn max_pipeline_iterations_caps_total() {
+    fn max_stages_caps_total() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
-            max_pipeline_iterations: 3,
-            cap_hit_is_ok: false,
+            max_stages: 3,
         };
         // 4 fails: 3rd triggers cap, 4th never runs
         assert_eq!(
@@ -513,6 +512,7 @@ mod tests {
             _stage_name: &str,
             prompt: &str,
             _model: Option<&str>,
+            _setup: Option<&str>,
             _retry: Option<&RetryInfo>,
         ) -> anyhow::Result<Option<Verdict>> {
             self.prompts.lock().unwrap().push(prompt.to_string());
@@ -683,20 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_reason_ok_for_flat_form_cap_hit() {
-        let config = PipelineConfig {
-            entries: vec![PipelineEntry::Loop(LoopConfig {
-                max_iteration: Some(1),
-                stages: vec![stage("a")],
-            })],
-            max_pipeline_iterations: 1000,
-            cap_hit_is_ok: true,
-        };
-        let summary = run_summary(config, FakeRunner::new([pass()]));
-        assert_eq!(summary.terminal_reason, TerminalReason::Ok);
-    }
-
-    #[test]
     fn terminal_reason_cap_hit_for_multi_stage_loop_cap() {
         let config = pipeline(vec![PipelineEntry::Loop(LoopConfig {
             max_iteration: Some(1),
@@ -751,11 +737,10 @@ mod tests {
         s.on_fail = OnFail::Retry;
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
-            max_pipeline_iterations: 2,
-            cap_hit_is_ok: false,
+            max_stages: 2,
         };
         let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
-        assert_eq!(summary.cap_hit, Some(CapHitKind::MaxPipelineIterations));
+        assert_eq!(summary.cap_hit, Some(CapHitKind::MaxStages));
     }
 
     fn run_result(config: PipelineConfig, runner: FakeRunner) -> PipelineRunResult {
@@ -860,14 +845,12 @@ mod tests {
         s.max_retries = 10;
         let config = PipelineConfig {
             entries: vec![single_stage_entry(s)],
-            max_pipeline_iterations: 5,
-            cap_hit_is_ok: false,
+            max_stages: 5,
         };
         // First run: 3 fails → CapHit at max 3
         let config3 = PipelineConfig {
             entries: config.entries.clone(),
-            max_pipeline_iterations: 3,
-            cap_hit_is_ok: false,
+            max_stages: 3,
         };
         let first_run = run_result(config3, FakeRunner::new([fail(), fail(), fail()]));
         assert_eq!(first_run.pipeline_state.global_counter, 3);

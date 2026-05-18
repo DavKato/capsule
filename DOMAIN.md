@@ -103,7 +103,7 @@ String passed via `capsule run --input "..."`, injected into the first stage's p
 _Avoid_: Argument, seed
 
 **Run environment**:
-User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and hook script for the duration of the run. Persisted in pipeline state on resumable exits so `capsule resume` restores them; `--env` on resume merges on top (last writer wins per key). Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (gitignored defaults and secrets). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
+User-supplied `KEY=VALUE` pairs passed via `--env` on `capsule run`, injected into every container invocation and setup command for the duration of the run. Persisted in pipeline state on resumable exits so `capsule resume` restores them; `--env` on resume merges on top (last writer wins per key). Distinct from pipeline input (prompt-only, first invocation only) and `.capsule/.env` (gitignored defaults and secrets). Written to a temp file and passed via `--env-file` so values never appear in process arguments.
 _Avoid_: Run args, run parameters, heap
 
 **Note injection**:
@@ -147,21 +147,9 @@ _Avoid_: Auth retry, credential refresh
 
 ### Workflow patterns
 
-**Ready-for-agent issue**:
-A GitHub issue labeled `ready-for-agent`, eligible for capsule to pick up autonomously.
-_Avoid_: AFK issue, bot issue, capsule issue
-
-**Ready-for-human issue**:
-A GitHub issue labeled `ready-for-human`, reserved for the human to work on interactively.
-_Avoid_: HITL issue, manual issue
-
 **Queue drain**:
-The workflow pattern in which a loop's implementer repeatedly picks the next ready-for-agent issue, emitting `done` when the queue is empty.
+A loop whose stage repeatedly picks the next item from an external list, emitting `done` when the list is empty.
 _Avoid_: Worklist, backlog drain
-
-**Dream cycle**:
-The end-to-end autonomous flow: plan → queue drain (implement ↔ review) → document, wrapped in one pipeline.
-_Avoid_: Full auto
 
 **Fan-out** *(out of scope)*:
 A single stage producing N independent executions in parallel, one per item in an upstream list; not part of the current pipeline grammar.
@@ -170,7 +158,7 @@ _Avoid_: Parallel, shard
 ### Setup and discovery *(planned — surface not yet implemented)*
 
 **Template**:
-A pre-built `.capsule/` skeleton (e.g., `single-iter`, `ralph-loop`) shipped in the capsule repo's `templates/` directory; `capsule init --template <name>` copies it byte-for-byte into the user's repo. Templates replace the former `examples/` directory and are validated in CI via `capsule check`.
+A pre-built `.capsule/` skeleton (e.g., `single-stage`, `ralph-loop`) shipped in the capsule repo's `templates/` directory; `capsule init --template <name>` copies it byte-for-byte into the user's repo. Templates replace the former `examples/` directory and are validated in CI via `capsule check`.
 _Avoid_: Example, scaffold, preset, starter
 
 **`capsule init`**:
@@ -182,7 +170,7 @@ Agent-facing enumeration of available templates with one-line descriptions. The 
 _Avoid_: Template index
 
 **`capsule check`**:
-Validates a `.capsule/` setup. Level 2 structural checks (route targets resolve, prompt files exist, hook scripts present, loop nesting rules hold) plus opportunistic Level 3 hints (typo suggestions, missing-env-var warnings). The feedback loop that makes "edit + validate" a viable migration workflow.
+Validates a `.capsule/` setup. Level 2 structural checks (route targets resolve, prompt files exist, setup fields valid, migration guards for old hook scripts, loop nesting rules hold) plus opportunistic Level 3 hints (typo suggestions, missing-env-var warnings). The feedback loop that makes "edit + validate" a viable migration workflow.
 _Avoid_: Validate, lint, verify
 
 **`capsule explain`**:

@@ -42,9 +42,13 @@ pub struct ExecutionConfig {
     pub git_author_name: String,
     /// Git author/committer email passed as `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL`.
     pub git_author_email: String,
-    /// Path to `before-each.sh` on the host. When Some, mounted read-only into
-    /// the container at `/home/claude/before-each.sh`.
-    pub before_each_path: Option<PathBuf>,
+    /// Per-stage setup value from `StageConfig.setup`. If the value resolves to an
+    /// existing file under `capsule_dir`, the file is bind-mounted read-only and
+    /// `CAPSULE_STAGE_SETUP` is set to the container-side path; otherwise the value
+    /// is treated as an inline shell command and passed directly as the env var.
+    pub setup: Option<String>,
+    /// `.capsule/` directory on the host — used to resolve relative `setup` file paths.
+    pub capsule_dir: PathBuf,
     /// Docker network to attach the container to. Detected from a running Compose
     /// project at `pwd`; None when no project is found.
     pub compose_network: Option<String>,

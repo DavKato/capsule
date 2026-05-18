@@ -49,14 +49,14 @@ pub(super) fn load_dotenv(capsule_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Resolve GH_TOKEN when --github is set and write it to a temp env-file so
+/// Resolve GH_TOKEN when --github-token-from is set and write it to a temp env-file so
 /// the token never appears in `docker run` args.
 pub(super) fn setup_gh_token(
     cfg: &Config,
     pre_dotenv_env: &HashMap<String, String>,
     dotenv_map: &HashMap<String, String>,
 ) -> Result<Option<tempfile::NamedTempFile>> {
-    let scope = match &cfg.github {
+    let scope = match &cfg.github_token_from {
         None => return Ok(None),
         Some(s) => s,
     };
@@ -84,7 +84,7 @@ pub(super) fn setup_gh_token(
                 if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
                     anyhow::bail!(
                         "Aborted. To avoid this prompt use 'local' mode: \
-                         add GH_TOKEN to .capsule/.env and pass --github local"
+                         add GH_TOKEN to .capsule/.env and pass --github-token-from local"
                     );
                 }
             }
@@ -210,18 +210,15 @@ pub(super) fn merge_env(
     result
 }
 
-pub(super) fn token_lifetime_warning(
-    remaining_minutes: Option<u64>,
-    threshold_minutes: Option<u32>,
-) -> Option<String> {
-    let threshold = threshold_minutes?;
+const TOKEN_WARNING_THRESHOLD_MINUTES: u64 = 30;
+
+pub(super) fn token_lifetime_warning(remaining_minutes: Option<u64>) -> Option<String> {
     let remaining = remaining_minutes?;
-    if remaining >= threshold as u64 {
+    if remaining >= TOKEN_WARNING_THRESHOLD_MINUTES {
         return None;
     }
     Some(format!(
-        "Warning: OAuth token expires in {remaining} minutes (threshold: {threshold} min).\n\
-         Run `claude auth login` to refresh before starting."
+        "OAuth token expires in {remaining} minutes — run `claude auth login` to refresh before starting."
     ))
 }
 
@@ -257,7 +254,7 @@ mod tests {
     use super::{
         build_extra_env_tempfile, env_gitignore_warning, is_valid_posix_env_key, load_dotenv,
         merge_env, parse_dotenv, resolve_gh_token, sanitize_persisted_env, strip_quotes,
-        token_lifetime_warning,
+        token_lifetime_warning, TOKEN_WARNING_THRESHOLD_MINUTES,
     };
     use capsule::config::GithubScope;
     use std::collections::HashMap;
@@ -398,31 +395,34 @@ mod tests {
 
     #[test]
     fn token_warning_when_below_threshold() {
-        let msg = token_lifetime_warning(Some(10), Some(15));
+        let remaining = TOKEN_WARNING_THRESHOLD_MINUTES - 1;
+        let msg = token_lifetime_warning(Some(remaining));
         assert!(msg.is_some());
         let text = msg.unwrap();
-        assert!(text.contains("10"), "msg: {text}");
-        assert!(text.contains("15"), "msg: {text}");
+        assert!(
+            text.contains(&remaining.to_string()),
+            "msg should include remaining minutes: {text}"
+        );
+    }
+
+    #[test]
+    fn no_token_warning_when_at_threshold() {
+        assert!(token_lifetime_warning(Some(TOKEN_WARNING_THRESHOLD_MINUTES)).is_none());
     }
 
     #[test]
     fn no_token_warning_when_above_threshold() {
-        assert!(token_lifetime_warning(Some(30), Some(15)).is_none());
-    }
-
-    #[test]
-    fn no_token_warning_when_no_threshold() {
-        assert!(token_lifetime_warning(Some(10), None).is_none());
+        assert!(token_lifetime_warning(Some(TOKEN_WARNING_THRESHOLD_MINUTES + 10)).is_none());
     }
 
     #[test]
     fn no_token_warning_when_no_credentials() {
-        assert!(token_lifetime_warning(None, Some(15)).is_none());
+        assert!(token_lifetime_warning(None).is_none());
     }
 
     #[test]
     fn token_warning_when_expired() {
-        let msg = token_lifetime_warning(Some(0), Some(15));
+        let msg = token_lifetime_warning(Some(0));
         assert!(msg.is_some());
     }
 

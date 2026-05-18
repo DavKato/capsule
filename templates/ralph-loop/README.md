@@ -1,6 +1,6 @@
 # Ralph loop example
 
-A reference pipeline demonstrating the ralph loop pattern: an implement ↔ review feedback loop that drains a queue of `AFK`-labelled GitHub issues, followed by a holistic PR review and a documentation pass.
+A reference pipeline demonstrating the ralph loop pattern: an implement ↔ review feedback loop that drains a queue of open GitHub issues, followed by a holistic PR review and a documentation pass.
 
 The pattern is named after Ralph Wiggum — relentless persistence until external criteria confirm the work is done.
 
@@ -12,9 +12,9 @@ loop [ implementer ◄──► reviewer ] ──► pr-reviewer ──► docum
 
 | Stage | Role | Verdict |
 |---|---|---|
-| implementer | Works through `AFK` issues one at a time | `done` when queue is empty, `fail` if stuck |
+| implementer | Works through open issues one at a time | `done` when queue is empty, `fail` if stuck |
 | reviewer | Reviews the latest commit | `pass` to continue, `fail` routes back to implementer |
-| pr-reviewer | Holistic review of all changes once the loop exits | `pass` to proceed, `fail` opens new `AFK` issues and routes back to implementer |
+| pr-reviewer | Holistic review of all changes once the loop exits | `pass` to proceed, `fail` opens new issues and routes back to implementer |
 | documentor | Updates docs to reflect the completed work | `pass` |
 
 ## How routing works
@@ -22,7 +22,7 @@ loop [ implementer ◄──► reviewer ] ──► pr-reviewer ──► docum
 - **implementer → reviewer**: fall-through after each issue
 - **reviewer → implementer** (on fail): loopback via `on_fail: implementer`; reviewer notes arrive in implementer's next prompt as a `<previous-stage>` block
 - **implementer → pr-reviewer** (queue empty): `done` verdict exits the loop scope and falls through to the next top-level stage
-- **pr-reviewer → implementer** (on fail): loopback via `on_fail: implementer`; new `AFK` issues opened by pr-reviewer get picked up on re-entry
+- **pr-reviewer → implementer** (on fail): loopback via `on_fail: implementer`; new issues opened by pr-reviewer get picked up on re-entry
 - **Loop cap**: `max_iteration: 10` prevents runaway loops
 
 ## Running it
@@ -34,17 +34,17 @@ cd examples/ralph-loop
 capsule run --input "Add a health-check endpoint to the API"
 ```
 
-The implementer will pick up any open `AFK` issues. Use `--input` to inject context at the start of the first stage's prompt.
+The implementer will pick up any open issues. Use `--input` to inject context at the start of the first stage's prompt.
 
-For run-scoped parameters that persist across all stages and hooks (e.g. filtering issues by parent), use `--env`:
+For run-scoped parameters that persist across all stages and setup commands (e.g. filtering issues by parent), use `--env`:
 
 ```sh
-capsule run --env PARENT=79    # $PARENT is available in every container and hook script
+capsule run --env PARENT=79    # $PARENT is available in every container and setup command
 ```
 
 ## Key concepts shown
 
-- **Ralph loop** — implementer iterates until the `AFK` queue is empty, using `done` to signal completion rather than `pass`
+- **Ralph loop** — implementer iterates until the open-issue queue is empty, using `done` to signal completion rather than `pass`
 - **Note injection** — reviewer feedback is automatically prepended to implementer's next prompt as a `<previous-stage>` block
 - **`done` for queue drain** — `done` exits the nearest enclosing scope (the loop) cleanly; `pass` would trigger another iteration
 - **`on_fail: retry` + `max_retries`** — guards against implementer getting stuck in a hard failure without consuming all loop iterations

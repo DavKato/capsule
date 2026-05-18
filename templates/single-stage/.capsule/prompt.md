@@ -1,0 +1,1 @@
+This is an unconfigured capsule project. Explore the repository, read CLAUDE.md if it exists, and look for open GitHub issues or TODOs. Pick the highest-priority item you can find and work on it. If there's nothing actionable, report what you found and call `submit_verdict(status="pass", notes="No actionable work found.")`.

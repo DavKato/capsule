@@ -8,7 +8,7 @@ fn cmd() -> Command {
 fn init_with_template_creates_capsule_dir() {
     let dir = tempfile::tempdir().unwrap();
     cmd()
-        .args(["init", "--template", "single-iter"])
+        .args(["init", "--template", "single-stage"])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -21,7 +21,7 @@ fn init_refuses_existing_capsule_without_force() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".capsule")).unwrap();
     let output = cmd()
-        .args(["init", "--template", "single-iter"])
+        .args(["init", "--template", "single-stage"])
         .current_dir(dir.path())
         .assert()
         .failure();
@@ -39,7 +39,7 @@ fn init_force_overwrites_existing() {
     std::fs::create_dir(&capsule_dir).unwrap();
     std::fs::write(capsule_dir.join("sentinel.txt"), b"old").unwrap();
     cmd()
-        .args(["init", "--template", "single-iter", "--force"])
+        .args(["init", "--template", "single-stage", "--force"])
         .current_dir(dir.path())
         .assert()
         .success();

@@ -1,15 +1,10 @@
 # capsule
 
-Runs Claude Code inside a Docker container against your repo, working through GitHub issues autonomously.
-
-> **Note:** This is for my own simple usage for now. It works for me and my setup (Arch Linux) but if you're going to use it you'll probably need some tweaking.
-
-Each iteration runs Claude Code in an isolated container. You control what Claude sees via a prompt file and optional hook scripts. The loop runs until Claude signals completion or the iteration limit is reached.
+Orchestrates multi-stage Claude Code pipelines inside Docker containers.
 
 ## Requirements
 
 - Docker
-- `gh` CLI authenticated (`gh auth login`)
 - Claude Code installed and authenticated on the host
 
 ## Install
@@ -17,8 +12,6 @@ Each iteration runs Claude Code in an isolated container. You control what Claud
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DavKato/capsule/main/install.sh | bash
 ```
-
-Installs the binary to `~/.local/bin` and sets up shell completions (bash, zsh, fish). No Rust toolchain required.
 
 <details>
 <summary>Manual install</summary>
@@ -42,89 +35,32 @@ capsule completion fish > ~/.config/fish/completions/capsule.fish              #
 
 </details>
 
-### Claude Code skill
+## Quick start
+
+Add the skill to your repo and ask your AI to set up capsule:
 
 ```sh
 npx skills@latest add davkat/capsule/capsule
 ```
 
-## Usage
+The skill points the agent to `capsule explain` and `capsule templates list`, which is enough to initialize, customize, or debug a `.capsule/` setup. If you prefer not to install the skill, copy the [skill instruction](skills/capsule.md) into your prompt directly.
+
+If you prefer to set up without AI, run `capsule init` and pick a template interactively, then edit the generated `.capsule/` files from there.
+
+## Learn more
+
+Capsule ships self-describing documentation via `capsule explain`:
 
 ```sh
-capsule run --iterations 5
+capsule explain                     # topic index with task recipes
+capsule explain commands            # subcommands, flags, and defaults
+capsule explain setup-files         # what each .capsule/ file owns
+capsule explain --all               # everything at once
 ```
 
-```sh
-capsule run --iterations 1 --rebuild          # force-rebuild the Docker image
-capsule run --iterations 3 --verbose          # show unfiltered container output
-capsule run --model claude-opus-4-6 --iterations 2
-capsule run --capsule-dir path/to/.capsule    # use a non-default config directory
-capsule run --log-file run.log --iterations 3  # tee run output to a file
-capsule run --env PARENT=79 --iterations 3    # inject run-scoped parameters into containers and hooks
-capsule completion bash | source              # enable tab-completion in the current shell
-capsule update                                # download and install the latest release
-```
+You can also browse the [`topics/`](topics/) directory directly.
 
-```sh
-capsule resume                                # resume from last interrupted run
-capsule resume --env KEY=newvalue             # resume with env override (merges on top of persisted pairs)
-```
-
-```sh
-capsule check                                 # validate .capsule/ directory structure
-capsule init --template ralph-loop              # bootstrap .capsule/ from a template
-capsule templates list                        # browse available templates
-capsule explain mental-model                  # show agent-targeted documentation topics
-```
-
-## Config directory
-
-Place a `.capsule/` directory in your repo to configure behaviour:
-
-| File | Purpose |
-|------|---------|
-| `prompt.md` | Base prompt passed to Claude each iteration |
-| `config.yml` | Default flag values (overridden by CLI flags and env vars) |
-| `.env` | Secrets and per-container env vars (should be gitignored) |
-| `Dockerfile` | Extends the base image with repo-specific tooling |
-| `before-all.sh` | Runs once on the host before any container starts |
-| `before-each.sh` | Runs inside the container before Claude starts each iteration |
-
-See [`templates/single-iter/.capsule/`](templates/single-iter/.capsule/) for a flat-form setup and [`templates/ralph-loop/.capsule/`](templates/ralph-loop/.capsule/) for a multi-stage pipeline.
-
-## Prompt
-
-`capsule` is prompt-agnostic — it injects no context on its own. Place your prompt at `.capsule/prompt.md` (or pass `--prompt path/to/other.md`).
-
-Use `before-each.sh` to prepend dynamic context (e.g. git log, open issues) to `/home/claude/prompt.txt` before Claude reads it. See [`templates/single-iter/.capsule/before-each.sh`](templates/single-iter/.capsule/before-each.sh) for a working example.
-
-## Config file
-
-`.capsule/config.yml` accepts the same keys as the CLI flags, as defaults:
-
-```yaml
-iterations: 3
-model: claude-sonnet-4-6
-git_identity: user  # or: capsule
-```
-
-Precedence: **CLI flag → config.yml → default**.
-
-See [`templates/ralph-loop/.capsule/config.yml`](templates/ralph-loop/.capsule/config.yml) for a multi-stage example.
-
-## Hooks
-
-**`before-all.sh`** — runs once on the host before the first container starts. Use it for pre-flight checks (e.g. verifying a database container is up). Non-zero exit aborts the entire run.
-
-**`before-each.sh`** — runs inside the container before Claude starts each iteration. Can modify `/home/claude/prompt.txt` to inject dynamic context. Non-zero exit aborts that iteration.
-
-The following environment variables are available inside `before-each.sh`:
-
-| Variable | Description |
-|---|---|
-| `CAPSULE_WORKSPACE` | Absolute path to the workspace inside the container (mirrors the host path) |
-
-Both hooks receive variables from `.capsule/.env`. Variables passed via `--env KEY=VALUE` on `capsule run` or `capsule resume` are also injected into both hooks, overriding same-named `.env` keys.
+This repo's own [`.capsule/`](.capsule/) is a working example — a multi-stage pipeline that capsule uses to develop itself.
 
 ## Development
 
@@ -135,31 +71,6 @@ make install-dev    # build and install as capsule-dev
 make uninstall-dev  # remove capsule-dev
 ```
 
-This places the binary at `~/.cargo/bin/capsule-dev`. Use it when testing against a repo that capsule itself manages (e.g. running capsule on its own codebase), since the agent's `cargo build` inside the container would overwrite `target/debug/capsule`.
-
 ## Releasing
 
-Requires [`cargo-release`](https://github.com/crate-ci/cargo-release):
-
-```sh
-cargo install cargo-release
-```
-
-Then bump the version, tag, and push in one command:
-
-```sh
-cargo release patch --execute   # or: minor, major
-```
-
-This updates `Cargo.toml`, commits, creates the version tag, and pushes. GitHub Actions then builds binaries for all four targets and attaches them to the GitHub Release automatically.
-
-## How it works
-
-1. Resolves config from `config.yml`, CLI flags, and env vars
-2. Runs pre-flight checks (Docker daemon reachable, prompt file present)
-3. Sources `.capsule/.env` into the host environment
-4. Builds the base `capsule` image if not cached (or if `--rebuild` is passed)
-5. Builds a repo-specific `capsule-<basename>` image if `.capsule/Dockerfile` exists
-6. Runs `before-all.sh` if present
-7. For each iteration: mounts the prompt, runs `before-each.sh` inside the container, pipes the prompt to Claude Code, and renders streaming output with color-coded status
-8. Exits early when Claude calls `submit_verdict` (pass exits 0, fail exits non-zero) or the iteration budget is exhausted (implicit fail)
+Releases are managed by the [`/release` skill](.claude/skills/release/SKILL.md).

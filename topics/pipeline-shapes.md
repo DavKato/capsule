@@ -1,22 +1,24 @@
 # pipeline-shapes
 
-Load when choosing between pipeline layouts — single-iter or ralph-loop — or when bootstrapping a new `.capsule/` from a template.
+Load when choosing between pipeline layouts — single-stage or ralph-loop — or when bootstrapping a new `.capsule/` from a template.
 
 ## Shapes at a glance
 
 | Shape | When to use | Loop present |
 |-------|-------------|--------------|
-| **single-iter** | One-shot task, no review needed, simple output | No |
+| **single-stage** | One-shot task, no review needed, simple output | No |
 | **ralph-loop** | Iterative work with implementer+reviewer cycle | Yes |
 
-## single-iter
+## single-stage
 
-One stage, no loop. Defined as flat-form config with an `iterations:` cap.
+One stage, no loop. Defined as a `stages:` config with a single named stage.
 
 ```yaml
-iterations: 3
+stages:
+  - name: main
+    prompt: prompt.md
 model: claude-sonnet-4-6
-github: local
+github_token_from: local
 ```
 
 Use when:
@@ -24,7 +26,7 @@ Use when:
 - No review gate needed
 - Failure just retries from scratch
 
-Bootstrap: `capsule init --template single-iter`
+Bootstrap: `capsule init --template single-stage`
 
 ## ralph-loop
 
@@ -48,7 +50,7 @@ stages:
     prompt: prompts/documentor.md
 
 model: claude-sonnet-4-6
-github: local
+github_token_from: local
 ```
 
 Use when:
@@ -60,10 +62,12 @@ Bootstrap: `capsule init --template ralph-loop`
 
 ## Decision criteria
 
-1. **Does the task need a review gate?** If yes → ralph-loop. If no → single-iter.
-2. **Does failure mean "retry the whole thing"?** single-iter with `iterations: N` is simpler.
-3. **Do you need stages after the iterative work?** ralph-loop supports post-loop stages; single-iter does not.
-4. **Is the task queue-draining (many items, each simple)?** single-iter per item; orchestrate externally.
+1. **Does the task need a review gate?** If yes → ralph-loop. If no → single-stage.
+2. **Does failure mean "retry the whole thing"?** single-stage with `on_fail: retry` on the stage is simpler.
+3. **Do you need stages after the iterative work?** ralph-loop supports post-loop stages; single-stage does not.
+4. **Is the task queue-draining (many items, each simple)?** single-stage per item; orchestrate externally.
+
+`max_stages` is a global safety cap on total stage invocations across the entire run — not a retry count or iteration limit for any individual stage or loop. Set it high enough to cover your expected pipeline depth; the defaults are conservative.
 
 ## Customizing after init
 

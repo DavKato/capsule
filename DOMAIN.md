@@ -147,21 +147,9 @@ _Avoid_: Auth retry, credential refresh
 
 ### Workflow patterns
 
-**Ready-for-agent issue**:
-A GitHub issue labeled `ready-for-agent`, eligible for capsule to pick up autonomously.
-_Avoid_: AFK issue, bot issue, capsule issue
-
-**Ready-for-human issue**:
-A GitHub issue labeled `ready-for-human`, reserved for the human to work on interactively.
-_Avoid_: HITL issue, manual issue
-
 **Queue drain**:
-The workflow pattern in which a loop's implementer repeatedly picks the next ready-for-agent issue, emitting `done` when the queue is empty.
+A loop whose stage repeatedly picks the next item from an external list, emitting `done` when the list is empty.
 _Avoid_: Worklist, backlog drain
-
-**Dream cycle**:
-The end-to-end autonomous flow: plan → queue drain (implement ↔ review) → document, wrapped in one pipeline.
-_Avoid_: Full auto
 
 **Fan-out** *(out of scope)*:
 A single stage producing N independent executions in parallel, one per item in an upstream list; not part of the current pipeline grammar.

@@ -35,6 +35,6 @@ cargo test
 
 All terminal output must go through `capsule::display`. Never use `println!` or `print!` directly in `src/` — use `display::println` / `display::print` instead. The only exceptions are `src/display.rs` (which owns stdout) and `src/mcp_server.rs` (JSON-RPC protocol). CI enforces this via the `lint-stdout` job.
 
-## Versioning
+## Releases
 
-**Never bump the version in `Cargo.toml` manually.** Releases are managed by [`cargo-release`](https://github.com/crate-ci/cargo-release) and the version is set automatically during the release workflow.
+**Never edit `CHANGELOG.md` or bump the version in `Cargo.toml` manually.** Both are managed by the `/release` skill and [`cargo-release`](https://github.com/crate-ci/cargo-release).

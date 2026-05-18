@@ -80,7 +80,6 @@ pub fn build_docker_args(
 
     if let Some(value) = &cfg.setup {
         if value.contains(char::is_whitespace) {
-            // Inline command — pass directly.
             args.push(format!("-e=CAPSULE_STAGE_SETUP={value}"));
         } else {
             // No whitespace → must be a file path. Error clearly if the file is missing

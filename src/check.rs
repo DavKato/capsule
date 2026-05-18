@@ -53,7 +53,6 @@ fn check_prompt_files(pipeline: &PipelineConfig, capsule_dir: &Path, issues: &mu
 }
 
 fn check_hook_scripts(cfg: &Config, issues: &mut CheckReport) {
-    // Migration guard: error if old-style hook scripts exist.
     for name in ["before-all.sh", "before-each.sh"] {
         let path = cfg.capsule_dir.join(name);
         if path.exists() {
@@ -82,7 +81,6 @@ fn check_hook_scripts(cfg: &Config, issues: &mut CheckReport) {
 }
 
 fn check_setup_value(value: &str, location: &str, capsule_dir: &Path, issues: &mut CheckReport) {
-    // Values with whitespace are inline commands — no file validation needed.
     if value.contains(char::is_whitespace) {
         return;
     }

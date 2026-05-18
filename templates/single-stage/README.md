@@ -1,6 +1,6 @@
 # Single-stage example
 
-The simplest capsule setup: a single-stage config running one prompt per container. Each run picks one `AFK`-labelled GitHub issue, implements it, and commits.
+The simplest capsule setup: a single-stage config running one prompt per container. Each run picks an open GitHub issue, implements it, and commits.
 
 ## Structure
 

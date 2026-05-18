@@ -8,7 +8,8 @@ sub-issues. Your job is a final holistic review before documentation.
    /create-pr skill. Pass `--base <base-branch>` using the base from step 1.
 3. Check if the PR already has the `reviewed` label. If it does, this is a
    subsequent review — filter out nit-picks (Low severity).
-4. Review the PR diff using /review-diff skill.
+4. Review the PR diff using /review-diff skill. Exclude documentation files
+   (*.md) from your review — they are handled by a downstream stage.
 5. Verify conditional findings. Some findings may be hedged ("if not
    intentional…", "may be a problem if…"). For each, investigate the
    codebase to confirm or discard. Only confirmed findings proceed to the

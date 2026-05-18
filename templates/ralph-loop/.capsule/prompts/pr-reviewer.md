@@ -7,4 +7,4 @@ Review the full diff since the run started:
 
 If everything is clean, call `submit_verdict` with status `pass`.
 
-If there are problems, open GitHub issues for each one labelled `AFK`, then call `submit_verdict` with status `fail` — the pipeline will route back to the implementer to address them.
+If there are problems, open GitHub issues for each one, then call `submit_verdict` with status `fail` — the pipeline will route back to the implementer to address them.

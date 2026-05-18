@@ -8,9 +8,9 @@ Follow all conventions in CLAUDE.md.
 
 GitHub issues are provided at start of context.
 
-You will work on the issues that have "AFK" label only.
+Work through open issues one at a time.
 
-When all AFK tasks are complete, call `submit_verdict(status="pass", notes="Queue drained.")`.
+When all open tasks are complete, call `submit_verdict(status="pass", notes="Queue drained.")`.
 
 # CONSTRAINTS
 

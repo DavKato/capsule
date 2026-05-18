@@ -24,4 +24,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--prompt` (replaced by `prompt` field in stage config)
 - `--min-token-lifetime-minutes` (credential lifetime is now managed internally)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.4.2...HEAD

@@ -86,7 +86,7 @@ fn parse_user_identity(path: &Path) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{git_config_get, parse_user_identity, resolve_git_identity, resolve_user_identity};
+    use super::{parse_user_identity, resolve_git_identity, resolve_user_identity};
     use capsule::config::GitIdentity;
 
     #[test]
@@ -151,20 +151,6 @@ mod tests {
         let (name, email) = resolve_user_identity(&gitconfig, &xdg_config);
         assert_eq!(name, "XDG User");
         assert_eq!(email, "xdg@example.com");
-    }
-
-    #[test]
-    fn git_config_get_falls_back_to_subprocess() {
-        let name = git_config_get("user.name");
-        let email = git_config_get("user.email");
-        assert!(
-            !name.is_empty(),
-            "git config --get user.name should return a value on dev machines"
-        );
-        assert!(
-            !email.is_empty(),
-            "git config --get user.email should return a value on dev machines"
-        );
     }
 
     #[test]

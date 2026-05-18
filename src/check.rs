@@ -85,13 +85,12 @@ fn check_setup_value(value: &str, location: &str, capsule_dir: &Path, issues: &m
 
     let parsed = match SetupCommand::parse(value, capsule_dir) {
         Ok(p) => p,
-        Err(_) => {
-            let path = capsule_dir.join(value);
+        Err(e) => {
             issues.push(CheckIssue {
                 severity: Severity::Error,
                 location: location.to_string(),
-                message: format!("setup file not found: {value}"),
-                fix_hint: Some(format!("create the file at {}", path.display())),
+                message: format!("{e:#}"),
+                fix_hint: None,
             });
             return;
         }

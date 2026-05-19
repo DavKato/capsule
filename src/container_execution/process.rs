@@ -64,7 +64,12 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
             match event {
                 ToolEvent::Use(tu) => {
                     let args = format_tool_args(&tu.input);
-                    crate::display::tool_call(&tu.name, &args, &tu.id);
+                    crate::display::tool_call(
+                        &tu.name,
+                        &args,
+                        &tu.id,
+                        tu.parent_tool_use_id.as_deref(),
+                    );
                 }
                 ToolEvent::Result(tr) => {
                     crate::display::tool_result(&tr.tool_use_id, !tr.is_error);

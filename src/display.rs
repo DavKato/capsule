@@ -29,6 +29,8 @@ struct ToolCallEntry {
     name: String,
     args: String,
     start_time: Instant,
+    #[allow(dead_code)]
+    parent_tool_use_id: Option<String>,
 }
 
 struct DisplayState {
@@ -709,7 +711,7 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
-pub fn tool_call(name: &str, args: &str, id: &str) {
+pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&str>) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
 
     let display_args: String = if args.chars().count() > TOOL_ARGS_MAX {
@@ -738,6 +740,7 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
                 name: name.to_owned(),
                 args: display_args.clone(),
                 start_time: Instant::now(),
+                parent_tool_use_id: parent_tool_use_id.map(str::to_owned),
             },
         ));
         drop(guard);
@@ -753,6 +756,7 @@ pub fn tool_call(name: &str, args: &str, id: &str) {
                     name: name.to_owned(),
                     args: display_args.clone(),
                     start_time: Instant::now(),
+                    parent_tool_use_id: parent_tool_use_id.map(str::to_owned),
                 },
             );
         tool_call_to(&mut out, name, &display_args).ok();

@@ -37,4 +37,4 @@ All terminal output must go through `capsule::display`. Never use `println!` or 
 
 ## Releases
 
-**Never edit `CHANGELOG.md` or bump the version in `Cargo.toml` manually.** Both are managed by the `/release` skill and [`cargo-release`](https://github.com/crate-ci/cargo-release).
+**Never edit `CHANGELOG.md` or bump the version in `Cargo.toml` manually.** Both are managed by the `/capsule-release` skill and [`cargo-release`](https://github.com/crate-ci/cargo-release).

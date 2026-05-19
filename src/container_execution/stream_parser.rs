@@ -5,6 +5,7 @@ pub struct ToolUseEvent {
     pub id: String,
     pub name: String,
     pub input: Value,
+    pub parent_tool_use_id: Option<String>,
 }
 
 pub struct ToolResultEvent {
@@ -219,6 +220,10 @@ fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) 
             let Some(content) = msg.pointer("/message/content").and_then(Value::as_array) else {
                 return (Vec::new(), Vec::new());
             };
+            let parent_tool_use_id = msg
+                .get("parent_tool_use_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             let mut tool_events = Vec::new();
             let mut text_displays = Vec::new();
             for block in content {
@@ -229,7 +234,12 @@ fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) 
                             block.get("id").and_then(Value::as_str).map(str::to_owned),
                             block.get("input").cloned(),
                         ) {
-                            tool_events.push(ToolEvent::Use(ToolUseEvent { id, name, input }));
+                            tool_events.push(ToolEvent::Use(ToolUseEvent {
+                                id,
+                                name,
+                                input,
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                            }));
                         }
                     }
                     Some("text") => {
@@ -1097,5 +1107,46 @@ mod tests {
     #[test]
     fn format_usage_with_percentage_zero_context_window() {
         assert_eq!(format_usage_with_percentage(1000, 0), "1.0k (0.0%) used");
+    }
+
+    #[test]
+    fn parent_tool_use_id_extracted_from_message_envelope() {
+        let line = r#"{"type":"assistant","parent_tool_use_id":"toolu_agent01","message":{"content":[{"type":"tool_use","id":"toolu_child01","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Use(tu) = &events[0] else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert_eq!(tu.parent_tool_use_id.as_deref(), Some("toolu_agent01"));
+    }
+
+    #[test]
+    fn parent_tool_use_id_is_none_when_absent() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"ls"}}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 1);
+        let ToolEvent::Use(tu) = &events[0] else {
+            panic!("expected ToolEvent::Use");
+        };
+        assert!(tu.parent_tool_use_id.is_none());
+    }
+
+    #[test]
+    fn parent_tool_use_id_propagated_to_all_tool_uses_in_message() {
+        let line = r#"{"type":"assistant","parent_tool_use_id":"toolu_agent01","message":{"content":[{"type":"tool_use","id":"toolu_child01","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"toolu_child02","name":"Read","input":{"path":"/tmp/foo"}}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let events = p.last_tool_events();
+        assert_eq!(events.len(), 2);
+        for event in events {
+            let ToolEvent::Use(tu) = event else {
+                panic!("expected ToolEvent::Use");
+            };
+            assert_eq!(tu.parent_tool_use_id.as_deref(), Some("toolu_agent01"));
+        }
     }
 }

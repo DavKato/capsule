@@ -660,15 +660,27 @@ fn notice_box_to<W: Write + QueueableCommand>(
 }
 
 const TOOL_ARGS_MAX: usize = 60;
-const NESTING_PREFIX: &str = "├─ ";
-const NESTING_PREFIX_LEN: usize = 3;
+const NESTING_BRANCH: &str = "├─ ";
+const NESTING_PIPE: &str = "│  ";
+const NESTING_SEGMENT_LEN: usize = 3;
 
-fn nesting_prefix(depth: u16) -> &'static str {
-    if depth > 0 {
-        NESTING_PREFIX
-    } else {
-        ""
+fn nesting_prefix(depth: u16) -> String {
+    match depth {
+        0 => String::new(),
+        1 => NESTING_BRANCH.to_owned(),
+        d => {
+            let mut s = String::with_capacity(NESTING_SEGMENT_LEN * d as usize);
+            for _ in 0..d - 1 {
+                s.push_str(NESTING_PIPE);
+            }
+            s.push_str(NESTING_BRANCH);
+            s
+        }
     }
+}
+
+fn nesting_prefix_len(depth: u16) -> usize {
+    NESTING_SEGMENT_LEN * depth as usize
 }
 
 fn render_tty_tool_call_to<W: Write + QueueableCommand>(
@@ -679,8 +691,9 @@ fn render_tty_tool_call_to<W: Write + QueueableCommand>(
 ) -> std::io::Result<()> {
     out.queue(Print("\n"))?;
     if depth > 0 {
+        let prefix = nesting_prefix(depth);
         out.queue(SetForegroundColor(Color::DarkGrey))?;
-        out.queue(Print(NESTING_PREFIX))?;
+        out.queue(Print(prefix))?;
         out.queue(ResetColor)?;
     }
     out.queue(SetAttribute(Attribute::SlowBlink))?;
@@ -712,7 +725,7 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
             out.queue(terminal::Clear(ClearType::CurrentLine))?;
             if depth > 0 {
                 out.queue(SetForegroundColor(Color::DarkGrey))?;
-                out.queue(Print(prefix))?;
+                out.queue(Print(&prefix))?;
                 out.queue(ResetColor)?;
             }
             out.queue(SetForegroundColor(color))?;
@@ -724,7 +737,7 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
         None => {
             if depth > 0 {
                 out.queue(SetForegroundColor(Color::DarkGrey))?;
-                out.queue(Print(prefix))?;
+                out.queue(Print(&prefix))?;
                 out.queue(ResetColor)?;
             }
             out.queue(SetForegroundColor(color))?;
@@ -733,9 +746,8 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
             out.queue(Print(format!(" {name}  {args}\n")))?;
         }
     }
-    let pad = if depth > 0 { NESTING_PREFIX } else { "" };
     out.queue(Print(format!(
-        "{pad}  {label} ({:.1}s)\n",
+        "{prefix}  {label} ({:.1}s)\n",
         duration.as_secs_f64()
     )))?;
     out.flush()
@@ -759,16 +771,11 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
             .and_then(|pid| state.active_tool_calls.iter().find(|(eid, _)| eid == pid))
             .map(|(_, e)| e.nesting_depth + 1)
             .unwrap_or(0);
-        let prefix_len = if nesting_depth > 0 {
-            NESTING_PREFIX_LEN
-        } else {
-            0
-        };
         let prefix = nesting_prefix(nesting_depth);
+        let plen = nesting_prefix_len(nesting_depth);
         log_line(&format!("\n{prefix}● {name}  {display_args}"));
         state.offset_tracker.increment_all(1, state.term_width);
-        let visible_width =
-            prefix_len + 2 + name.chars().count() + 2 + display_args.chars().count();
+        let visible_width = plen + 2 + name.chars().count() + 2 + display_args.chars().count();
         state
             .offset_tracker
             .increment_all(visible_width, state.term_width);
@@ -821,7 +828,7 @@ fn tool_call_to<W: Write + QueueableCommand>(
 ) -> std::io::Result<()> {
     out.queue(Print("\n"))?;
     if depth > 0 {
-        out.queue(Print(NESTING_PREFIX))?;
+        out.queue(Print(nesting_prefix(depth)))?;
     }
     out.queue(SetForegroundColor(YELLOW))?;
     out.queue(Print("● "))?;
@@ -874,13 +881,8 @@ pub fn tool_result(id: &str, success: bool) {
         if let Some(state) = guard.as_mut() {
             if offset.is_none() {
                 // Off-screen path wrote 2 lines: solid dot + sub-line.
-                let prefix_len = if nesting_depth > 0 {
-                    NESTING_PREFIX_LEN
-                } else {
-                    0
-                };
-                let line1_visible =
-                    prefix_len + 2 + name.chars().count() + 2 + args.chars().count();
+                let plen = nesting_prefix_len(nesting_depth);
+                let line1_visible = plen + 2 + name.chars().count() + 2 + args.chars().count();
                 state.offset_tracker.increment_all(line1_visible, tw);
             }
             state.offset_tracker.increment_all(sub_visible, tw);
@@ -921,16 +923,16 @@ fn tool_result_to<W: Write + QueueableCommand>(
 ) -> std::io::Result<()> {
     let color = if success { GREEN } else { RED };
     let status = if success { "Done" } else { "Failed" };
+    let prefix = nesting_prefix(depth);
     if depth > 0 {
-        out.queue(Print(NESTING_PREFIX))?;
+        out.queue(Print(&prefix))?;
     }
     out.queue(SetForegroundColor(color))?;
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
     out.queue(Print(format!("{name}  {args}\n")))?;
-    let pad = if depth > 0 { NESTING_PREFIX } else { "" };
     out.queue(Print(format!(
-        "{pad}  {status} ({:.1}s)\n",
+        "{prefix}  {status} ({:.1}s)\n",
         duration.as_secs_f64()
     )))?;
     out.flush()
@@ -1503,6 +1505,30 @@ mod tests {
     }
 
     #[test]
+    fn nesting_prefix_depth_0_is_empty() {
+        assert_eq!(nesting_prefix(0), "");
+        assert_eq!(nesting_prefix_len(0), 0);
+    }
+
+    #[test]
+    fn nesting_prefix_depth_1_is_branch_only() {
+        assert_eq!(nesting_prefix(1), "├─ ");
+        assert_eq!(nesting_prefix_len(1), 3);
+    }
+
+    #[test]
+    fn nesting_prefix_depth_2_is_pipe_then_branch() {
+        assert_eq!(nesting_prefix(2), "│  ├─ ");
+        assert_eq!(nesting_prefix_len(2), 6);
+    }
+
+    #[test]
+    fn nesting_prefix_depth_3_has_two_pipes() {
+        assert_eq!(nesting_prefix(3), "│  │  ├─ ");
+        assert_eq!(nesting_prefix_len(3), 9);
+    }
+
+    #[test]
     fn tool_call_depth_zero_no_prefix() {
         let mut buf: Vec<u8> = Vec::new();
         tool_call_to(&mut buf, "Bash", "ls", 0).unwrap();
@@ -1521,6 +1547,21 @@ mod tests {
         assert!(out.contains("├─"), "depth-1 call must emit nesting prefix");
         assert!(out.contains("●"), "dot must still appear after prefix");
         assert!(out.contains("Bash"), "tool name must appear");
+    }
+
+    #[test]
+    fn tool_call_depth_2_emits_pipe_then_branch() {
+        let mut buf: Vec<u8> = Vec::new();
+        tool_call_to(&mut buf, "Bash", "ls", 2).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("│"), "depth-2 must include pipe segment");
+        assert!(out.contains("├─"), "depth-2 must include branch segment");
+        let pipe_pos = out.find('│').unwrap();
+        let branch_pos = out.find("├─").unwrap();
+        assert!(
+            pipe_pos < branch_pos,
+            "pipe must appear before branch; output: {out:?}"
+        );
     }
 
     #[test]

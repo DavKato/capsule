@@ -733,8 +733,9 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
             out.queue(Print(format!(" {name}  {args}\n")))?;
         }
     }
+    let pad = if depth > 0 { NESTING_PREFIX } else { "" };
     out.queue(Print(format!(
-        "  {label} ({:.1}s)\n",
+        "{pad}  {label} ({:.1}s)\n",
         duration.as_secs_f64()
     )))?;
     out.flush()
@@ -904,7 +905,10 @@ fn log_tool_result(name: &str, args: &str, duration: Duration, success: bool, de
     let status = if success { "Done" } else { "Failed" };
     let prefix = nesting_prefix(depth);
     log_line(&format!("{prefix}● {name}  {args}"));
-    log_line(&format!("  {status} ({:.1}s)", duration.as_secs_f64()));
+    log_line(&format!(
+        "{prefix}  {status} ({:.1}s)",
+        duration.as_secs_f64()
+    ));
 }
 
 fn tool_result_to<W: Write + QueueableCommand>(
@@ -924,8 +928,9 @@ fn tool_result_to<W: Write + QueueableCommand>(
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
     out.queue(Print(format!("{name}  {args}\n")))?;
+    let pad = if depth > 0 { NESTING_PREFIX } else { "" };
     out.queue(Print(format!(
-        "  {status} ({:.1}s)\n",
+        "{pad}  {status} ({:.1}s)\n",
         duration.as_secs_f64()
     )))?;
     out.flush()
@@ -1603,6 +1608,11 @@ mod tests {
         );
         assert!(out.contains("●"), "dot must still appear");
         assert!(out.contains("Read"), "tool name must appear");
+        let prefix_count = out.matches("├─").count();
+        assert_eq!(
+            prefix_count, 2,
+            "prefix must appear on both dot line and sub-line; output: {out:?}"
+        );
     }
 
     #[test]
@@ -2730,6 +2740,11 @@ mod tests {
         let prefix_pos = out.find("├─").expect("prefix must be present");
         let dot_pos = out.find('●').expect("dot must be present");
         assert!(prefix_pos < dot_pos, "prefix must appear before dot");
+        let prefix_count = out.matches("├─").count();
+        assert_eq!(
+            prefix_count, 2,
+            "prefix must appear on both dot line and sub-line; output: {out:?}"
+        );
     }
 
     #[test]

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-19
+
+### Added
+
+- Visual grouping of sub-agent tool calls under their parent `Agent` call using tree-drawing prefixes (`├─`)
+
+### Fixed
+
+- Standardized `[dev]` line indentation in terminal output
+- Show skill names instead of raw arguments in tool call logs
+- Suppressed extra blank lines between list items across tool calls
+- Deduplicated Done lines for repeated tool call IDs
+
 ## [0.5.0] - 2026-05-18
 
 ### Added
@@ -29,5 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-token-lifetime-minutes` flag (credential lifetime is now managed internally)
 - `before-all.sh` / `before-each.sh` convention (presence now triggers a migration error)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/DavKato/capsule/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/DavKato/capsule/compare/v0.4.2...v0.5.0

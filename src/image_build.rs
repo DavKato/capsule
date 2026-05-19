@@ -8,6 +8,9 @@ pub const DOCKERFILE: &str = include_str!("../base-image/Dockerfile");
 /// The container entrypoint script embedded at compile time.
 pub const ENTRYPOINT_SH: &str = include_str!("../base-image/entrypoint.sh");
 
+/// Git wrapper that re-forces capsule's configured identity on every git call.
+pub const GIT_WRAPPER_SH: &str = include_str!("../base-image/git-wrapper.sh");
+
 const BASE_IMAGE: &str = "capsule";
 const DOCKERFILE_HASH_LABEL: &str = "capsule.dockerfile.hash";
 
@@ -79,7 +82,7 @@ pub struct BuildConfig {
 /// embedded Dockerfile. Auto-rebuilds (with layer cache) when the hash
 /// differs. With `rebuild: true`, always rebuilds using `--no-cache`.
 pub fn build_base_image(rebuild: bool) -> Result<()> {
-    let hash = fnv1a_hash(&format!("{DOCKERFILE}{ENTRYPOINT_SH}"));
+    let hash = fnv1a_hash(&format!("{DOCKERFILE}{ENTRYPOINT_SH}{GIT_WRAPPER_SH}"));
 
     if !rebuild && image_exists(BASE_IMAGE) {
         if image_label(BASE_IMAGE, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
@@ -97,6 +100,8 @@ pub fn build_base_image(rebuild: bool) -> Result<()> {
         .context("failed to write Dockerfile to build context")?;
     std::fs::write(ctx.path().join("entrypoint.sh"), ENTRYPOINT_SH)
         .context("failed to write entrypoint.sh to build context")?;
+    std::fs::write(ctx.path().join("git-wrapper.sh"), GIT_WRAPPER_SH)
+        .context("failed to write git-wrapper.sh to build context")?;
 
     let ctx_path = ctx.path().to_string_lossy().into_owned();
     let label = format!("{DOCKERFILE_HASH_LABEL}={hash}");

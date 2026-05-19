@@ -573,6 +573,71 @@ fn entrypoint_uses_resume_when_env_set() {
         .output();
 }
 
+#[test]
+#[requires_docker]
+#[serial(base_image)]
+fn git_wrapper_enforces_identity_over_agent_override() {
+    build_base_image(false).expect("base image should be available");
+
+    let dockerfile = "FROM capsule\n\
+        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
+        && chmod +x /home/claude/.local/bin/claude\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-git-wrapper-test", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(dockerfile.as_bytes())
+        .unwrap();
+    child.wait().expect("docker build should complete");
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt = dir.path().join("prompt.txt");
+    std::fs::write(&prompt, "placeholder\n").unwrap();
+
+    let output = std::process::Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--entrypoint",
+            "bash",
+            "-v",
+            &format!("{}:/home/claude/prompt.txt", prompt.display()),
+            "-e",
+            "GIT_AUTHOR_NAME=Capsule",
+            "-e",
+            "GIT_AUTHOR_EMAIL=capsule@localhost",
+            "capsule-git-wrapper-test",
+            "-c",
+            concat!(
+                "bash /home/claude/entrypoint.sh && ",
+                "cd /tmp && git init testrepo && cd testrepo && ",
+                "GIT_AUTHOR_NAME=Agent GIT_AUTHOR_EMAIL=agent@fake.com ",
+                "GIT_COMMITTER_NAME=Agent GIT_COMMITTER_EMAIL=agent@fake.com ",
+                "git commit --allow-empty -m test && ",
+                "git log -1 --format='%an <%ae>'"
+            ),
+        ])
+        .output()
+        .expect("docker run should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stdout.contains("Capsule <capsule@localhost>"),
+        "wrapper should enforce capsule identity over agent override.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-git-wrapper-test"])
+        .output();
+}
+
 /// Verify that extra_env_file values are visible in every container invocation.
 /// Two simulated "stages" (consecutive run_iteration calls) must both see the
 /// env var injected via extra_env_file, confirming persistence across stages.

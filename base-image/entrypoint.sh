@@ -7,8 +7,12 @@ if [ -n "${GH_TOKEN}" ]; then
 fi
 _name="${GIT_AUTHOR_NAME:-Capsule}"
 _email="${GIT_AUTHOR_EMAIL:-capsule@localhost}"
-git config --global user.name "${_name}"
-git config --global user.email "${_email}"
+cat > /tmp/.capsule-git-identity <<IDENTITY
+export GIT_AUTHOR_NAME="${_name}"
+export GIT_AUTHOR_EMAIL="${_email}"
+export GIT_COMMITTER_NAME="${_name}"
+export GIT_COMMITTER_EMAIL="${_email}"
+IDENTITY
 if [ -n "${CAPSULE_STAGE_SETUP}" ]; then
   if [ -f "${CAPSULE_STAGE_SETUP}" ]; then
     bash "${CAPSULE_STAGE_SETUP}"

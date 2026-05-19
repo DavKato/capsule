@@ -16,6 +16,10 @@ RUN pacman -Syu --noconfirm && \
 # core.pager="" prevents git from opening less/more in the non-interactive container.
 RUN git config --system core.pager ""
 
+# Git wrapper: re-forces capsule's configured identity on every git call,
+# preventing agents from overriding commit_as with arbitrary values.
+COPY --chmod=755 git-wrapper.sh /usr/local/bin/git
+
 # Create a non-root user.  UID 1000 matches the typical single-user Arch host,
 # so bind-mounted files are owned by the same UID.
 RUN useradd -mu 1000 -s /bin/bash claude

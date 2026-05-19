@@ -76,6 +76,7 @@ impl DisplayState {
 static STATE: OnceLock<Mutex<Option<DisplayState>>> = OnceLock::new();
 
 static LAST_WAS_TEXT: AtomicBool = AtomicBool::new(false);
+static LAST_TEXT_WAS_LIST_ITEM: AtomicBool = AtomicBool::new(false);
 static TIMER_GEN: AtomicU64 = AtomicU64::new(0);
 static PANIC_HOOK_SET: AtomicBool = AtomicBool::new(false);
 static TIMER_WAKE: OnceLock<(Mutex<()>, Condvar)> = OnceLock::new();
@@ -852,6 +853,14 @@ fn tool_result_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
+fn is_list_item(s: &str) -> bool {
+    if s.starts_with("- ") || s.starts_with("* ") || s.starts_with("+ ") {
+        return true;
+    }
+    let rest = s.trim_start_matches(|c: char| c.is_ascii_digit());
+    rest.starts_with(". ") && rest.len() < s.len()
+}
+
 /// Print agent text (thinking or content) with a dot on the first
 /// line of each new block, and indented continuation lines within the same block.
 /// Text is wrapped at `content_width` so wrapped portions also get indented.
@@ -860,20 +869,26 @@ pub fn agent_text(text: &str) {
         return;
     }
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
+    let last_list = LAST_TEXT_WAS_LIST_ITEM.load(Ordering::Relaxed);
     let was_text = last;
     let term_w = terminal_width() as usize;
     let content_width = term_w.min(MAX_DISPLAY_WIDTH).saturating_sub(2);
     let wrapped = wrap_text(text, content_width);
 
+    let is_list_cont =
+        !was_text && last_list && wrapped.first().map(|s| is_list_item(s)).unwrap_or(false);
+
     let mut out = stdout().lock();
-    agent_text_to(&mut out, &wrapped, &mut last).ok();
+    agent_text_to(&mut out, &wrapped, &mut last, last_list).ok();
     LAST_WAS_TEXT.store(last, Ordering::Relaxed);
+    let ends_list = wrapped.last().map(|s| is_list_item(s)).unwrap_or(false);
+    LAST_TEXT_WAS_LIST_ITEM.store(ends_list, Ordering::Relaxed);
     if LOG_FILE.get().is_some() {
-        if !was_text {
+        if !was_text && !is_list_cont {
             log_write("\n");
         }
         for (i, line) in wrapped.iter().enumerate() {
-            if i == 0 && !was_text {
+            if i == 0 && !was_text && !is_list_cont {
                 log_line(&format!("● {line}"));
             } else {
                 log_line(&format!("  {line}"));
@@ -883,7 +898,7 @@ pub fn agent_text(text: &str) {
 
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
-        if !was_text {
+        if !was_text && !is_list_cont {
             state.offset_tracker.increment_all(1, state.term_width); // blank line
         }
         for line in &wrapped {
@@ -897,12 +912,16 @@ fn agent_text_to<W: Write + QueueableCommand>(
     out: &mut W,
     lines: &[String],
     last_was_text: &mut bool,
+    last_text_was_list: bool,
 ) -> std::io::Result<()> {
-    if !*last_was_text {
+    let is_list_cont = !*last_was_text
+        && last_text_was_list
+        && lines.first().map(|s| is_list_item(s)).unwrap_or(false);
+    if !*last_was_text && !is_list_cont {
         out.queue(Print("\n"))?;
     }
     for (i, line) in lines.iter().enumerate() {
-        if i == 0 && !*last_was_text {
+        if i == 0 && !*last_was_text && !is_list_cont {
             out.queue(Print("● "))?;
         } else {
             out.queue(Print("  "))?;
@@ -1452,7 +1471,7 @@ mod tests {
     fn agent_text_first_call_emits_dot_and_text() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = false;
-        agent_text_to(&mut buf, &["hello world".to_string()], &mut last).unwrap();
+        agent_text_to(&mut buf, &["hello world".to_string()], &mut last, false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("hello world"), "text must appear");
         assert!(out.contains('●'), "dot must appear on first line");
@@ -1463,7 +1482,7 @@ mod tests {
     fn agent_text_first_call_emits_blank_line_before_dot() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = false;
-        agent_text_to(&mut buf, &["hello".to_string()], &mut last).unwrap();
+        agent_text_to(&mut buf, &["hello".to_string()], &mut last, false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             out.starts_with('\n'),
@@ -1475,7 +1494,7 @@ mod tests {
     fn agent_text_continuation_indents_without_dot() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = true;
-        agent_text_to(&mut buf, &["second line".to_string()], &mut last).unwrap();
+        agent_text_to(&mut buf, &["second line".to_string()], &mut last, false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("second line"), "text must appear");
         assert!(!out.contains('●'), "no dot on continuation line");
@@ -1489,7 +1508,7 @@ mod tests {
     fn agent_text_continuation_no_blank_line() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = true;
-        agent_text_to(&mut buf, &["continued".to_string()], &mut last).unwrap();
+        agent_text_to(&mut buf, &["continued".to_string()], &mut last, false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             !out.starts_with('\n'),
@@ -1506,7 +1525,7 @@ mod tests {
             "second line".to_string(),
             "third line".to_string(),
         ];
-        agent_text_to(&mut buf, &lines, &mut last).unwrap();
+        agent_text_to(&mut buf, &lines, &mut last, false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         let text_lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(text_lines.len(), 3);
@@ -1531,10 +1550,78 @@ mod tests {
     fn agent_text_body_not_dimmed() {
         let mut buf: Vec<u8> = Vec::new();
         let mut last = false;
-        agent_text_to(&mut buf, &["body text".to_string()], &mut last).unwrap();
+        agent_text_to(&mut buf, &["body text".to_string()], &mut last, false).unwrap();
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[2m"),
             "agent_text must not emit dim escape code on body text"
+        );
+    }
+
+    #[test]
+    fn is_list_item_detects_unordered() {
+        assert!(is_list_item("- item"));
+        assert!(is_list_item("* item"));
+        assert!(is_list_item("+ item"));
+        assert!(is_list_item("- "), "bare dash-space is a valid list marker");
+        assert!(!is_list_item("plain text"));
+        assert!(!is_list_item(""));
+    }
+
+    #[test]
+    fn is_list_item_detects_ordered() {
+        assert!(is_list_item("1. first"));
+        assert!(is_list_item("2. second"));
+        assert!(is_list_item("10. tenth"));
+        assert!(!is_list_item("no dot"));
+        assert!(!is_list_item(". no number"));
+    }
+
+    #[test]
+    fn list_continuation_skips_blank_line_and_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last = false; // simulate post-tool-call state
+        agent_text_to(&mut buf, &["2. second item".to_string()], &mut last, true).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            !out.starts_with('\n'),
+            "list continuation must not emit a blank line"
+        );
+        assert!(!out.contains('●'), "list continuation must not emit a dot");
+        assert!(out.contains("2. second item"), "text must appear");
+    }
+
+    #[test]
+    fn list_start_after_non_list_emits_blank_line_and_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last = false; // post-tool-call state, but previous was NOT a list
+        agent_text_to(&mut buf, &["1. first item".to_string()], &mut last, false).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.starts_with('\n'),
+            "new list section must start with a blank line"
+        );
+        assert!(out.contains('●'), "new list section must emit a dot");
+    }
+
+    #[test]
+    fn non_list_after_list_emits_blank_line_and_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last = false; // post-tool-call state, previous ended with list item
+        agent_text_to(
+            &mut buf,
+            &["Some paragraph text".to_string()],
+            &mut last,
+            true,
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.starts_with('\n'),
+            "non-list block after list must get a blank line"
+        );
+        assert!(
+            out.contains('●'),
+            "non-list block after list must get a dot"
         );
     }
 

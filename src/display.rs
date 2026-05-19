@@ -490,6 +490,7 @@ fn render_box<W: Write + QueueableCommand>(
 /// ```
 pub fn stage_header(stage_name: &str, iteration: u32, model: &str, retry: Option<&RetryInfo>) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
+    LAST_TEXT_WAS_LIST_ITEM.store(false, Ordering::Relaxed);
     let term_w = terminal_width() as usize;
     let mut out = stdout().lock();
     render_stage_header_to(&mut out, stage_name, iteration, model, retry, term_w).ok();
@@ -1007,6 +1008,7 @@ pub fn session_footer(
     context_usage: Option<&str>,
 ) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
+    LAST_TEXT_WAS_LIST_ITEM.store(false, Ordering::Relaxed);
     let ts = local_timestamp();
     session_footer_to(
         &mut stdout().lock(),

@@ -76,22 +76,22 @@ fn main() {
 
     // --- tool call states ---
     section("Tool call states");
-    display::tool_call("Read", "src/main.rs", "s-1");
-    display::tool_call("Read", "src/lib.rs", "s-2");
+    display::tool_call("Read", "src/main.rs", "s-1", None);
+    display::tool_call("Read", "src/lib.rs", "s-2", None);
     display::tool_result("s-1", true);
     display::tool_result("s-2", true);
-    display::tool_call("Bash", "cargo test", "s-3");
+    display::tool_call("Bash", "cargo test", "s-3", None);
     display::tool_result("s-3", false);
 
     // --- tool calls (overlapping) ---
     section("Tool calls — overlapping");
-    display::tool_call("Read", "src/main.rs", "tc-1");
+    display::tool_call("Read", "src/main.rs", "tc-1", None);
     pause(500);
-    display::tool_call("Bash", "cargo test --lib", "tc-2");
+    display::tool_call("Bash", "cargo test --lib", "tc-2", None);
     pause(800);
     display::tool_result("tc-1", true);
     pause(400);
-    display::tool_call("Edit", "src/display.rs  old_string=…", "tc-3");
+    display::tool_call("Edit", "src/display.rs  old_string=…", "tc-3", None);
     pause(600);
     display::tool_result("tc-2", false);
     pause(400);

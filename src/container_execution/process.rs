@@ -63,8 +63,13 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         for event in parser.last_tool_events() {
             match event {
                 ToolEvent::Use(tu) => {
-                    let args = format_tool_args(&tu.input);
-                    crate::display::tool_call(&tu.name, &args, &tu.id);
+                    let (display_name, args) = tool_display_label(&tu.name, &tu.input);
+                    crate::display::tool_call(
+                        &display_name,
+                        &args,
+                        &tu.id,
+                        tu.parent_tool_use_id.as_deref(),
+                    );
                 }
                 ToolEvent::Result(tr) => {
                     crate::display::tool_result(&tr.tool_use_id, !tr.is_error);
@@ -117,6 +122,23 @@ fn format_tool_args(input: &serde_json::Value) -> String {
         }
     }
     String::new()
+}
+
+fn tool_display_label(name: &str, input: &serde_json::Value) -> (String, String) {
+    if name == "Skill" {
+        let skill_name = input
+            .get("skill")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Skill")
+            .to_owned();
+        let args = input
+            .get("args")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        return (skill_name, args);
+    }
+    (name.to_owned(), format_tool_args(input))
 }
 
 /// Shared scaffolding for one container run: temp files, docker args, MCP config,
@@ -474,5 +496,36 @@ mod tests {
     fn format_tool_args_no_string_values_returns_empty() {
         let input = serde_json::json!({"a": 1, "b": true, "c": null});
         assert_eq!(format_tool_args(&input), "");
+    }
+
+    #[test]
+    fn skill_tool_uses_skill_field_as_display_name() {
+        let input = serde_json::json!({"skill": "tdd", "args": "some feature"});
+        let (name, args) = tool_display_label("Skill", &input);
+        assert_eq!(name, "tdd");
+        assert_eq!(args, "some feature");
+    }
+
+    #[test]
+    fn skill_tool_without_args_returns_empty_args() {
+        let input = serde_json::json!({"skill": "zoom-out"});
+        let (name, args) = tool_display_label("Skill", &input);
+        assert_eq!(name, "zoom-out");
+        assert_eq!(args, "");
+    }
+
+    #[test]
+    fn skill_tool_missing_skill_field_falls_back_to_skill_name() {
+        let input = serde_json::json!({});
+        let (name, _) = tool_display_label("Skill", &input);
+        assert_eq!(name, "Skill");
+    }
+
+    #[test]
+    fn non_skill_tool_uses_existing_format_tool_args_logic() {
+        let input = serde_json::json!({"command": "cargo test"});
+        let (name, args) = tool_display_label("Bash", &input);
+        assert_eq!(name, "Bash");
+        assert_eq!(args, "cargo test");
     }
 }

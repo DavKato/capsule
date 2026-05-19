@@ -20,7 +20,8 @@ pub fn log_docker_env(
     if !is_dev_build() {
         return;
     }
-    eprintln!("[dev] container: {container_name}");
+    eprintln!("[dev] container:");
+    eprintln!("[dev]   {container_name}");
     dump_file("env_file (.capsule/.env)", env_file);
     dump_file("extra_env_file (--env)", extra_env_file);
 }

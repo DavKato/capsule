@@ -669,7 +669,8 @@ fn nesting_prefix(depth: u16) -> String {
         0 => String::new(),
         1 => NESTING_BRANCH.to_owned(),
         d => {
-            let mut s = String::with_capacity(NESTING_SEGMENT_LEN * d as usize);
+            let mut s =
+                String::with_capacity(NESTING_PIPE.len() * (d as usize - 1) + NESTING_BRANCH.len());
             for _ in 0..d - 1 {
                 s.push_str(NESTING_PIPE);
             }
@@ -874,9 +875,10 @@ pub fn tool_result(id: &str, success: bool) {
 
         // Account for the sub-line (and the solid-dot line in the off-screen case).
         let label = if success { "Done" } else { "Failed" };
-        let sub_visible = format!("  {label} ({:.1}s)", duration.as_secs_f64())
-            .chars()
-            .count();
+        let sub_visible = nesting_prefix_len(nesting_depth)
+            + format!("  {label} ({:.1}s)", duration.as_secs_f64())
+                .chars()
+                .count();
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = guard.as_mut() {
             if offset.is_none() {

@@ -786,10 +786,11 @@ pub fn tool_result(id: &str, success: bool) {
             .iter()
             .position(|(eid, _)| eid == id);
         let entry = entry_pos.map(|i| state.active_tool_calls.remove(i));
-        let (name, args, duration) = match entry {
-            Some((_, e)) => (e.name, e.args, e.start_time.elapsed()),
-            None => ("unknown".to_owned(), String::new(), Duration::ZERO),
+        let Some((_, e)) = entry else {
+            // Duplicate or unknown tool_use_id — skip to avoid a spurious Done line.
+            return;
         };
+        let (name, args, duration) = (e.name, e.args, e.start_time.elapsed());
         let scroll_height = state.separator_row();
         let offset = state.offset_tracker.get_offset(id, scroll_height);
         state.offset_tracker.remove(id);
@@ -819,10 +820,11 @@ pub fn tool_result(id: &str, success: bool) {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
-        let (name, args, duration) = match info {
-            Some(i) => (i.name, i.args, i.start_time.elapsed()),
-            None => ("unknown".to_owned(), String::new(), Duration::ZERO),
+        let Some(i) = info else {
+            // Duplicate or unknown tool_use_id — skip to avoid a spurious Done line.
+            return;
         };
+        let (name, args, duration) = (i.name, i.args, i.start_time.elapsed());
         tool_result_to(&mut out, &name, &args, duration, success).ok();
         log_tool_result(&name, &args, duration, success);
     }
@@ -2503,6 +2505,75 @@ mod tests {
         assert!(
             out.contains("my/special/path.rs"),
             "args must be preserved in the in-place updated line; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tool_result_to_renders_done_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        tool_result_to(&mut buf, "Bash", "ls", Duration::from_millis(300), true).unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("Done"), "must contain Done; output: {out:?}");
+        assert!(
+            out.contains("0.3s"),
+            "must contain duration; output: {out:?}"
+        );
+        assert!(
+            out.contains("Bash"),
+            "must contain tool name; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tool_result_to_renders_failed_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        tool_result_to(
+            &mut buf,
+            "Bash",
+            "rm -rf",
+            Duration::from_millis(100),
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("Failed"),
+            "must contain Failed; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, RED_ANSI),
+            "must use red for failure; output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn tool_call_cache_dedup_second_remove_returns_none() {
+        let id = "dedup_test_unique_id_9f3a";
+        tool_call_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                id.to_owned(),
+                ToolCallEntry {
+                    name: "TestTool".to_owned(),
+                    args: "some_arg".to_owned(),
+                    start_time: Instant::now(),
+                },
+            );
+
+        let first = tool_call_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        assert!(first.is_some(), "first removal must return the entry");
+
+        let second = tool_call_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        assert!(
+            second.is_none(),
+            "second removal must return None — duplicate result must be dropped"
         );
     }
 }

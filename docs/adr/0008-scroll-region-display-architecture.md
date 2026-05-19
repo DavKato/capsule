@@ -27,6 +27,7 @@ The original design placed tool call dots in the status panel. This was a misund
 - **Completed**: dot updated in-place to solid green (success) or red (failure) via offset counting + `MoveUp(N)`, with a sub-line showing duration
 - **Offset counting**: capsule is the sole writer to the scroll region, so line offsets are reliable. Each pending tool call stores its offset; all offsets increment on every scroll-region write. If a tool call scrolls off-screen (offset > scroll region height), the in-place update is skipped.
 - **Multiple pending calls**: no cap; each tracked by ID with its own offset
+- **Nested tool calls**: when a tool call carries a `parent_tool_use_id` (sub-agent invocations), the display prefixes it with `├─ ` and derives nesting depth from the parent's entry. Both TTY and non-TTY paths render the prefix; offset tracking accounts for the extra prefix width
 
 ## References
 

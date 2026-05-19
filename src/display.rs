@@ -763,7 +763,7 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
         };
         let prefix = nesting_prefix(nesting_depth);
         log_line(&format!("\n{prefix}● {name}  {display_args}"));
-        state.offset_tracker.increment_all(1, state.term_width); // blank line
+        state.offset_tracker.increment_all(1, state.term_width);
         let visible_width =
             prefix_len + 2 + name.chars().count() + 2 + display_args.chars().count();
         state
@@ -959,7 +959,7 @@ pub fn agent_text(text: &str) {
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(state) = guard.as_mut() {
         if !was_text {
-            state.offset_tracker.increment_all(1, state.term_width); // blank line
+            state.offset_tracker.increment_all(1, state.term_width);
         }
         for line in &wrapped {
             let vw = 2 + line.chars().count();

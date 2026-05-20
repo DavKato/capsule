@@ -2918,6 +2918,16 @@ mod tests {
     }
 
     #[test]
+    fn agent_buffer_summary_line_no_snapshot_uses_full_count() {
+        let buf = AgentBuffer::new(None);
+        let summary = buf.summary_line(Some(8_000), Duration::from_millis(1000));
+        assert!(
+            summary.contains("8.0k tokens"),
+            "must use full token count when snapshot is None; got: {summary}"
+        );
+    }
+
+    #[test]
     fn agent_buffer_summary_line_tool_call_count_shown() {
         let mut buf = AgentBuffer::new(None);
         buf.push_tool_call("X", "x");

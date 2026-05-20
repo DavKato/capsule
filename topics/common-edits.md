@@ -80,5 +80,6 @@ Run `capsule check` after every routing change.
       - name: implementer
         prompt: prompts/implementer.md
         on_fail: retry
-        max_retries: 3      # consecutive fail retries; increase to allow more self-correction
+        max_retries: 3      # consecutive fail retries (resets on pass); increase to allow more self-correction
+        max_failure: 10     # total fail cap across the run (never resets); omit for no limit
 ```

@@ -211,7 +211,7 @@ _Avoid_: Templates (the directory was renamed in 2026-04 to free the name for us
 
 > **Dev:** "If the reviewer keeps rejecting the same task, does that count against `max_iteration` or `max_retries`?"
 >
-> **Domain expert:** "Both. Each time the reviewer fails back to the implementer, the implementer is re-entering the top-of-body, so `max_iteration` ticks. And the reviewer's own `max_retries` ticks on each fail — those reset when the reviewer eventually passes."
+> **Domain expert:** "`max_iteration` ticks each time the reviewer fails back to the implementer, because the implementer is re-entering the top-of-body. The reviewer's `max_retries` only ticks if the reviewer itself has `on_fail: retry` — in the ralph-loop the reviewer uses `on_fail: implementer`, so `max_retries` doesn't apply to it. If you set `max_failure` on the reviewer, that would tick on every fail regardless of routing."
 >
 > **Dev:** "Got it. So when the queue is empty, the implementer should emit `done`, not `fail`?"
 >

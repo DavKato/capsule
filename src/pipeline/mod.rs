@@ -197,7 +197,10 @@ impl<R: StageRunner> PipelineExecutor<R> {
             PipelineOutcome::Exit { from_fail: true } => {
                 let (stage, kind) = progress.fail_exit_info.take().unwrap_or_else(|| {
                     (
-                        progress.last_stage.clone().unwrap_or_default(),
+                        progress
+                            .last_stage
+                            .clone()
+                            .unwrap_or_else(|| "<unknown>".to_string()),
                         FailExitKind::Route,
                     )
                 });

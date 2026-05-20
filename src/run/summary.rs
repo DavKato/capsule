@@ -8,22 +8,18 @@ use std::process::Command;
 use super::ExitDecision;
 
 pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
-    match &summary.terminal_reason {
-        TerminalReason::Done | TerminalReason::Exit => ExitDecision::Success,
-        TerminalReason::FailExit { .. } | TerminalReason::CapHit => {
-            let fallback = match &summary.terminal_reason {
-                TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
-                _ => "pipeline ended with fail-exit (no verdict emitted)",
-            };
-            let notes = summary
-                .last_verdict
-                .as_ref()
-                .and_then(|v| v.notes.as_deref())
-                .unwrap_or(fallback)
-                .to_string();
-            ExitDecision::Failure(notes)
-        }
-    }
+    let fallback = match &summary.terminal_reason {
+        TerminalReason::Done | TerminalReason::Exit => return ExitDecision::Success,
+        TerminalReason::FailExit { .. } => "pipeline ended with fail-exit (no verdict emitted)",
+        TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
+    };
+    let notes = summary
+        .last_verdict
+        .as_ref()
+        .and_then(|v| v.notes.as_deref())
+        .unwrap_or(fallback)
+        .to_string();
+    ExitDecision::Failure(notes)
 }
 
 pub(super) fn forced_exit_message(summary: &RunSummary) -> Option<String> {
@@ -436,6 +432,43 @@ mod tests {
         .unwrap();
         let (_, restored) = parse_resume_state(dir.path()).unwrap();
         assert_eq!(restored.env, vec![], "missing env field must default to []");
+    }
+
+    #[test]
+    fn parse_resume_state_accepts_legacy_fail_counts_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::json!({
+            "terminal_reason": "fail-exit",
+            "cap_hit_counter": null,
+            "last_stage": null,
+            "last_verdict": null,
+            "session_id": "sess_legacy",
+            "iteration_counters": { "global": 0, "loops": {} },
+            "pipeline_state": {
+                "current_idx": 1,
+                "global_counter": 5,
+                "fail_counts": { "stage-a": 3 },
+                "last_stage": null,
+                "last_verdict": null,
+                "loop_iterations": {}
+            },
+            "timestamp": "2026-01-01T00:00:00Z",
+            "workspace_dirty": false
+        });
+        std::fs::write(
+            dir.path().join("last-run.json"),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+        let (session_id, restored) = parse_resume_state(dir.path()).unwrap();
+        assert_eq!(session_id, "sess_legacy");
+        assert_eq!(restored.current_idx, 1);
+        assert_eq!(restored.global_counter, 5);
+        assert_eq!(
+            restored.retry_counts.get("stage-a"),
+            Some(&3),
+            "fail_counts alias must deserialize into retry_counts"
+        );
     }
 
     #[test]

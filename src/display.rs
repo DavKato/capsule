@@ -1114,11 +1114,10 @@ pub fn tool_result(id: &str, success: bool) {
                 } else {
                     append_summary_fallback(&mut out);
                 }
-            } else {
+            } else if header_offset.is_some() {
                 render_tty_agent_summary_to(&mut out, &name, &args, &summary, header_offset).ok();
-                if header_offset.is_none() {
-                    append_summary_fallback(&mut out);
-                }
+            } else {
+                append_summary_fallback(&mut out);
             }
             log_line(&format!("● {name}  {args}  {summary}"));
             return;
@@ -2967,6 +2966,19 @@ mod tests {
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[1A"),
             "non-TTY agent summary must not emit cursor-up"
+        );
+    }
+
+    #[test]
+    fn render_tty_agent_summary_to_off_screen_renders_single_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_tty_agent_summary_to(&mut buf, "Agent", "task", "Done (2 tool uses · 1.0s)", None)
+            .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        let dot_count = out.matches('●').count();
+        assert_eq!(
+            dot_count, 1,
+            "off-screen summary must render exactly one ● dot; got {dot_count} in: {out:?}"
         );
     }
 

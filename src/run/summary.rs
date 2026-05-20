@@ -109,14 +109,14 @@ mod tests {
     }
 
     fn make_pipeline_state() -> PipelineState {
-        let mut fail_counts = HashMap::new();
-        fail_counts.insert("stage-a".to_string(), 2u32);
+        let mut retry_counts = HashMap::new();
+        retry_counts.insert("stage-a".to_string(), 2u32);
         let mut loop_iters = HashMap::new();
         loop_iters.insert(0usize, 3u32);
         PipelineState {
             current_idx: 2,
             global_counter: 7,
-            fail_counts,
+            retry_counts,
             last_stage: Some("stage-a".to_string()),
             last_verdict: Some(capsule::verdict::Verdict {
                 status: capsule::verdict::VerdictStatus::Fail,
@@ -267,7 +267,7 @@ mod tests {
         );
         assert_eq!(v["pipeline_state"]["current_idx"], 2);
         assert_eq!(v["pipeline_state"]["global_counter"], 7);
-        assert_eq!(v["pipeline_state"]["fail_counts"]["stage-a"], 2);
+        assert_eq!(v["pipeline_state"]["retry_counts"]["stage-a"], 2);
         assert_eq!(v["pipeline_state"]["last_stage"], "stage-a");
         assert_eq!(v["pipeline_state"]["last_verdict"]["status"], "fail");
         assert_eq!(v["pipeline_state"]["loop_iterations"]["0"], 3);
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(session_id, "sess_xyz");
         assert_eq!(restored.current_idx, 2);
         assert_eq!(restored.global_counter, 7);
-        assert_eq!(restored.fail_counts.get("stage-a"), Some(&2));
+        assert_eq!(restored.retry_counts.get("stage-a"), Some(&2));
         assert_eq!(restored.last_stage.as_deref(), Some("stage-a"));
         assert_eq!(
             restored.last_verdict.as_ref().map(|v| &v.status),
@@ -339,7 +339,7 @@ mod tests {
         let state = PipelineState {
             current_idx: 0,
             global_counter: 0,
-            fail_counts: HashMap::new(),
+            retry_counts: HashMap::new(),
             last_stage: None,
             last_verdict: None,
             loop_iterations: HashMap::new(),
@@ -372,7 +372,7 @@ mod tests {
             "pipeline_state": {
                 "current_idx": 1,
                 "global_counter": 2,
-                "fail_counts": {},
+                "retry_counts": {},
                 "last_stage": null,
                 "last_verdict": null,
                 "loop_iterations": {}
@@ -394,7 +394,7 @@ mod tests {
         let state = PipelineState {
             current_idx: 0,
             global_counter: 0,
-            fail_counts: HashMap::new(),
+            retry_counts: HashMap::new(),
             last_stage: None,
             last_verdict: None,
             loop_iterations: HashMap::new(),

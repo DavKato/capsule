@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub const MAX_STAGES_DEFAULT: u32 = 1000;
-pub const MAX_RETRIES_DEFAULT: u32 = 3;
+pub const MAX_RETRIES_DEFAULT: u32 = 10;
 
 /// Git commit identity mode.
 #[derive(Debug, Clone, PartialEq)]

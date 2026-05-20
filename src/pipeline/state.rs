@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct PipelineState {
     pub current_idx: usize,
     pub global_counter: u32,
-    pub fail_counts: HashMap<String, u32>,
+    pub retry_counts: HashMap<String, u32>,
     pub last_stage: Option<String>,
     pub last_verdict: Option<crate::verdict::Verdict>,
     #[serde(with = "string_key_map")]

@@ -97,7 +97,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 s.current_idx,
                 s.loop_iterations,
                 PipelineProgress {
-                    fail_counts: s.fail_counts,
+                    retry_counts: s.retry_counts,
                     global_counter: s.global_counter,
                     input: self.input.take(),
                     last_stage: s.last_stage,
@@ -108,7 +108,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 0,
                 HashMap::new(),
                 PipelineProgress {
-                    fail_counts: HashMap::new(),
+                    retry_counts: HashMap::new(),
                     global_counter: 0,
                     input: self.input.take(),
                     last_stage: None,
@@ -192,7 +192,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
         let pipeline_state = PipelineState {
             current_idx,
             global_counter: progress.global_counter,
-            fail_counts: progress.fail_counts,
+            retry_counts: progress.retry_counts,
             last_stage: progress.last_stage.clone(),
             last_verdict: progress.last_verdict.clone(),
             loop_iterations: loop_iterations.clone(),
@@ -759,25 +759,68 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_state_captures_fail_counts() {
+    fn pipeline_state_captures_retry_counts_cleared_on_pass() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
         s.max_retries = 5;
         let config = pipeline(vec![single_stage_entry(s)]);
-        // Two fails, then pass
+        // Two fails, then pass — retry_counts cleared on pass
         let result = run_result(config, FakeRunner::new([fail(), fail(), pass()]));
-        assert_eq!(result.pipeline_state.fail_counts.get("a"), None);
+        assert_eq!(result.pipeline_state.retry_counts.get("a"), None);
     }
 
     #[test]
-    fn pipeline_state_captures_fail_counts_on_exit() {
+    fn pipeline_state_captures_retry_counts_on_exit() {
         let mut s = stage("a");
         s.on_fail = OnFail::Retry;
         s.max_retries = 1;
         let config = pipeline(vec![single_stage_entry(s)]);
-        // Two fails exceed max_retries → exit; fail_count for "a" should be 2
+        // Two fails exceed max_retries → exit; retry_count for "a" should be 2
         let result = run_result(config, FakeRunner::new([fail(), fail()]));
-        assert_eq!(result.pipeline_state.fail_counts.get("a"), Some(&2));
+        assert_eq!(result.pipeline_state.retry_counts.get("a"), Some(&2));
+    }
+
+    #[test]
+    fn retry_counts_not_incremented_for_on_fail_stage() {
+        let mut s = stage("a");
+        s.on_fail = OnFail::Stage("a".to_string()); // route back to self
+        let config = pipeline(vec![single_stage_entry(s)]);
+        // Two fails (routing back), then pass — retry_counts must stay empty
+        let result = run_result(config, FakeRunner::new([fail(), fail(), pass()]));
+        assert_eq!(
+            result.pipeline_state.retry_counts.get("a"),
+            None,
+            "retry_counts must not increment for on_fail: stage(...)"
+        );
+    }
+
+    #[test]
+    fn retry_counts_not_incremented_for_on_fail_exit() {
+        let config = pipeline(vec![single_stage_entry(stage("a"))]);
+        // Default on_fail is Exit; one fail → exit
+        let result = run_result(config, FakeRunner::new([fail()]));
+        assert_eq!(
+            result.pipeline_state.retry_counts.get("a"),
+            None,
+            "retry_counts must not increment for on_fail: exit"
+        );
+    }
+
+    #[test]
+    fn retry_counts_incremented_only_for_on_fail_retry() {
+        let mut s = stage("a");
+        s.on_fail = OnFail::Retry;
+        s.max_retries = 10;
+        let config = pipeline(vec![single_stage_entry(s)]);
+        // Three fails, then pass — retry_counts should have been 3 before pass cleared it
+        // After pass, it's cleared; check it was tracking by verifying Done outcome
+        let result = run_result(config, FakeRunner::new([fail(), fail(), fail(), pass()]));
+        assert_eq!(result.outcome, PipelineOutcome::Done);
+        assert_eq!(
+            result.pipeline_state.retry_counts.get("a"),
+            None,
+            "retry_counts cleared on pass"
+        );
     }
 
     #[test]
@@ -924,14 +967,14 @@ mod tests {
     // ── PipelineState serialization ────────────────────────────────────────────
 
     fn full_state() -> PipelineState {
-        let mut fail_counts = HashMap::new();
-        fail_counts.insert("stage-a".to_string(), 2u32);
+        let mut retry_counts = HashMap::new();
+        retry_counts.insert("stage-a".to_string(), 2u32);
         let mut loop_iters = HashMap::new();
         loop_iters.insert(0usize, 3u32);
         PipelineState {
             current_idx: 2,
             global_counter: 7,
-            fail_counts,
+            retry_counts,
             last_stage: Some("stage-a".to_string()),
             last_verdict: Some(Verdict {
                 status: VerdictStatus::Fail,
@@ -948,7 +991,7 @@ mod tests {
         let v = serde_json::to_value(&state).unwrap();
         assert_eq!(v["current_idx"], 2);
         assert_eq!(v["global_counter"], 7);
-        assert_eq!(v["fail_counts"]["stage-a"], 2);
+        assert_eq!(v["retry_counts"]["stage-a"], 2);
         assert_eq!(v["last_stage"], "stage-a");
         assert_eq!(v["last_verdict"]["status"], "fail");
         assert_eq!(v["last_verdict"]["notes"], "oops");
@@ -979,16 +1022,16 @@ mod tests {
     }
 
     #[test]
-    fn from_json_errors_on_missing_fail_counts() {
+    fn from_json_errors_on_missing_retry_counts() {
         let mut v = serde_json::to_value(full_state()).unwrap();
-        v.as_object_mut().unwrap().remove("fail_counts");
+        v.as_object_mut().unwrap().remove("retry_counts");
         assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 
     #[test]
-    fn from_json_errors_on_non_number_in_fail_counts() {
+    fn from_json_errors_on_non_number_in_retry_counts() {
         let mut v = serde_json::to_value(full_state()).unwrap();
-        v["fail_counts"]["stage-a"] = serde_json::json!("not-a-number");
+        v["retry_counts"]["stage-a"] = serde_json::json!("not-a-number");
         assert!(serde_json::from_value::<PipelineState>(v).is_err());
     }
 

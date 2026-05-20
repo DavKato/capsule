@@ -9,10 +9,10 @@ use super::summary::{CapHitKind, PipelineOutcome};
 use super::StageRunner;
 
 fn retry_info(progress: &PipelineProgress, stage: &StageConfig) -> Option<RetryInfo> {
-    let fail_count = progress.fail_counts.get(&stage.name).copied().unwrap_or(0);
-    if fail_count > 0 {
+    let retry_count = progress.retry_counts.get(&stage.name).copied().unwrap_or(0);
+    if retry_count > 0 {
         Some(RetryInfo {
-            current: fail_count,
+            current: retry_count,
             max: stage.max_retries,
         })
     } else {
@@ -22,7 +22,7 @@ fn retry_info(progress: &PipelineProgress, stage: &StageConfig) -> Option<RetryI
 
 /// Mutable progress tracked across stage invocations during a pipeline run.
 pub(super) struct PipelineProgress {
-    pub(super) fail_counts: HashMap<String, u32>,
+    pub(super) retry_counts: HashMap<String, u32>,
     pub(super) global_counter: u32,
     pub(super) input: Option<String>,
     pub(super) last_stage: Option<String>,
@@ -142,7 +142,7 @@ pub(super) fn run_loop(
         );
 
         if is_pass {
-            progress.fail_counts.remove(&stage.name);
+            progress.retry_counts.remove(&stage.name);
             match &stage.on_pass {
                 OnPass::Next => stage_idx += 1,
                 OnPass::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
@@ -162,16 +162,6 @@ pub(super) fn run_loop(
                 }
             }
         } else {
-            let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
-            *fail_count += 1;
-
-            if *fail_count > stage.max_retries {
-                return Ok(LoopOutcome::Exit {
-                    kind: ExitKind::FailRoute,
-                    iterations: iteration_count,
-                });
-            }
-
             match &stage.on_fail {
                 OnFail::Exit => {
                     return Ok(LoopOutcome::Exit {
@@ -180,6 +170,14 @@ pub(super) fn run_loop(
                     })
                 }
                 OnFail::Retry => {
+                    let retry_count = progress.retry_counts.entry(stage.name.clone()).or_insert(0);
+                    *retry_count += 1;
+                    if *retry_count > stage.max_retries {
+                        return Ok(LoopOutcome::Exit {
+                            kind: ExitKind::FailRoute,
+                            iterations: iteration_count,
+                        });
+                    }
                     if stage_idx == 0 {
                         retrying_top = true;
                     }
@@ -301,16 +299,16 @@ pub(super) fn run_stage(
     );
 
     if is_pass {
-        progress.fail_counts.remove(&stage.name);
+        progress.retry_counts.remove(&stage.name);
         Ok(route_pass(stage, name_to_entry))
     } else {
-        let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
-        *fail_count += 1;
-
-        if *fail_count > stage.max_retries {
-            return Ok(StageOutcome::Exit(ExitKind::FailRoute));
+        if matches!(stage.on_fail, OnFail::Retry) {
+            let retry_count = progress.retry_counts.entry(stage.name.clone()).or_insert(0);
+            *retry_count += 1;
+            if *retry_count > stage.max_retries {
+                return Ok(StageOutcome::Exit(ExitKind::FailRoute));
+            }
         }
-
         Ok(route_fail(stage, name_to_entry))
     }
 }

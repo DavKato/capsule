@@ -878,35 +878,21 @@ fn render_tty_agent_summary_to<W: Write + QueueableCommand>(
     name: &str,
     args: &str,
     summary: &str,
-    offset: Option<u16>,
+    offset: u16,
 ) -> std::io::Result<()> {
     let suffix = format!("  {summary}");
-    match offset {
-        Some(n) => {
-            out.queue(cursor::SavePosition)?;
-            out.queue(cursor::MoveUp(n))?;
-            out.queue(cursor::MoveToColumn(0))?;
-            out.queue(terminal::Clear(ClearType::CurrentLine))?;
-            out.queue(SetForegroundColor(GREEN))?;
-            out.queue(Print("●"))?;
-            out.queue(ResetColor)?;
-            out.queue(Print(format!(" {name}  {args}")))?;
-            out.queue(SetForegroundColor(Color::DarkGrey))?;
-            out.queue(Print(&suffix))?;
-            out.queue(ResetColor)?;
-            out.queue(cursor::RestorePosition)?;
-        }
-        None => {
-            out.queue(SetForegroundColor(GREEN))?;
-            out.queue(Print("●"))?;
-            out.queue(ResetColor)?;
-            out.queue(Print(format!(" {name}  {args}")))?;
-            out.queue(SetForegroundColor(Color::DarkGrey))?;
-            out.queue(Print(&suffix))?;
-            out.queue(ResetColor)?;
-            out.queue(Print("\n"))?;
-        }
-    }
+    out.queue(cursor::SavePosition)?;
+    out.queue(cursor::MoveUp(offset))?;
+    out.queue(cursor::MoveToColumn(0))?;
+    out.queue(terminal::Clear(ClearType::CurrentLine))?;
+    out.queue(SetForegroundColor(GREEN))?;
+    out.queue(Print("●"))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!(" {name}  {args}")))?;
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
+    out.queue(Print(&suffix))?;
+    out.queue(ResetColor)?;
+    out.queue(cursor::RestorePosition)?;
     out.flush()
 }
 
@@ -1114,8 +1100,8 @@ pub fn tool_result(id: &str, success: bool) {
                 } else {
                     append_summary_fallback(&mut out);
                 }
-            } else if header_offset.is_some() {
-                render_tty_agent_summary_to(&mut out, &name, &args, &summary, header_offset).ok();
+            } else if let Some(off) = header_offset {
+                render_tty_agent_summary_to(&mut out, &name, &args, &summary, off).ok();
             } else {
                 append_summary_fallback(&mut out);
             }
@@ -2970,15 +2956,15 @@ mod tests {
     }
 
     #[test]
-    fn render_tty_agent_summary_to_off_screen_renders_single_dot() {
+    fn render_tty_agent_summary_to_renders_single_dot() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_agent_summary_to(&mut buf, "Agent", "task", "Done (2 tool uses · 1.0s)", None)
+        render_tty_agent_summary_to(&mut buf, "Agent", "task", "Done (2 tool uses · 1.0s)", 3)
             .unwrap();
         let out = String::from_utf8_lossy(&buf);
         let dot_count = out.matches('●').count();
         assert_eq!(
             dot_count, 1,
-            "off-screen summary must render exactly one ● dot; got {dot_count} in: {out:?}"
+            "agent summary must render exactly one ● dot; got {dot_count} in: {out:?}"
         );
     }
 

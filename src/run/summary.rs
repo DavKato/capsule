@@ -117,6 +117,7 @@ mod tests {
             current_idx: 2,
             global_counter: 7,
             retry_counts,
+            failure_totals: HashMap::new(),
             last_stage: Some("stage-a".to_string()),
             last_verdict: Some(capsule::verdict::Verdict {
                 status: capsule::verdict::VerdictStatus::Fail,
@@ -340,6 +341,7 @@ mod tests {
             current_idx: 0,
             global_counter: 0,
             retry_counts: HashMap::new(),
+            failure_totals: HashMap::new(),
             last_stage: None,
             last_verdict: None,
             loop_iterations: HashMap::new(),
@@ -395,6 +397,7 @@ mod tests {
             current_idx: 0,
             global_counter: 0,
             retry_counts: HashMap::new(),
+            failure_totals: HashMap::new(),
             last_stage: None,
             last_verdict: None,
             loop_iterations: HashMap::new(),

@@ -23,6 +23,7 @@ fn retry_info(progress: &PipelineProgress, stage: &StageConfig) -> Option<RetryI
 /// Mutable progress tracked across stage invocations during a pipeline run.
 pub(super) struct PipelineProgress {
     pub(super) retry_counts: HashMap<String, u32>,
+    pub(super) failure_totals: HashMap<String, u32>,
     pub(super) global_counter: u32,
     pub(super) input: Option<String>,
     pub(super) last_stage: Option<String>,
@@ -162,6 +163,17 @@ pub(super) fn run_loop(
                 }
             }
         } else {
+            let fail_total = progress
+                .failure_totals
+                .entry(stage.name.clone())
+                .or_insert(0);
+            *fail_total += 1;
+            if stage.max_failure.is_some_and(|limit| *fail_total > limit) {
+                return Ok(LoopOutcome::Exit {
+                    kind: ExitKind::FailRoute,
+                    iterations: iteration_count,
+                });
+            }
             match &stage.on_fail {
                 OnFail::Exit => {
                     return Ok(LoopOutcome::Exit {
@@ -302,6 +314,14 @@ pub(super) fn run_stage(
         progress.retry_counts.remove(&stage.name);
         Ok(route_pass(stage, name_to_entry))
     } else {
+        let fail_total = progress
+            .failure_totals
+            .entry(stage.name.clone())
+            .or_insert(0);
+        *fail_total += 1;
+        if stage.max_failure.is_some_and(|limit| *fail_total > limit) {
+            return Ok(StageOutcome::Exit(ExitKind::FailRoute));
+        }
         if matches!(stage.on_fail, OnFail::Retry) {
             let retry_count = progress.retry_counts.entry(stage.name.clone()).or_insert(0);
             *retry_count += 1;

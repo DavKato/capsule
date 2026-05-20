@@ -1131,7 +1131,6 @@ pub fn tool_result(id: &str, success: bool) {
         }
     } else {
         drop(guard);
-        // Check for a buffered agent in the non-TTY cache.
         let buf = agent_buffer_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())

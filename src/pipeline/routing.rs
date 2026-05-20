@@ -5,14 +5,53 @@ use crate::config::{LoopConfig, OnFail, OnPass, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
 
 use super::prompt::{inject_input, inject_note_block};
-use super::summary::{CapHitKind, PipelineOutcome};
+use super::summary::{CapHitKind, FailExitKind, PipelineOutcome};
 use super::StageRunner;
 
+enum FailCountOutcome {
+    CapExceeded,
+    Continue,
+}
+
+/// Increments the stage's failure counters, checks caps, and sets `fail_exit_info`.
+/// Returns `CapExceeded` when a cap was hit (caller should exit with `FailRoute`).
+fn handle_fail_counts(stage: &StageConfig, progress: &mut PipelineProgress) -> FailCountOutcome {
+    let fail_total = progress
+        .failure_totals
+        .entry(stage.name.clone())
+        .or_insert(0);
+    *fail_total += 1;
+
+    if let Some(limit) = stage.max_failure {
+        if *fail_total > limit {
+            progress.fail_exit_info =
+                Some((stage.name.clone(), FailExitKind::MaxFailure { limit }));
+            return FailCountOutcome::CapExceeded;
+        }
+    }
+
+    if matches!(stage.on_fail, OnFail::Retry) {
+        let retry_count = progress.retry_counts.entry(stage.name.clone()).or_insert(0);
+        *retry_count += 1;
+        if *retry_count > stage.max_retries {
+            progress.fail_exit_info = Some((
+                stage.name.clone(),
+                FailExitKind::MaxRetries {
+                    limit: stage.max_retries,
+                },
+            ));
+            return FailCountOutcome::CapExceeded;
+        }
+    }
+
+    FailCountOutcome::Continue
+}
+
 fn retry_info(progress: &PipelineProgress, stage: &StageConfig) -> Option<RetryInfo> {
-    let fail_count = progress.fail_counts.get(&stage.name).copied().unwrap_or(0);
-    if fail_count > 0 {
+    let retry_count = progress.retry_counts.get(&stage.name).copied().unwrap_or(0);
+    if retry_count > 0 {
         Some(RetryInfo {
-            current: fail_count,
+            current: retry_count,
             max: stage.max_retries,
         })
     } else {
@@ -22,11 +61,14 @@ fn retry_info(progress: &PipelineProgress, stage: &StageConfig) -> Option<RetryI
 
 /// Mutable progress tracked across stage invocations during a pipeline run.
 pub(super) struct PipelineProgress {
-    pub(super) fail_counts: HashMap<String, u32>,
+    pub(super) retry_counts: HashMap<String, u32>,
+    pub(super) failure_totals: HashMap<String, u32>,
     pub(super) global_counter: u32,
     pub(super) input: Option<String>,
     pub(super) last_stage: Option<String>,
     pub(super) last_verdict: Option<Verdict>,
+    /// Set whenever a fail-route exit is triggered; read by the executor to enrich `TerminalReason`.
+    pub(super) fail_exit_info: Option<(String, FailExitKind)>,
 }
 
 #[derive(Clone)]
@@ -36,8 +78,8 @@ pub(super) enum ExitKind {
 }
 
 pub(super) enum LoopCapKind {
-    MaxIteration,
-    MaxStages,
+    MaxIteration { limit: u32 },
+    MaxStages { limit: u32 },
 }
 
 pub(super) enum StageOutcome {
@@ -92,7 +134,7 @@ pub(super) fn run_loop(
             if let Some(max) = loop_config.max_iteration {
                 if iteration_count > max {
                     return Ok(LoopOutcome::CapHit {
-                        kind: LoopCapKind::MaxIteration,
+                        kind: LoopCapKind::MaxIteration { limit: max },
                         iterations: iteration_count - 1,
                     });
                 }
@@ -102,7 +144,7 @@ pub(super) fn run_loop(
 
         if progress.global_counter >= max_stages {
             return Ok(LoopOutcome::CapHit {
-                kind: LoopCapKind::MaxStages,
+                kind: LoopCapKind::MaxStages { limit: max_stages },
                 iterations: iteration_count,
             });
         }
@@ -142,7 +184,7 @@ pub(super) fn run_loop(
         );
 
         if is_pass {
-            progress.fail_counts.remove(&stage.name);
+            progress.retry_counts.remove(&stage.name);
             match &stage.on_pass {
                 OnPass::Next => stage_idx += 1,
                 OnPass::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
@@ -162,22 +204,22 @@ pub(super) fn run_loop(
                 }
             }
         } else {
-            let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
-            *fail_count += 1;
-
-            if *fail_count > stage.max_retries {
+            if matches!(
+                handle_fail_counts(stage, progress),
+                FailCountOutcome::CapExceeded
+            ) {
                 return Ok(LoopOutcome::Exit {
                     kind: ExitKind::FailRoute,
                     iterations: iteration_count,
                 });
             }
-
             match &stage.on_fail {
                 OnFail::Exit => {
+                    progress.fail_exit_info = Some((stage.name.clone(), FailExitKind::Route));
                     return Ok(LoopOutcome::Exit {
                         kind: ExitKind::FailRoute,
                         iterations: iteration_count,
-                    })
+                    });
                 }
                 OnFail::Retry => {
                     if stage_idx == 0 {
@@ -187,10 +229,11 @@ pub(super) fn run_loop(
                 OnFail::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
                     Some(&idx) => stage_idx = idx,
                     None => {
+                        progress.fail_exit_info = Some((stage.name.clone(), FailExitKind::Route));
                         return Ok(LoopOutcome::Exit {
                             kind: ExitKind::FailRoute,
                             iterations: iteration_count,
-                        })
+                        });
                     }
                 },
             }
@@ -245,21 +288,27 @@ pub(super) fn handle_loop_outcome(
             )
         }
         LoopOutcome::CapHit {
-            kind: LoopCapKind::MaxIteration,
+            kind: LoopCapKind::MaxIteration { limit },
             iterations,
         } => {
             loop_iterations.insert(entry_idx, iterations);
             LoopControl::Break(
                 PipelineOutcome::CapHit,
-                Some(CapHitKind::LoopMaxIteration(entry_idx)),
+                Some(CapHitKind::LoopMaxIteration {
+                    loop_idx: entry_idx,
+                    limit,
+                }),
             )
         }
         LoopOutcome::CapHit {
-            kind: LoopCapKind::MaxStages,
+            kind: LoopCapKind::MaxStages { limit },
             iterations,
         } => {
             loop_iterations.insert(entry_idx, iterations);
-            LoopControl::Break(PipelineOutcome::CapHit, Some(CapHitKind::MaxStages))
+            LoopControl::Break(
+                PipelineOutcome::CapHit,
+                Some(CapHitKind::MaxStages { limit }),
+            )
         }
     }
 }
@@ -301,17 +350,20 @@ pub(super) fn run_stage(
     );
 
     if is_pass {
-        progress.fail_counts.remove(&stage.name);
+        progress.retry_counts.remove(&stage.name);
         Ok(route_pass(stage, name_to_entry))
     } else {
-        let fail_count = progress.fail_counts.entry(stage.name.clone()).or_insert(0);
-        *fail_count += 1;
-
-        if *fail_count > stage.max_retries {
+        if matches!(
+            handle_fail_counts(stage, progress),
+            FailCountOutcome::CapExceeded
+        ) {
             return Ok(StageOutcome::Exit(ExitKind::FailRoute));
         }
-
-        Ok(route_fail(stage, name_to_entry))
+        let outcome = route_fail(stage, name_to_entry);
+        if matches!(outcome, StageOutcome::Exit(ExitKind::FailRoute)) {
+            progress.fail_exit_info = Some((stage.name.clone(), FailExitKind::Route));
+        }
+        Ok(outcome)
     }
 }
 

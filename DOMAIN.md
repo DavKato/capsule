@@ -85,8 +85,12 @@ Per-loop cap; ticks on every top-of-body entry except self-`retry`.
 _Avoid_: Loop budget
 
 **`max_retries`**:
-Per-stage cap on consecutive `fail` verdicts; resets on `pass`; independent of loop position.
+Per-stage cap on consecutive `fail` verdicts; only applies when `on_fail: retry`; resets on `pass`; independent of loop position.
 _Avoid_: Retry limit
+
+**`max_failure`**:
+Per-stage cap on total fail verdicts across a run; never resets; opt-in with no default. Triggers a pipeline stop regardless of `on_fail` routing. Setting `max_failure` alongside `on_fail: retry` is valid but noteworthy: every fail verdict counts (including retries), so the pipeline may exit before `max_retries` is exhausted.
+_Avoid_: Failure budget, cumulative failure limit
 
 **`max_stages`**:
 Global circuit breaker across all stage invocations in a run; top-level only.
@@ -207,7 +211,7 @@ _Avoid_: Templates (the directory was renamed in 2026-04 to free the name for us
 
 > **Dev:** "If the reviewer keeps rejecting the same task, does that count against `max_iteration` or `max_retries`?"
 >
-> **Domain expert:** "Both. Each time the reviewer fails back to the implementer, the implementer is re-entering the top-of-body, so `max_iteration` ticks. And the reviewer's own `max_retries` ticks on each fail — those reset when the reviewer eventually passes."
+> **Domain expert:** "`max_iteration` ticks each time the reviewer fails back to the implementer, because the implementer is re-entering the top-of-body. The reviewer's `max_retries` only ticks if the reviewer itself has `on_fail: retry` — in the ralph-loop the reviewer uses `on_fail: implementer`, so `max_retries` doesn't apply to it. If you set `max_failure` on the reviewer, that would tick on every fail regardless of routing."
 >
 > **Dev:** "Got it. So when the queue is empty, the implementer should emit `done`, not `fail`?"
 >

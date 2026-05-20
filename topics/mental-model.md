@@ -50,7 +50,8 @@ If the previous verdict had no notes (or notes was empty), no `<previous-stage>`
 | Counter | Scope | Ticks on | Cap-hit behavior |
 |---------|-------|----------|------------------|
 | `max_iteration` | Per loop | Every top-of-body entry (except self-`retry`) | Pipeline terminates non-zero |
-| `max_retries` | Per stage (default: 3) | Each consecutive `fail` verdict (resets on `pass`) | Pipeline terminates non-zero |
+| `max_retries` | Per stage (default: 10) | Each consecutive `fail` verdict when `on_fail: retry` (resets on `pass`) | Pipeline terminates non-zero |
+| `max_failure` | Per stage (opt-in, no default) | Every `fail` verdict regardless of `on_fail` routing (never resets) | Pipeline terminates non-zero |
 | `max_stages` | Global | Every stage invocation in the run | Pipeline terminates non-zero |
 
 On any cap-hit: the pipeline stops immediately, writes a summary artifact, and exits non-zero. No `on_fail` routing applies — cap-hits bypass routing entirely.

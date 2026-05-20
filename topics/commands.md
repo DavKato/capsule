@@ -47,7 +47,7 @@ capsule check
 capsule check --capsule-dir path/to/.capsule
 ```
 
-Exits non-zero on errors. Checks: route targets resolve, prompt files exist, setup fields valid, old hook scripts absent, loop nesting valid.
+Exits non-zero on errors. Emits warnings for valid-but-risky combinations (e.g., `max_failure` with `on_fail: retry`). Checks: route targets resolve, prompt files exist, setup fields valid, old hook scripts absent, loop nesting valid, counter/routing interactions.
 
 ## capsule explain
 

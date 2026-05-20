@@ -15,6 +15,17 @@ pub enum PipelineOutcome {
     CapHit,
 }
 
+/// Identifies which limit triggered a `FailExit`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FailExitKind {
+    /// `max_retries` was exceeded; `limit` is the configured cap.
+    MaxRetries { limit: u32 },
+    /// `max_failure` was exceeded; `limit` is the configured cap.
+    MaxFailure { limit: u32 },
+    /// Plain `on_fail: exit` route (no counter exceeded).
+    Route,
+}
+
 /// Human-readable terminal reason written to the summary artifact.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TerminalReason {
@@ -22,8 +33,8 @@ pub enum TerminalReason {
     Done,
     /// Exit via a pass-route (`on_pass: exit`).
     Exit,
-    /// Exit via a fail-route (`on_fail: exit` or max_retries exceeded).
-    FailExit,
+    /// Exit via a fail-route; carries the triggering stage and limit type.
+    FailExit { stage: String, kind: FailExitKind },
     /// Iteration cap hit in a multi-stage pipeline.
     CapHit,
 }
@@ -31,10 +42,10 @@ pub enum TerminalReason {
 /// Identifies which counter tripped when `CapHit` is the terminal reason.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CapHitKind {
-    /// A loop's `max_iteration` was exceeded; `loop_idx` is the entry index.
-    LoopMaxIteration(usize),
+    /// A loop's `max_iteration` was exceeded.
+    LoopMaxIteration { loop_idx: usize, limit: u32 },
     /// The global `max_stages` was exceeded.
-    MaxStages,
+    MaxStages { limit: u32 },
 }
 
 /// Snapshot of iteration counters at pipeline exit.
@@ -66,17 +77,19 @@ pub fn build_summary_artifact(
     let terminal_reason = match summary.terminal_reason {
         TerminalReason::Done => "done",
         TerminalReason::Exit => "exit",
-        TerminalReason::FailExit => "fail-exit",
+        TerminalReason::FailExit { .. } => "fail-exit",
         TerminalReason::CapHit => "cap-hit",
     };
     let cap_hit_counter = match &summary.cap_hit {
         None => serde_json::Value::Null,
-        Some(CapHitKind::LoopMaxIteration(idx)) => serde_json::json!({
+        Some(CapHitKind::LoopMaxIteration { loop_idx, limit }) => serde_json::json!({
             "type": "max_iteration",
-            "loop_idx": idx,
+            "loop_idx": loop_idx,
+            "limit": limit,
         }),
-        Some(CapHitKind::MaxStages) => serde_json::json!({
+        Some(CapHitKind::MaxStages { limit }) => serde_json::json!({
             "type": "max_stages",
+            "limit": limit,
         }),
     };
     let last_verdict = summary

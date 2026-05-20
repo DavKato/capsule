@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub const MAX_STAGES_DEFAULT: u32 = 1000;
-pub const MAX_RETRIES_DEFAULT: u32 = 3;
+pub const MAX_RETRIES_DEFAULT: u32 = 10;
 
 /// Git commit identity mode.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +52,7 @@ pub struct StageConfig {
     pub on_pass: OnPass,
     pub on_fail: OnFail,
     pub max_retries: u32,
+    pub max_failure: Option<u32>,
     pub setup: Option<String>,
 }
 
@@ -122,6 +123,7 @@ struct StageConfigRaw {
     on_pass: Option<String>,
     on_fail: Option<String>,
     max_retries: Option<u32>,
+    max_failure: Option<u32>,
     setup: Option<String>,
 }
 
@@ -247,6 +249,7 @@ fn convert_stage(raw: StageConfigRaw) -> StageConfig {
         on_pass,
         on_fail,
         max_retries: raw.max_retries.unwrap_or(MAX_RETRIES_DEFAULT),
+        max_failure: raw.max_failure,
         setup: raw.setup,
     }
 }

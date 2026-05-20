@@ -219,15 +219,19 @@ impl RunSession {
         result.summary.session_id = runner.session_id().map(String::from);
         result.pipeline_state.env = self.env_pairs.clone();
         let state_to_write = match result.summary.terminal_reason {
-            TerminalReason::FailExit | TerminalReason::CapHit => Some(&result.pipeline_state),
+            TerminalReason::FailExit { .. } | TerminalReason::CapHit => {
+                Some(&result.pipeline_state)
+            }
             _ => None,
         };
         summary::write_last_run(&self.cfg.capsule_dir, &result.summary, state_to_write)?;
+        if let Some(msg) = summary::forced_exit_message(&result.summary) {
+            capsule::display::capsule_info(&msg);
+        }
         if let Some(hint) = summary::resume_hint(
             result.summary.session_id.as_deref(),
             &result.summary.terminal_reason,
         ) {
-            capsule::display::info("");
             capsule::display::capsule_info(&hint);
         }
         update_check::maybe_print_notice(update_rx);

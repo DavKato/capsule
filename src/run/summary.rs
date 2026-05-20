@@ -1,26 +1,56 @@
 use anyhow::{Context, Result};
-use capsule::pipeline::{build_summary_artifact, PipelineState, RunSummary, TerminalReason};
+use capsule::pipeline::{
+    build_summary_artifact, CapHitKind, FailExitKind, PipelineState, RunSummary, TerminalReason,
+};
 use std::path::Path;
 use std::process::Command;
 
 use super::ExitDecision;
 
 pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
-    match summary.terminal_reason {
-        TerminalReason::Done | TerminalReason::Exit => ExitDecision::Success,
-        ref reason @ (TerminalReason::FailExit | TerminalReason::CapHit) => {
-            let fallback = match reason {
-                TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
-                _ => "pipeline ended with fail-exit (no verdict emitted)",
+    let fallback = match &summary.terminal_reason {
+        TerminalReason::Done | TerminalReason::Exit => return ExitDecision::Success,
+        TerminalReason::FailExit { .. } => "pipeline ended with fail-exit (no verdict emitted)",
+        TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
+    };
+    let notes = summary
+        .last_verdict
+        .as_ref()
+        .and_then(|v| v.notes.as_deref())
+        .unwrap_or(fallback)
+        .to_string();
+    ExitDecision::Failure(notes)
+}
+
+pub(super) fn forced_exit_message(summary: &RunSummary) -> Option<String> {
+    match &summary.terminal_reason {
+        TerminalReason::FailExit { stage, kind } => {
+            let msg = match kind {
+                FailExitKind::MaxRetries { limit } => {
+                    format!("Stage '{stage}' exceeded max_retries ({limit}) — pipeline stopped.")
+                }
+                FailExitKind::MaxFailure { limit } => {
+                    format!("Stage '{stage}' exceeded max_failure ({limit}) — pipeline stopped.")
+                }
+                FailExitKind::Route => {
+                    format!("Stage '{stage}' exited via fail route — pipeline stopped.")
+                }
             };
-            let notes = summary
-                .last_verdict
-                .as_ref()
-                .and_then(|v| v.notes.as_deref())
-                .unwrap_or(fallback)
-                .to_string();
-            ExitDecision::Failure(notes)
+            Some(msg)
         }
+        TerminalReason::CapHit => {
+            let msg = match &summary.cap_hit {
+                Some(CapHitKind::MaxStages { limit }) => {
+                    format!("Global max_stages ({limit}) exceeded — pipeline stopped.")
+                }
+                Some(CapHitKind::LoopMaxIteration { limit, .. }) => {
+                    format!("Loop max_iteration ({limit}) exceeded — pipeline stopped.")
+                }
+                None => "Pipeline cap exceeded — pipeline stopped.".to_string(),
+            };
+            Some(msg)
+        }
+        _ => None,
     }
 }
 
@@ -73,7 +103,7 @@ pub(super) fn parse_resume_state(capsule_dir: &Path) -> Result<(String, Pipeline
 pub(super) fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> Option<String> {
     session_id?;
     match reason {
-        TerminalReason::FailExit | TerminalReason::CapHit => {
+        TerminalReason::FailExit { .. } | TerminalReason::CapHit => {
             Some("To continue the session, run: capsule resume".to_string())
         }
         _ => None,
@@ -84,15 +114,22 @@ pub(super) fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> 
 mod tests {
     use super::super::ExitDecision;
     use super::{
-        exit_decision_from_summary, is_workspace_dirty, parse_resume_state, resume_hint,
-        write_last_run,
+        exit_decision_from_summary, forced_exit_message, is_workspace_dirty, parse_resume_state,
+        resume_hint, write_last_run,
     };
     use capsule::pipeline::{
-        build_summary_artifact, CapHitKind, IterationCounters, PipelineState, RunSummary,
-        TerminalReason,
+        build_summary_artifact, CapHitKind, FailExitKind, IterationCounters, PipelineState,
+        RunSummary, TerminalReason,
     };
     use capsule::verdict::{Verdict, VerdictStatus};
     use std::collections::HashMap;
+
+    fn fail_exit(stage: &str, kind: FailExitKind) -> TerminalReason {
+        TerminalReason::FailExit {
+            stage: stage.to_string(),
+            kind,
+        }
+    }
 
     fn minimal_summary(reason: TerminalReason) -> RunSummary {
         RunSummary {
@@ -109,14 +146,15 @@ mod tests {
     }
 
     fn make_pipeline_state() -> PipelineState {
-        let mut fail_counts = HashMap::new();
-        fail_counts.insert("stage-a".to_string(), 2u32);
+        let mut retry_counts = HashMap::new();
+        retry_counts.insert("stage-a".to_string(), 2u32);
         let mut loop_iters = HashMap::new();
         loop_iters.insert(0usize, 3u32);
         PipelineState {
             current_idx: 2,
             global_counter: 7,
-            fail_counts,
+            retry_counts,
+            failure_totals: HashMap::new(),
             last_stage: Some("stage-a".to_string()),
             last_verdict: Some(capsule::verdict::Verdict {
                 status: capsule::verdict::VerdictStatus::Fail,
@@ -138,7 +176,7 @@ mod tests {
 
     #[test]
     fn json_fail_exit_terminal_reason() {
-        let s = minimal_summary(TerminalReason::FailExit);
+        let s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
         let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "fail-exit");
     }
@@ -146,19 +184,24 @@ mod tests {
     #[test]
     fn json_cap_hit_loop_max_iteration() {
         let mut s = minimal_summary(TerminalReason::CapHit);
-        s.cap_hit = Some(CapHitKind::LoopMaxIteration(0));
+        s.cap_hit = Some(CapHitKind::LoopMaxIteration {
+            loop_idx: 0,
+            limit: 5,
+        });
         let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["terminal_reason"], "cap-hit");
         assert_eq!(v["cap_hit_counter"]["type"], "max_iteration");
         assert_eq!(v["cap_hit_counter"]["loop_idx"], 0);
+        assert_eq!(v["cap_hit_counter"]["limit"], 5);
     }
 
     #[test]
     fn json_cap_hit_max_stages() {
         let mut s = minimal_summary(TerminalReason::CapHit);
-        s.cap_hit = Some(CapHitKind::MaxStages);
+        s.cap_hit = Some(CapHitKind::MaxStages { limit: 100 });
         let v = build_summary_artifact(&s, false, None);
         assert_eq!(v["cap_hit_counter"]["type"], "max_stages");
+        assert_eq!(v["cap_hit_counter"]["limit"], 100);
         assert!(v["cap_hit_counter"]["loop_idx"].is_null());
     }
 
@@ -226,7 +269,8 @@ mod tests {
 
     #[test]
     fn resume_hint_shown_on_fail_exit_with_session_id() {
-        let hint = resume_hint(Some("sess_abc"), &TerminalReason::FailExit);
+        let reason = fail_exit("stage-a", FailExitKind::Route);
+        let hint = resume_hint(Some("sess_abc"), &reason);
         assert!(hint.is_some());
         let msg = hint.unwrap();
         assert!(!msg.contains("sess_abc"), "hint was: {msg}");
@@ -240,7 +284,7 @@ mod tests {
 
     #[test]
     fn resume_hint_none_when_no_session_id() {
-        assert!(resume_hint(None, &TerminalReason::FailExit).is_none());
+        assert!(resume_hint(None, &fail_exit("stage-a", FailExitKind::Route)).is_none());
     }
 
     #[test]
@@ -257,7 +301,7 @@ mod tests {
 
     #[test]
     fn json_pipeline_state_present_for_fail_exit() {
-        let mut s = minimal_summary(TerminalReason::FailExit);
+        let mut s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
         s.session_id = Some("sess_abc".to_string());
         let state = make_pipeline_state();
         let v = build_summary_artifact(&s, false, Some(&state));
@@ -267,7 +311,7 @@ mod tests {
         );
         assert_eq!(v["pipeline_state"]["current_idx"], 2);
         assert_eq!(v["pipeline_state"]["global_counter"], 7);
-        assert_eq!(v["pipeline_state"]["fail_counts"]["stage-a"], 2);
+        assert_eq!(v["pipeline_state"]["retry_counts"]["stage-a"], 2);
         assert_eq!(v["pipeline_state"]["last_stage"], "stage-a");
         assert_eq!(v["pipeline_state"]["last_verdict"]["status"], "fail");
         assert_eq!(v["pipeline_state"]["loop_iterations"]["0"], 3);
@@ -286,7 +330,7 @@ mod tests {
     #[test]
     fn parse_resume_state_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = minimal_summary(TerminalReason::FailExit);
+        let mut s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
         s.session_id = Some("sess_xyz".to_string());
         let state = make_pipeline_state();
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
@@ -295,7 +339,7 @@ mod tests {
         assert_eq!(session_id, "sess_xyz");
         assert_eq!(restored.current_idx, 2);
         assert_eq!(restored.global_counter, 7);
-        assert_eq!(restored.fail_counts.get("stage-a"), Some(&2));
+        assert_eq!(restored.retry_counts.get("stage-a"), Some(&2));
         assert_eq!(restored.last_stage.as_deref(), Some("stage-a"));
         assert_eq!(
             restored.last_verdict.as_ref().map(|v| &v.status),
@@ -323,7 +367,7 @@ mod tests {
     #[test]
     fn parse_resume_state_errors_when_no_session_id() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = minimal_summary(TerminalReason::FailExit);
+        let mut s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
         s.session_id = None;
         let state = make_pipeline_state();
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
@@ -334,12 +378,13 @@ mod tests {
     #[test]
     fn parse_resume_state_round_trips_env_pairs() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = minimal_summary(TerminalReason::FailExit);
+        let mut s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
         s.session_id = Some("sess_env".to_string());
         let state = PipelineState {
             current_idx: 0,
             global_counter: 0,
-            fail_counts: HashMap::new(),
+            retry_counts: HashMap::new(),
+            failure_totals: HashMap::new(),
             last_stage: None,
             last_verdict: None,
             loop_iterations: HashMap::new(),
@@ -372,7 +417,7 @@ mod tests {
             "pipeline_state": {
                 "current_idx": 1,
                 "global_counter": 2,
-                "fail_counts": {},
+                "retry_counts": {},
                 "last_stage": null,
                 "last_verdict": null,
                 "loop_iterations": {}
@@ -390,11 +435,113 @@ mod tests {
     }
 
     #[test]
+    fn parse_resume_state_accepts_legacy_fail_counts_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::json!({
+            "terminal_reason": "fail-exit",
+            "cap_hit_counter": null,
+            "last_stage": null,
+            "last_verdict": null,
+            "session_id": "sess_legacy",
+            "iteration_counters": { "global": 0, "loops": {} },
+            "pipeline_state": {
+                "current_idx": 1,
+                "global_counter": 5,
+                "fail_counts": { "stage-a": 3 },
+                "last_stage": null,
+                "last_verdict": null,
+                "loop_iterations": {}
+            },
+            "timestamp": "2026-01-01T00:00:00Z",
+            "workspace_dirty": false
+        });
+        std::fs::write(
+            dir.path().join("last-run.json"),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+        let (session_id, restored) = parse_resume_state(dir.path()).unwrap();
+        assert_eq!(session_id, "sess_legacy");
+        assert_eq!(restored.current_idx, 1);
+        assert_eq!(restored.global_counter, 5);
+        assert_eq!(
+            restored.retry_counts.get("stage-a"),
+            Some(&3),
+            "fail_counts alias must deserialize into retry_counts"
+        );
+    }
+
+    #[test]
+    fn forced_exit_message_max_retries() {
+        let s = minimal_summary(fail_exit(
+            "reviewer",
+            FailExitKind::MaxRetries { limit: 10 },
+        ));
+        let msg = forced_exit_message(&s).unwrap();
+        assert_eq!(
+            msg,
+            "Stage 'reviewer' exceeded max_retries (10) — pipeline stopped."
+        );
+    }
+
+    #[test]
+    fn forced_exit_message_max_failure() {
+        let s = minimal_summary(fail_exit("impl", FailExitKind::MaxFailure { limit: 3 }));
+        let msg = forced_exit_message(&s).unwrap();
+        assert_eq!(
+            msg,
+            "Stage 'impl' exceeded max_failure (3) — pipeline stopped."
+        );
+    }
+
+    #[test]
+    fn forced_exit_message_route() {
+        let s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
+        let msg = forced_exit_message(&s).unwrap();
+        assert_eq!(
+            msg,
+            "Stage 'stage-a' exited via fail route — pipeline stopped."
+        );
+    }
+
+    #[test]
+    fn forced_exit_message_cap_hit_max_stages() {
+        let mut s = minimal_summary(TerminalReason::CapHit);
+        s.cap_hit = Some(CapHitKind::MaxStages { limit: 50 });
+        let msg = forced_exit_message(&s).unwrap();
+        assert_eq!(msg, "Global max_stages (50) exceeded — pipeline stopped.");
+    }
+
+    #[test]
+    fn forced_exit_message_cap_hit_max_iteration() {
+        let mut s = minimal_summary(TerminalReason::CapHit);
+        s.cap_hit = Some(CapHitKind::LoopMaxIteration {
+            loop_idx: 0,
+            limit: 5,
+        });
+        let msg = forced_exit_message(&s).unwrap();
+        assert_eq!(msg, "Loop max_iteration (5) exceeded — pipeline stopped.");
+    }
+
+    #[test]
+    fn forced_exit_message_none_for_done() {
+        let s = minimal_summary(TerminalReason::Done);
+        assert!(forced_exit_message(&s).is_none());
+    }
+
+    #[test]
+    fn forced_exit_message_none_for_exit() {
+        let s = minimal_summary(TerminalReason::Exit);
+        assert!(forced_exit_message(&s).is_none());
+    }
+
+    #[test]
     fn pipeline_state_json_includes_env_pairs() {
         let state = PipelineState {
             current_idx: 0,
             global_counter: 0,
-            fail_counts: HashMap::new(),
+            retry_counts: HashMap::new(),
+            failure_totals: HashMap::new(),
             last_stage: None,
             last_verdict: None,
             loop_iterations: HashMap::new(),
@@ -412,7 +559,7 @@ mod tests {
 
     #[test]
     fn failure_decision_carries_notes_from_last_verdict() {
-        let mut s = minimal_summary(TerminalReason::FailExit);
+        let mut s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
         s.last_verdict = Some(Verdict {
             status: VerdictStatus::Fail,
             notes: Some("reviewer rejected implementation".to_string()),
@@ -427,7 +574,7 @@ mod tests {
 
     #[test]
     fn failure_decision_fallback_notes_when_no_verdict() {
-        let s = minimal_summary(TerminalReason::FailExit);
+        let s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
         match exit_decision_from_summary(&s) {
             ExitDecision::Failure(notes) => {
                 assert!(

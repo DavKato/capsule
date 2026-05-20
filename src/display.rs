@@ -32,6 +32,59 @@ struct ToolCallEntry {
     nesting_depth: u16,
 }
 
+struct AgentBuffer {
+    tool_call_count: u32,
+    start_time: Instant,
+    token_snapshot: Option<u64>,
+}
+
+impl AgentBuffer {
+    fn new(token_snapshot: Option<u64>) -> Self {
+        Self {
+            tool_call_count: 0,
+            start_time: Instant::now(),
+            token_snapshot,
+        }
+    }
+
+    fn push_tool_call(&mut self) {
+        self.tool_call_count += 1;
+    }
+
+    fn summary_line(&self, token_count: Option<u64>, elapsed: Duration) -> String {
+        let delta = match (token_count, self.token_snapshot) {
+            (Some(cur), Some(snap)) => Some(cur.saturating_sub(snap)),
+            (Some(cur), None) => Some(cur),
+            _ => None,
+        };
+        let token_part = match delta {
+            Some(n) => format!(" · {}", format_tokens_short(n)),
+            None => String::new(),
+        };
+        format!(
+            "Done ({} tool uses{} · {:.1}s)",
+            self.tool_call_count,
+            token_part,
+            elapsed.as_secs_f64()
+        )
+    }
+}
+
+fn agent_buffer_cache() -> &'static Mutex<HashMap<String, AgentBuffer>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, AgentBuffer>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn format_tokens_short(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M tokens", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k tokens", n as f64 / 1_000.0)
+    } else {
+        format!("{n} tokens")
+    }
+}
+
 struct DisplayState {
     term_width: u16,
     term_height: u16,
@@ -43,6 +96,7 @@ struct DisplayState {
     usage_tokens: Option<u64>,
     active_tool_calls: Vec<(String, ToolCallEntry)>,
     offset_tracker: OffsetTracker,
+    agent_buffers: HashMap<String, AgentBuffer>,
 }
 
 impl DisplayState {
@@ -58,6 +112,7 @@ impl DisplayState {
             usage_tokens: None,
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
+            agent_buffers: HashMap::new(),
         }
     }
 
@@ -759,6 +814,77 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
+fn render_tty_agent_summary_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    args: &str,
+    summary: &str,
+    offset: Option<u16>,
+    depth: u16,
+) -> std::io::Result<()> {
+    let prefix = nesting_prefix(depth);
+    let suffix = format!("  {summary}");
+    match offset {
+        Some(n) => {
+            out.queue(cursor::SavePosition)?;
+            out.queue(cursor::MoveUp(n))?;
+            out.queue(cursor::MoveToColumn(0))?;
+            out.queue(terminal::Clear(ClearType::CurrentLine))?;
+            if depth > 0 {
+                out.queue(SetForegroundColor(Color::DarkGrey))?;
+                out.queue(Print(&prefix))?;
+                out.queue(ResetColor)?;
+            }
+            out.queue(SetForegroundColor(GREEN))?;
+            out.queue(Print("●"))?;
+            out.queue(ResetColor)?;
+            out.queue(Print(format!(" {name}  {args}")))?;
+            out.queue(SetForegroundColor(Color::DarkGrey))?;
+            out.queue(Print(&suffix))?;
+            out.queue(ResetColor)?;
+            out.queue(cursor::RestorePosition)?;
+        }
+        None => {
+            if depth > 0 {
+                out.queue(SetForegroundColor(Color::DarkGrey))?;
+                out.queue(Print(&prefix))?;
+                out.queue(ResetColor)?;
+            }
+            out.queue(SetForegroundColor(GREEN))?;
+            out.queue(Print("●"))?;
+            out.queue(ResetColor)?;
+            out.queue(Print(format!(" {name}  {args}")))?;
+            out.queue(SetForegroundColor(Color::DarkGrey))?;
+            out.queue(Print(&suffix))?;
+            out.queue(ResetColor)?;
+            out.queue(Print("\n"))?;
+        }
+    }
+    out.flush()
+}
+
+fn agent_summary_line_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    args: &str,
+    summary: &str,
+    depth: u16,
+) -> std::io::Result<()> {
+    let prefix = nesting_prefix(depth);
+    if depth > 0 {
+        out.queue(Print(&prefix))?;
+    }
+    out.queue(SetForegroundColor(GREEN))?;
+    out.queue(Print("● "))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!("{name}  {args}")))?;
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
+    out.queue(Print(format!("  {summary}")))?;
+    out.queue(ResetColor)?;
+    out.queue(Print("\n"))?;
+    out.flush()
+}
+
 pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&str>) {
     LAST_WAS_TEXT.store(false, Ordering::Relaxed);
 
@@ -773,13 +899,19 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
-        let nesting_depth = parent_tool_use_id
-            .and_then(|pid| state.active_tool_calls.iter().find(|(eid, _)| eid == pid))
-            .map(|(_, e)| e.nesting_depth + 1)
-            .unwrap_or(0);
-        let prefix = nesting_prefix(nesting_depth);
+        // Nested call: buffer under its parent instead of rendering.
+        if let Some(pid) = parent_tool_use_id {
+            let token_snap = state.usage_tokens;
+            state
+                .agent_buffers
+                .entry(pid.to_owned())
+                .or_insert_with(|| AgentBuffer::new(token_snap))
+                .push_tool_call();
+            return;
+        }
+        let nesting_depth = 0;
         let plen = nesting_prefix_len(nesting_depth);
-        log_line(&format!("\n{prefix}● {name}  {display_args}"));
+        log_line(&format!("\n● {name}  {display_args}"));
         state.offset_tracker.increment_all(1, state.term_width);
         let visible_width = plen + 2 + name.chars().count() + 2 + display_args.chars().count();
         state
@@ -801,15 +933,18 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
         render_tty_tool_call_to(&mut out, name, &display_args, nesting_depth).ok();
     } else {
         drop(guard);
-        let nesting_depth = {
-            let cache = tool_call_cache().lock().unwrap_or_else(|e| e.into_inner());
-            parent_tool_use_id
-                .and_then(|pid| cache.get(pid))
-                .map(|e| e.nesting_depth + 1)
-                .unwrap_or(0)
-        };
-        let prefix = nesting_prefix(nesting_depth);
-        log_line(&format!("\n{prefix}● {name}  {display_args}"));
+        // Nested call: buffer under its parent instead of rendering.
+        if let Some(pid) = parent_tool_use_id {
+            agent_buffer_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(pid.to_owned())
+                .or_insert_with(|| AgentBuffer::new(None))
+                .push_tool_call();
+            return;
+        }
+        let nesting_depth = 0;
+        log_line(&format!("\n● {name}  {display_args}"));
         tool_call_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -860,6 +995,30 @@ pub fn tool_result(id: &str, success: bool) {
         };
         let (name, args, duration, nesting_depth) =
             (e.name, e.args, e.start_time.elapsed(), e.nesting_depth);
+
+        // If this parent has buffered nested calls, render an agent summary line.
+        if let Some(buf) = state.agent_buffers.remove(id) {
+            let summary = buf.summary_line(state.usage_tokens, buf.start_time.elapsed());
+            let scroll_height = state.separator_row();
+            let offset = state.offset_tracker.get_offset(id, scroll_height);
+            state.offset_tracker.remove(id);
+            let tw = state.term_width;
+            drop(guard);
+            render_tty_agent_summary_to(&mut out, &name, &args, &summary, offset, nesting_depth)
+                .ok();
+            log_line(&format!("● {name}  {args}  {summary}"));
+            if offset.is_none() {
+                let suffix = format!("  {summary}");
+                let line_visible =
+                    2 + name.chars().count() + 2 + args.chars().count() + suffix.chars().count();
+                let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(state) = guard.as_mut() {
+                    state.offset_tracker.increment_all(line_visible, tw);
+                }
+            }
+            return;
+        }
+
         let scroll_height = state.separator_row();
         let offset = state.offset_tracker.get_offset(id, scroll_height);
         state.offset_tracker.remove(id);
@@ -895,6 +1054,23 @@ pub fn tool_result(id: &str, success: bool) {
         }
     } else {
         drop(guard);
+        // Check for a buffered agent in the non-TTY cache.
+        let buf = agent_buffer_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        if let Some(buf) = buf {
+            let info = tool_call_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(id);
+            if let Some(i) = info {
+                let summary = buf.summary_line(None, buf.start_time.elapsed());
+                agent_summary_line_to(&mut out, &i.name, &i.args, &summary, i.nesting_depth).ok();
+                log_line(&format!("● {}  {}  {summary}", i.name, i.args));
+            }
+            return;
+        }
         let info = tool_call_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2163,6 +2339,7 @@ mod tests {
             usage_tokens: None,
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
+            agent_buffers: HashMap::new(),
         };
         let segs = build_info_segments(&state);
         assert_eq!(segs[0], "reviewer");
@@ -2232,6 +2409,7 @@ mod tests {
             usage_tokens: Some(33_300),
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
+            agent_buffers: HashMap::new(),
         };
         let segs = build_info_segments(&state);
         assert!(
@@ -2253,6 +2431,7 @@ mod tests {
             usage_tokens: None,
             active_tool_calls: Vec::new(),
             offset_tracker: OffsetTracker::new(),
+            agent_buffers: HashMap::new(),
         };
         let segs = build_info_segments(&state);
         assert!(
@@ -2843,5 +3022,110 @@ mod tests {
             second.is_none(),
             "second removal must return None — duplicate result must be dropped"
         );
+    }
+
+    // AgentBuffer tests
+
+    #[test]
+    fn agent_buffer_new_starts_with_zero_tool_calls() {
+        let buf = AgentBuffer::new(None);
+        assert_eq!(buf.tool_call_count, 0);
+    }
+
+    #[test]
+    fn agent_buffer_push_tool_call_increments_count() {
+        let mut buf = AgentBuffer::new(None);
+        buf.push_tool_call();
+        buf.push_tool_call();
+        buf.push_tool_call();
+        assert_eq!(buf.tool_call_count, 3);
+    }
+
+    #[test]
+    fn agent_buffer_summary_line_no_tokens() {
+        let buf = AgentBuffer::new(None);
+        let summary = buf.summary_line(None, Duration::from_millis(1500));
+        assert!(
+            summary.starts_with("Done ("),
+            "summary must start with Done ("
+        );
+        assert!(
+            summary.contains("tool uses"),
+            "summary must mention tool uses"
+        );
+        assert!(summary.contains("1.5s"), "summary must include duration");
+        assert!(
+            !summary.contains("tokens"),
+            "summary must omit token part when no token data"
+        );
+    }
+
+    #[test]
+    fn agent_buffer_summary_line_with_token_delta() {
+        let buf = AgentBuffer::new(Some(10_000));
+        let summary = buf.summary_line(Some(15_000), Duration::from_millis(2000));
+        assert!(summary.contains("5.0k tokens"), "must show 5k token delta");
+        assert!(summary.contains("2.0s"), "must include duration");
+    }
+
+    #[test]
+    fn agent_buffer_summary_line_tool_call_count_shown() {
+        let mut buf = AgentBuffer::new(None);
+        buf.push_tool_call();
+        buf.push_tool_call();
+        let summary = buf.summary_line(None, Duration::from_millis(500));
+        assert!(
+            summary.contains("2 tool uses"),
+            "must show count of buffered tool uses; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn agent_summary_line_to_renders_green_dot_and_summary() {
+        let mut buf: Vec<u8> = Vec::new();
+        agent_summary_line_to(
+            &mut buf,
+            "Agent",
+            "task description",
+            "Done (3 tool uses · 1.2s)",
+            0,
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("Agent"), "tool name must appear");
+        assert!(
+            out.contains("Done (3 tool uses"),
+            "summary must appear; got: {out:?}"
+        );
+        assert!(out.contains("●"), "dot must appear");
+        assert!(
+            contains_seq(&buf, GREEN_ANSI),
+            "green color must be used for summary line"
+        );
+    }
+
+    #[test]
+    fn agent_summary_line_to_no_cursor_up() {
+        let mut buf: Vec<u8> = Vec::new();
+        agent_summary_line_to(&mut buf, "Agent", "args", "Done (1 tool uses · 0.5s)", 0).unwrap();
+        assert!(
+            !buf.windows(4).any(|w| w == b"\x1b[1A"),
+            "non-TTY agent summary must not emit cursor-up"
+        );
+    }
+
+    #[test]
+    fn format_tokens_short_below_k() {
+        assert_eq!(format_tokens_short(500), "500 tokens");
+    }
+
+    #[test]
+    fn format_tokens_short_k_range() {
+        assert_eq!(format_tokens_short(5_000), "5.0k tokens");
+    }
+
+    #[test]
+    fn format_tokens_short_m_range() {
+        assert_eq!(format_tokens_short(2_000_000), "2.0M tokens");
     }
 }

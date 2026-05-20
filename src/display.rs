@@ -362,6 +362,10 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    agent_buffer_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     let in_tty = {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = guard.as_mut() {

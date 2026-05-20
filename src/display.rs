@@ -61,8 +61,13 @@ impl AgentBuffer {
             Some(n) => format!(" · {}", format_tokens_short(n)),
             None => String::new(),
         };
+        let noun = if self.tool_call_count == 1 {
+            "tool use"
+        } else {
+            "tool uses"
+        };
         format!(
-            "Done ({} tool uses{} · {:.1}s)",
+            "Done ({} {noun}{} · {:.1}s)",
             self.tool_call_count,
             token_part,
             elapsed.as_secs_f64()
@@ -899,7 +904,6 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
     let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
-        // Nested call: buffer under its parent instead of rendering.
         if let Some(pid) = parent_tool_use_id {
             let token_snap = state.usage_tokens;
             state
@@ -933,7 +937,6 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
         render_tty_tool_call_to(&mut out, name, &display_args, nesting_depth).ok();
     } else {
         drop(guard);
-        // Nested call: buffer under its parent instead of rendering.
         if let Some(pid) = parent_tool_use_id {
             agent_buffer_cache()
                 .lock()

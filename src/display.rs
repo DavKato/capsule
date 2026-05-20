@@ -85,6 +85,10 @@ impl AgentBuffer {
     }
 }
 
+// Lock ordering across the four global caches (must be respected to prevent deadlock):
+//   get_state() is the outermost lock. It may be held while acquiring agent_buffer_cache()
+//   or nested_call_parent_map(), but never the reverse. tool_call_cache() is always
+//   acquired alone — it is never nested inside any other cache lock, nor does it nest any.
 fn agent_buffer_cache() -> &'static Mutex<HashMap<String, AgentBuffer>> {
     static CACHE: OnceLock<Mutex<HashMap<String, AgentBuffer>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))

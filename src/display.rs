@@ -718,6 +718,8 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
     let label = if success { "Done" } else { "Failed" };
     let prefix = nesting_prefix(depth);
 
+    let duration_suffix = format!("  {label} ({:.1}s)", duration.as_secs_f64());
+
     match offset {
         Some(n) => {
             out.queue(cursor::SavePosition)?;
@@ -733,6 +735,9 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
             out.queue(Print(format!(" {name}  {args}")))?;
+            out.queue(SetForegroundColor(Color::DarkGrey))?;
+            out.queue(Print(&duration_suffix))?;
+            out.queue(ResetColor)?;
             out.queue(cursor::RestorePosition)?;
         }
         None => {
@@ -744,13 +749,13 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
             out.queue(SetForegroundColor(color))?;
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
-            out.queue(Print(format!(" {name}  {args}\n")))?;
+            out.queue(Print(format!(" {name}  {args}")))?;
+            out.queue(SetForegroundColor(Color::DarkGrey))?;
+            out.queue(Print(&duration_suffix))?;
+            out.queue(ResetColor)?;
+            out.queue(Print("\n"))?;
         }
     }
-    out.queue(Print(format!(
-        "{prefix}  {label} ({:.1}s)\n",
-        duration.as_secs_f64()
-    )))?;
     out.flush()
 }
 
@@ -873,21 +878,20 @@ pub fn tool_result(id: &str, success: bool) {
         .ok();
         log_tool_result(&name, &args, duration, success, nesting_depth);
 
-        // Account for the sub-line (and the solid-dot line in the off-screen case).
-        let label = if success { "Done" } else { "Failed" };
-        let sub_visible = nesting_prefix_len(nesting_depth)
-            + format!("  {label} ({:.1}s)", duration.as_secs_f64())
-                .chars()
-                .count();
-        let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(state) = guard.as_mut() {
-            if offset.is_none() {
-                // Off-screen path wrote 2 lines: solid dot + sub-line.
-                let plen = nesting_prefix_len(nesting_depth);
-                let line1_visible = plen + 2 + name.chars().count() + 2 + args.chars().count();
-                state.offset_tracker.increment_all(line1_visible, tw);
+        if offset.is_none() {
+            let label = if success { "Done" } else { "Failed" };
+            let duration_suffix = format!("  {label} ({:.1}s)", duration.as_secs_f64());
+            let plen = nesting_prefix_len(nesting_depth);
+            let line_visible = plen
+                + 2
+                + name.chars().count()
+                + 2
+                + args.chars().count()
+                + duration_suffix.chars().count();
+            let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(state) = guard.as_mut() {
+                state.offset_tracker.increment_all(line_visible, tw);
             }
-            state.offset_tracker.increment_all(sub_visible, tw);
         }
     } else {
         drop(guard);
@@ -908,9 +912,8 @@ pub fn tool_result(id: &str, success: bool) {
 fn log_tool_result(name: &str, args: &str, duration: Duration, success: bool, depth: u16) {
     let status = if success { "Done" } else { "Failed" };
     let prefix = nesting_prefix(depth);
-    log_line(&format!("{prefix}● {name}  {args}"));
     log_line(&format!(
-        "{prefix}  {status} ({:.1}s)",
+        "{prefix}● {name}  {args}  {status} ({:.1}s)",
         duration.as_secs_f64()
     ));
 }
@@ -932,11 +935,14 @@ fn tool_result_to<W: Write + QueueableCommand>(
     out.queue(SetForegroundColor(color))?;
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
-    out.queue(Print(format!("{name}  {args}\n")))?;
+    out.queue(Print(format!("{name}  {args}")))?;
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
     out.queue(Print(format!(
-        "{prefix}  {status} ({:.1}s)\n",
+        "  {status} ({:.1}s)",
         duration.as_secs_f64()
     )))?;
+    out.queue(ResetColor)?;
+    out.queue(Print("\n"))?;
     out.flush()
 }
 
@@ -1653,8 +1659,8 @@ mod tests {
         assert!(out.contains("Read"), "tool name must appear");
         let prefix_count = out.matches("├─").count();
         assert_eq!(
-            prefix_count, 2,
-            "prefix must appear on both dot line and sub-line; output: {out:?}"
+            prefix_count, 1,
+            "prefix must appear on the single-line result; output: {out:?}"
         );
     }
 
@@ -2785,8 +2791,8 @@ mod tests {
         assert!(prefix_pos < dot_pos, "prefix must appear before dot");
         let prefix_count = out.matches("├─").count();
         assert_eq!(
-            prefix_count, 2,
-            "prefix must appear on both dot line and sub-line; output: {out:?}"
+            prefix_count, 1,
+            "prefix must appear on the single-line result; output: {out:?}"
         );
     }
 

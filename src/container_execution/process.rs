@@ -78,10 +78,16 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
         }
         let had_text = !parser.last_text_displays().is_empty();
         for display in parser.last_text_displays() {
-            let text = match display {
-                TextDisplay::Content(t) | TextDisplay::Thinking(t) => t,
-            };
-            crate::display::agent_text(text);
+            match display {
+                TextDisplay::Content {
+                    text,
+                    parent_tool_use_id,
+                } => crate::display::agent_text(text, parent_tool_use_id.as_deref()),
+                TextDisplay::Thinking {
+                    text,
+                    parent_tool_use_id,
+                } => crate::display::agent_text(text, parent_tool_use_id.as_deref()),
+            }
         }
         if let Some(snap) = parser.last_usage_snapshot() {
             crate::display::set_usage(snap.total_tokens());

@@ -24,10 +24,10 @@ The original design placed tool call dots in the status panel. This was a misund
 **Corrected design:** Tool calls render in the scroll region, not the status panel. The status panel's status row is reserved for stage/iteration/model/duration — no tool call indicators.
 
 - **Pending**: light gray blinking dot (ANSI `SlowBlink` attribute) + tool name + truncated args
-- **Completed**: dot updated in-place to solid green (success) or red (failure) via offset counting + `MoveUp(N)`, with a sub-line showing duration
+- **Completed**: dot updated in-place to solid green (success) or red (failure) via offset counting + `MoveUp(N)`
 - **Offset counting**: capsule is the sole writer to the scroll region, so line offsets are reliable. Each pending tool call stores its offset; all offsets increment on every scroll-region write. If a tool call scrolls off-screen (offset > scroll region height), the in-place update is skipped.
 - **Multiple pending calls**: no cap; each tracked by ID with its own offset
-- **Nested tool calls**: when a tool call carries a `parent_tool_use_id` (sub-agent invocations), the display derives nesting depth from the parent's entry and renders a multi-level prefix (`│  ` per ancestor level, then `├─ `). Both TTY and non-TTY paths render the prefix; offset tracking accounts for the prefix width
+- **Sub-agent tool calls**: when a tool call carries a `parent_tool_use_id`, its nested calls are buffered in an `AgentBuffer` instead of rendered individually. While the agent runs, a live 2-line progress indicator shows the current tool name below a `⎿` connector prefix. On completion, the live line is replaced with a single summary (call count, token delta, elapsed time). This keeps the scroll region compact regardless of how many sub-agent calls occur.
 
 ## References
 

@@ -1236,4 +1236,98 @@ mod tests {
             Some(3)
         );
     }
+
+    // ── enriched TerminalReason: per-variant assertions ────────────────────────
+
+    #[test]
+    fn fail_exit_kind_route_carries_stage_name() {
+        let config = pipeline(vec![single_stage_entry(stage("my-stage"))]);
+        let summary = run_summary(config, FakeRunner::new([fail()]));
+        assert_eq!(
+            summary.terminal_reason,
+            TerminalReason::FailExit {
+                stage: "my-stage".to_string(),
+                kind: FailExitKind::Route,
+            }
+        );
+    }
+
+    #[test]
+    fn fail_exit_kind_max_retries_carries_stage_and_limit() {
+        let mut s = stage("my-stage");
+        s.on_fail = OnFail::Retry;
+        s.max_retries = 2;
+        let config = pipeline(vec![single_stage_entry(s)]);
+        // retry_count reaches 3 > 2 on the third fail → MaxRetries
+        let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
+        assert_eq!(
+            summary.terminal_reason,
+            TerminalReason::FailExit {
+                stage: "my-stage".to_string(),
+                kind: FailExitKind::MaxRetries { limit: 2 },
+            }
+        );
+    }
+
+    #[test]
+    fn fail_exit_kind_max_failure_carries_stage_and_limit() {
+        let mut s = stage("my-stage");
+        s.on_fail = OnFail::Retry;
+        s.max_retries = 100;
+        s.max_failure = Some(2);
+        let config = pipeline(vec![single_stage_entry(s)]);
+        // failure_totals reaches 3 > 2 on the third fail → MaxFailure
+        let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
+        assert_eq!(
+            summary.terminal_reason,
+            TerminalReason::FailExit {
+                stage: "my-stage".to_string(),
+                kind: FailExitKind::MaxFailure { limit: 2 },
+            }
+        );
+    }
+
+    // ── failure_totals resume: cap fires from carried-over count ───────────────
+
+    #[test]
+    fn failure_totals_resume_enforces_max_failure_from_carry_over() {
+        let mut s = stage("a");
+        s.on_fail = OnFail::Retry;
+        s.max_retries = 100;
+        s.max_failure = Some(3);
+
+        // First run hits max_stages cap after 2 fails; failure_totals["a"] = 2.
+        let config_capped = PipelineConfig {
+            entries: vec![single_stage_entry(s.clone())],
+            max_stages: 2,
+        };
+        let first = run_result(config_capped, FakeRunner::new([fail(), fail()]));
+        assert_eq!(first.outcome, PipelineOutcome::CapHit);
+        assert_eq!(
+            first.pipeline_state.failure_totals.get("a").copied(),
+            Some(2)
+        );
+
+        // Serialize → deserialize to confirm failure_totals survives the round-trip.
+        let json = serde_json::to_value(&first.pipeline_state).unwrap();
+        let restored: PipelineState = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.failure_totals.get("a").copied(), Some(2));
+
+        // Resume: 2 more fails push failure_totals to 4 > 3 → MaxFailure FailExit.
+        let config_resume = PipelineConfig {
+            entries: vec![single_stage_entry(s)],
+            max_stages: 1000,
+        };
+        let (result, _) =
+            PipelineExecutor::resume(config_resume, FakeRunner::new([fail(), fail()]), restored)
+                .run()
+                .unwrap();
+        assert_eq!(
+            result.summary.terminal_reason,
+            TerminalReason::FailExit {
+                stage: "a".to_string(),
+                kind: FailExitKind::MaxFailure { limit: 3 },
+            }
+        );
+    }
 }

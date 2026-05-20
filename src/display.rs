@@ -965,6 +965,7 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
                 render_live_nested_line_to(&mut out, name, &display_args).ok();
             } else {
                 let live_key = format!("{pid}:live");
+                state.offset_tracker.update_width(&live_key, live_w, tw);
                 let scroll_h = state.separator_row();
                 let offset = state.offset_tracker.get_offset(&live_key, scroll_h);
                 drop(guard);
@@ -1558,6 +1559,15 @@ impl OffsetTracker {
             None
         } else {
             Some(offset)
+        }
+    }
+
+    fn update_width(&mut self, id: &str, visible_width: usize, term_width: u16) {
+        if let Some(entry) = self.entries.get_mut(id) {
+            let old_lines = Self::lines_for_width(entry.1, term_width);
+            let new_lines = Self::lines_for_width(visible_width, term_width);
+            entry.0 = entry.0.saturating_sub(old_lines).saturating_add(new_lines);
+            entry.1 = visible_width;
         }
     }
 
@@ -2607,6 +2617,33 @@ mod tests {
         tracker.register("tool1", 20, 80);
         tracker.remove("tool1");
         assert_eq!(tracker.get_offset("tool1", 100), None);
+    }
+
+    #[test]
+    fn offset_tracker_update_width_adjusts_own_offset() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 20, 80); // 1 line
+        tracker.increment_all(20, 80); // push to offset 2
+        assert_eq!(tracker.get_offset("tool1", 100), Some(2));
+        tracker.update_width("tool1", 100, 80); // now wraps to 2 lines
+        assert_eq!(tracker.get_offset("tool1", 100), Some(3));
+    }
+
+    #[test]
+    fn offset_tracker_update_width_shrink() {
+        let mut tracker = OffsetTracker::new();
+        tracker.register("tool1", 100, 80); // 2 lines (wraps)
+        tracker.increment_all(20, 80); // push to offset 3
+        assert_eq!(tracker.get_offset("tool1", 100), Some(3));
+        tracker.update_width("tool1", 20, 80); // back to 1 line
+        assert_eq!(tracker.get_offset("tool1", 100), Some(2));
+    }
+
+    #[test]
+    fn offset_tracker_update_width_nonexistent_is_noop() {
+        let mut tracker = OffsetTracker::new();
+        tracker.update_width("missing", 100, 80);
+        assert_eq!(tracker.get_offset("missing", 100), None);
     }
 
     #[test]

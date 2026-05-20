@@ -1,0 +1,6 @@
+stages:
+  - name: main
+    prompt: prompt.md
+    on_fail: retry
+    max_failure: 3
+model: claude-sonnet-4-6

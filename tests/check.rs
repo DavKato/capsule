@@ -160,6 +160,24 @@ fn check_old_before_each_sh_fails() {
 }
 
 #[test]
+fn check_max_failure_with_retry_warns() {
+    let output = cmd()
+        .args(["check", "--capsule-dir"])
+        .arg(fixture("warn-max-failure-with-retry"))
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("[WARN]"),
+        "expected [WARN] in output, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("max_failure"),
+        "expected 'max_failure' in warning output, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn check_old_before_all_sh_fails() {
     let output = cmd()
         .args(["check", "--capsule-dir"])

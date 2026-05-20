@@ -225,6 +225,7 @@ fn print_report(report: &CheckReport) {
     for issue in report {
         let tag = match issue.severity {
             Severity::Error => "[ERROR]",
+            Severity::Warning => "[WARN]",
             Severity::Hint => "[HINT]",
         };
         capsule::display::println(&format!("{tag} {}: {}", issue.location, issue.message));

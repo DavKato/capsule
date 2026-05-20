@@ -5,7 +5,7 @@ use crate::config::{LoopConfig, OnFail, OnPass, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
 
 use super::prompt::{inject_input, inject_note_block};
-use super::summary::{CapHitKind, PipelineOutcome};
+use super::summary::{CapHitKind, FailExitKind, PipelineOutcome};
 use super::StageRunner;
 
 fn retry_info(progress: &PipelineProgress, stage: &StageConfig) -> Option<RetryInfo> {
@@ -28,6 +28,8 @@ pub(super) struct PipelineProgress {
     pub(super) input: Option<String>,
     pub(super) last_stage: Option<String>,
     pub(super) last_verdict: Option<Verdict>,
+    /// Set whenever a fail-route exit is triggered; read by the executor to enrich `TerminalReason`.
+    pub(super) fail_exit_info: Option<(String, FailExitKind)>,
 }
 
 #[derive(Clone)]
@@ -37,8 +39,8 @@ pub(super) enum ExitKind {
 }
 
 pub(super) enum LoopCapKind {
-    MaxIteration,
-    MaxStages,
+    MaxIteration { limit: u32 },
+    MaxStages { limit: u32 },
 }
 
 pub(super) enum StageOutcome {
@@ -93,7 +95,7 @@ pub(super) fn run_loop(
             if let Some(max) = loop_config.max_iteration {
                 if iteration_count > max {
                     return Ok(LoopOutcome::CapHit {
-                        kind: LoopCapKind::MaxIteration,
+                        kind: LoopCapKind::MaxIteration { limit: max },
                         iterations: iteration_count - 1,
                     });
                 }
@@ -103,7 +105,7 @@ pub(super) fn run_loop(
 
         if progress.global_counter >= max_stages {
             return Ok(LoopOutcome::CapHit {
-                kind: LoopCapKind::MaxStages,
+                kind: LoopCapKind::MaxStages { limit: max_stages },
                 iterations: iteration_count,
             });
         }
@@ -168,23 +170,34 @@ pub(super) fn run_loop(
                 .entry(stage.name.clone())
                 .or_insert(0);
             *fail_total += 1;
-            if stage.max_failure.is_some_and(|limit| *fail_total > limit) {
-                return Ok(LoopOutcome::Exit {
-                    kind: ExitKind::FailRoute,
-                    iterations: iteration_count,
-                });
-            }
-            match &stage.on_fail {
-                OnFail::Exit => {
+            if let Some(limit) = stage.max_failure {
+                if *fail_total > limit {
+                    progress.fail_exit_info =
+                        Some((stage.name.clone(), FailExitKind::MaxFailure { limit }));
                     return Ok(LoopOutcome::Exit {
                         kind: ExitKind::FailRoute,
                         iterations: iteration_count,
-                    })
+                    });
+                }
+            }
+            match &stage.on_fail {
+                OnFail::Exit => {
+                    progress.fail_exit_info = Some((stage.name.clone(), FailExitKind::Route));
+                    return Ok(LoopOutcome::Exit {
+                        kind: ExitKind::FailRoute,
+                        iterations: iteration_count,
+                    });
                 }
                 OnFail::Retry => {
                     let retry_count = progress.retry_counts.entry(stage.name.clone()).or_insert(0);
                     *retry_count += 1;
                     if *retry_count > stage.max_retries {
+                        progress.fail_exit_info = Some((
+                            stage.name.clone(),
+                            FailExitKind::MaxRetries {
+                                limit: stage.max_retries,
+                            },
+                        ));
                         return Ok(LoopOutcome::Exit {
                             kind: ExitKind::FailRoute,
                             iterations: iteration_count,
@@ -197,10 +210,11 @@ pub(super) fn run_loop(
                 OnFail::Stage(name) => match loop_name_to_idx.get(name.as_str()) {
                     Some(&idx) => stage_idx = idx,
                     None => {
+                        progress.fail_exit_info = Some((stage.name.clone(), FailExitKind::Route));
                         return Ok(LoopOutcome::Exit {
                             kind: ExitKind::FailRoute,
                             iterations: iteration_count,
-                        })
+                        });
                     }
                 },
             }
@@ -255,21 +269,27 @@ pub(super) fn handle_loop_outcome(
             )
         }
         LoopOutcome::CapHit {
-            kind: LoopCapKind::MaxIteration,
+            kind: LoopCapKind::MaxIteration { limit },
             iterations,
         } => {
             loop_iterations.insert(entry_idx, iterations);
             LoopControl::Break(
                 PipelineOutcome::CapHit,
-                Some(CapHitKind::LoopMaxIteration(entry_idx)),
+                Some(CapHitKind::LoopMaxIteration {
+                    loop_idx: entry_idx,
+                    limit,
+                }),
             )
         }
         LoopOutcome::CapHit {
-            kind: LoopCapKind::MaxStages,
+            kind: LoopCapKind::MaxStages { limit },
             iterations,
         } => {
             loop_iterations.insert(entry_idx, iterations);
-            LoopControl::Break(PipelineOutcome::CapHit, Some(CapHitKind::MaxStages))
+            LoopControl::Break(
+                PipelineOutcome::CapHit,
+                Some(CapHitKind::MaxStages { limit }),
+            )
         }
     }
 }
@@ -319,17 +339,31 @@ pub(super) fn run_stage(
             .entry(stage.name.clone())
             .or_insert(0);
         *fail_total += 1;
-        if stage.max_failure.is_some_and(|limit| *fail_total > limit) {
-            return Ok(StageOutcome::Exit(ExitKind::FailRoute));
+        if let Some(limit) = stage.max_failure {
+            if *fail_total > limit {
+                progress.fail_exit_info =
+                    Some((stage.name.clone(), FailExitKind::MaxFailure { limit }));
+                return Ok(StageOutcome::Exit(ExitKind::FailRoute));
+            }
         }
         if matches!(stage.on_fail, OnFail::Retry) {
             let retry_count = progress.retry_counts.entry(stage.name.clone()).or_insert(0);
             *retry_count += 1;
             if *retry_count > stage.max_retries {
+                progress.fail_exit_info = Some((
+                    stage.name.clone(),
+                    FailExitKind::MaxRetries {
+                        limit: stage.max_retries,
+                    },
+                ));
                 return Ok(StageOutcome::Exit(ExitKind::FailRoute));
             }
         }
-        Ok(route_fail(stage, name_to_entry))
+        let outcome = route_fail(stage, name_to_entry);
+        if matches!(outcome, StageOutcome::Exit(ExitKind::FailRoute)) {
+            progress.fail_exit_info = Some((stage.name.clone(), FailExitKind::Route));
+        }
+        Ok(outcome)
     }
 }
 

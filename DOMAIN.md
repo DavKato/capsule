@@ -85,8 +85,12 @@ Per-loop cap; ticks on every top-of-body entry except self-`retry`.
 _Avoid_: Loop budget
 
 **`max_retries`**:
-Per-stage cap on consecutive `fail` verdicts; resets on `pass`; independent of loop position.
+Per-stage cap on consecutive `fail` verdicts; only applies when `on_fail: retry`; resets on `pass`; independent of loop position.
 _Avoid_: Retry limit
+
+**`max_failure`**:
+Per-stage cap on total fail verdicts across a run; never resets; opt-in with no default. Triggers a pipeline stop regardless of `on_fail` routing. Setting `max_failure` alongside `on_fail: retry` is valid but noteworthy: every fail verdict counts (including retries), so the pipeline may exit before `max_retries` is exhausted.
+_Avoid_: Failure budget, cumulative failure limit
 
 **`max_stages`**:
 Global circuit breaker across all stage invocations in a run; top-level only.

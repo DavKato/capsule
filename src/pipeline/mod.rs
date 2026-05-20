@@ -11,8 +11,8 @@ use crate::config::{PipelineConfig, PipelineEntry};
 pub use prompt::SYSTEM_PREAMBLE;
 pub use state::PipelineState;
 pub use summary::{
-    build_summary_artifact, CapHitKind, IterationCounters, PipelineOutcome, RunSummary,
-    TerminalReason,
+    build_summary_artifact, CapHitKind, FailExitKind, IterationCounters, PipelineOutcome,
+    RunSummary, TerminalReason,
 };
 
 use routing::{
@@ -103,6 +103,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                     input: self.input.take(),
                     last_stage: s.last_stage,
                     last_verdict: s.last_verdict,
+                    fail_exit_info: None,
                 },
             ),
             None => (
@@ -115,6 +116,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
                     input: self.input.take(),
                     last_stage: None,
                     last_verdict: None,
+                    fail_exit_info: None,
                 },
             ),
         };
@@ -127,7 +129,12 @@ impl<R: StageRunner> PipelineExecutor<R> {
             match &self.config.entries[current_idx] {
                 PipelineEntry::Stage(stage) => {
                     if progress.global_counter >= max_pipeline {
-                        break (PipelineOutcome::CapHit, Some(CapHit::MaxStages));
+                        break (
+                            PipelineOutcome::CapHit,
+                            Some(CapHit::MaxStages {
+                                limit: max_pipeline,
+                            }),
+                        );
                     }
                     progress.global_counter += 1;
                     match run_stage(&mut self.runner, stage, &name_to_entry, &mut progress)? {
@@ -187,7 +194,15 @@ impl<R: StageRunner> PipelineExecutor<R> {
         let terminal_reason = match &outcome {
             PipelineOutcome::Done => TerminalReason::Done,
             PipelineOutcome::Exit { from_fail: false } => TerminalReason::Exit,
-            PipelineOutcome::Exit { from_fail: true } => TerminalReason::FailExit,
+            PipelineOutcome::Exit { from_fail: true } => {
+                let (stage, kind) = progress.fail_exit_info.take().unwrap_or_else(|| {
+                    (
+                        progress.last_stage.clone().unwrap_or_default(),
+                        FailExitKind::Route,
+                    )
+                });
+                TerminalReason::FailExit { stage, kind }
+            }
             PipelineOutcome::CapHit => TerminalReason::CapHit,
         };
 
@@ -683,7 +698,11 @@ mod tests {
     fn terminal_reason_fail_exit_for_fail_route() {
         let config = pipeline(vec![single_stage_entry(stage("a"))]);
         let summary = run_summary(config, FakeRunner::new([fail()]));
-        assert_eq!(summary.terminal_reason, TerminalReason::FailExit);
+        assert!(
+            matches!(summary.terminal_reason, TerminalReason::FailExit { .. }),
+            "expected FailExit, got {:?}",
+            summary.terminal_reason
+        );
     }
 
     #[test]
@@ -732,7 +751,14 @@ mod tests {
             stages: vec![stage("a")],
         })]);
         let summary = run_summary(config, FakeRunner::new([pass()]));
-        assert_eq!(summary.cap_hit, Some(CapHitKind::LoopMaxIteration(0)));
+        assert!(
+            matches!(
+                summary.cap_hit,
+                Some(CapHitKind::LoopMaxIteration { loop_idx: 0, .. })
+            ),
+            "expected LoopMaxIteration(0), got {:?}",
+            summary.cap_hit
+        );
     }
 
     #[test]
@@ -744,7 +770,11 @@ mod tests {
             max_stages: 2,
         };
         let summary = run_summary(config, FakeRunner::new([fail(), fail(), fail()]));
-        assert_eq!(summary.cap_hit, Some(CapHitKind::MaxStages));
+        assert!(
+            matches!(summary.cap_hit, Some(CapHitKind::MaxStages { .. })),
+            "expected MaxStages, got {:?}",
+            summary.cap_hit
+        );
     }
 
     fn run_result(config: PipelineConfig, runner: FakeRunner) -> PipelineRunResult {

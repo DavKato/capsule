@@ -83,7 +83,10 @@ fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result
                     text,
                     parent_tool_use_id,
                 } => crate::display::agent_text(text, parent_tool_use_id.as_deref()),
-                TextDisplay::Thinking(text) => crate::display::agent_text(text, None),
+                TextDisplay::Thinking {
+                    text,
+                    parent_tool_use_id,
+                } => crate::display::agent_text(text, parent_tool_use_id.as_deref()),
             }
         }
         if let Some(snap) = parser.last_usage_snapshot() {

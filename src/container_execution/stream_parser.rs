@@ -24,7 +24,10 @@ pub enum TextDisplay {
         text: String,
         parent_tool_use_id: Option<String>,
     },
-    Thinking(String),
+    Thinking {
+        text: String,
+        parent_tool_use_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +264,10 @@ fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) 
                             .and_then(Value::as_str)
                             .map(str::to_owned)
                         {
-                            text_displays.push(TextDisplay::Thinking(text));
+                            text_displays.push(TextDisplay::Thinking {
+                                text,
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                            });
                         }
                     }
                     _ => {}
@@ -906,7 +912,9 @@ mod tests {
         p.feed(line);
         let displays = p.last_text_displays();
         assert_eq!(displays.len(), 1);
-        assert!(matches!(&displays[0], TextDisplay::Thinking(t) if t == "hmm let me think"));
+        assert!(
+            matches!(&displays[0], TextDisplay::Thinking { text: t, .. } if t == "hmm let me think")
+        );
     }
 
     #[test]
@@ -916,7 +924,9 @@ mod tests {
         p.feed(line);
         let displays = p.last_text_displays();
         assert_eq!(displays.len(), 2);
-        assert!(matches!(&displays[0], TextDisplay::Thinking(t) if t == "hmm let me think"));
+        assert!(
+            matches!(&displays[0], TextDisplay::Thinking { text: t, .. } if t == "hmm let me think")
+        );
         assert!(
             matches!(&displays[1], TextDisplay::Content { text: t, .. } if t == "here is my answer")
         );
@@ -1175,6 +1185,24 @@ mod tests {
             panic!("expected TextDisplay::Content");
         };
         assert_eq!(text, "working on it");
+        assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_agent01"));
+    }
+
+    #[test]
+    fn thinking_carries_parent_tool_use_id_when_present() {
+        let line = r#"{"type":"assistant","parent_tool_use_id":"toolu_agent01","message":{"content":[{"type":"thinking","thinking":"let me reason"}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let displays = p.last_text_displays();
+        assert_eq!(displays.len(), 1);
+        let TextDisplay::Thinking {
+            text,
+            parent_tool_use_id,
+        } = &displays[0]
+        else {
+            panic!("expected TextDisplay::Thinking");
+        };
+        assert_eq!(text, "let me reason");
         assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_agent01"));
     }
 

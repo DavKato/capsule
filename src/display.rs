@@ -1147,14 +1147,12 @@ pub fn agent_text(text: &str, parent_tool_use_id: Option<&str>) {
             if state.agent_buffers.contains_key(pid) {
                 return;
             }
-        } else {
-            if agent_buffer_cache()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(pid)
-            {
-                return;
-            }
+        } else if agent_buffer_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(pid)
+        {
+            return;
         }
     }
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);

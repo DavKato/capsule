@@ -48,7 +48,7 @@ pub(super) fn forced_exit_message(summary: &RunSummary) -> Option<String> {
                     format!("Global max_stages ({limit}) exceeded — pipeline stopped.")
                 }
                 Some(CapHitKind::LoopMaxIteration { limit, .. }) => {
-                    format!("Global max_iteration ({limit}) exceeded — pipeline stopped.")
+                    format!("Loop max_iteration ({limit}) exceeded — pipeline stopped.")
                 }
                 None => "Pipeline cap exceeded — pipeline stopped.".to_string(),
             };
@@ -487,7 +487,7 @@ mod tests {
             limit: 5,
         });
         let msg = forced_exit_message(&s).unwrap();
-        assert_eq!(msg, "Global max_iteration (5) exceeded — pipeline stopped.");
+        assert_eq!(msg, "Loop max_iteration (5) exceeded — pipeline stopped.");
     }
 
     #[test]

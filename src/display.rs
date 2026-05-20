@@ -36,6 +36,10 @@ struct AgentBuffer {
     tool_call_count: u32,
     start_time: Instant,
     token_snapshot: Option<u64>,
+    current_tool_name: String,
+    current_tool_args: String,
+    last_result_success: Option<bool>,
+    has_live_line: bool,
 }
 
 impl AgentBuffer {
@@ -44,11 +48,18 @@ impl AgentBuffer {
             tool_call_count: 0,
             start_time: Instant::now(),
             token_snapshot,
+            current_tool_name: String::new(),
+            current_tool_args: String::new(),
+            last_result_success: None,
+            has_live_line: false,
         }
     }
 
-    fn push_tool_call(&mut self) {
+    fn push_tool_call(&mut self, name: &str, args: &str) {
         self.tool_call_count += 1;
+        self.current_tool_name = name.to_owned();
+        self.current_tool_args = args.to_owned();
+        self.last_result_success = None;
     }
 
     fn summary_line(&self, token_count: Option<u64>, elapsed: Duration) -> String {
@@ -78,6 +89,90 @@ impl AgentBuffer {
 fn agent_buffer_cache() -> &'static Mutex<HashMap<String, AgentBuffer>> {
     static CACHE: OnceLock<Mutex<HashMap<String, AgentBuffer>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn nested_call_parent_map() -> &'static Mutex<HashMap<String, String>> {
+    static MAP: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const LIVE_NESTED_PREFIX: &str = "⎿  ";
+
+fn live_nested_visible_width(name: &str, args: &str) -> usize {
+    LIVE_NESTED_PREFIX.chars().count() + 2 + name.chars().count() + 2 + args.chars().count()
+}
+
+fn render_live_nested_line_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    args: &str,
+) -> std::io::Result<()> {
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
+    out.queue(Print(LIVE_NESTED_PREFIX))?;
+    out.queue(SetAttribute(Attribute::SlowBlink))?;
+    out.queue(Print("●"))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.queue(Print(format!(" {name}  {args}\n")))?;
+    out.flush()
+}
+
+fn overwrite_live_nested_line_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    args: &str,
+    offset: u16,
+) -> std::io::Result<()> {
+    out.queue(cursor::SavePosition)?;
+    out.queue(cursor::MoveUp(offset))?;
+    out.queue(cursor::MoveToColumn(0))?;
+    out.queue(terminal::Clear(ClearType::CurrentLine))?;
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
+    out.queue(Print(LIVE_NESTED_PREFIX))?;
+    out.queue(SetAttribute(Attribute::SlowBlink))?;
+    out.queue(Print("●"))?;
+    out.queue(SetAttribute(Attribute::Reset))?;
+    out.queue(Print(format!(" {name}  {args}")))?;
+    out.queue(cursor::RestorePosition)?;
+    out.flush()
+}
+
+fn update_live_nested_dot_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    name: &str,
+    args: &str,
+    success: bool,
+    offset: u16,
+) -> std::io::Result<()> {
+    let color = if success { GREEN } else { RED };
+    out.queue(cursor::SavePosition)?;
+    out.queue(cursor::MoveUp(offset))?;
+    out.queue(cursor::MoveToColumn(0))?;
+    out.queue(terminal::Clear(ClearType::CurrentLine))?;
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
+    out.queue(Print(LIVE_NESTED_PREFIX))?;
+    out.queue(SetForegroundColor(color))?;
+    out.queue(Print("●"))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(format!(" {name}  {args}")))?;
+    out.queue(cursor::RestorePosition)?;
+    out.flush()
+}
+
+fn replace_live_line_with_summary_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    summary: &str,
+    offset: u16,
+) -> std::io::Result<()> {
+    out.queue(cursor::SavePosition)?;
+    out.queue(cursor::MoveUp(offset))?;
+    out.queue(cursor::MoveToColumn(0))?;
+    out.queue(terminal::Clear(ClearType::CurrentLine))?;
+    out.queue(SetForegroundColor(Color::DarkGrey))?;
+    out.queue(Print(LIVE_NESTED_PREFIX))?;
+    out.queue(ResetColor)?;
+    out.queue(Print(summary))?;
+    out.queue(cursor::RestorePosition)?;
+    out.flush()
 }
 
 fn format_tokens_short(n: u64) -> String {
@@ -260,6 +355,10 @@ fn redraw_info_row() {
 }
 
 pub fn set_stage(name: &str, iteration: u32, model: &str) {
+    nested_call_parent_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     let in_tty = {
         let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = guard.as_mut() {
@@ -271,6 +370,7 @@ pub fn set_stage(name: &str, iteration: u32, model: &str) {
             state.usage_tokens = None;
             state.active_tool_calls.clear();
             state.offset_tracker.clear();
+            state.agent_buffers.clear();
         }
         guard.is_some()
     };
@@ -295,6 +395,14 @@ pub fn clear_stage() {
     TIMER_GEN.fetch_add(1, Ordering::Relaxed);
     timer_wake().1.notify_all();
     tool_call_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    nested_call_parent_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    agent_buffer_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -905,12 +1013,42 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
     handle_resize_if_needed(&mut guard, &mut out);
     if let Some(state) = guard.as_mut() {
         if let Some(pid) = parent_tool_use_id {
+            nested_call_parent_map()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.to_owned(), pid.to_owned());
+
             let token_snap = state.usage_tokens;
-            state
-                .agent_buffers
-                .entry(pid.to_owned())
-                .or_insert_with(|| AgentBuffer::new(token_snap))
-                .push_tool_call();
+            let tw = state.term_width;
+
+            let (is_first, live_w) = {
+                let buf = state
+                    .agent_buffers
+                    .entry(pid.to_owned())
+                    .or_insert_with(|| AgentBuffer::new(token_snap));
+                let is_first = buf.tool_call_count == 0;
+                buf.push_tool_call(name, &display_args);
+                if is_first {
+                    buf.has_live_line = true;
+                }
+                (is_first, live_nested_visible_width(name, &display_args))
+            };
+
+            if is_first {
+                let live_key = format!("{pid}:live");
+                state.offset_tracker.increment_all(live_w, tw);
+                state.offset_tracker.register(&live_key, live_w, tw);
+                drop(guard);
+                render_live_nested_line_to(&mut out, name, &display_args).ok();
+            } else {
+                let live_key = format!("{pid}:live");
+                let scroll_h = state.separator_row();
+                let offset = state.offset_tracker.get_offset(&live_key, scroll_h);
+                drop(guard);
+                if let Some(off) = offset {
+                    overwrite_live_nested_line_to(&mut out, name, &display_args, off).ok();
+                }
+            }
             return;
         }
         let nesting_depth = 0;
@@ -943,7 +1081,7 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
                 .unwrap_or_else(|e| e.into_inner())
                 .entry(pid.to_owned())
                 .or_insert_with(|| AgentBuffer::new(None))
-                .push_tool_call();
+                .push_tool_call(name, &display_args);
             return;
         }
         let nesting_depth = 0;
@@ -994,6 +1132,36 @@ pub fn tool_result(id: &str, success: bool) {
             .position(|(eid, _)| eid == id);
         let entry = entry_pos.map(|i| state.active_tool_calls.remove(i));
         let Some((_, e)) = entry else {
+            // Not a parent call – check if it's a nested call result.
+            let parent_id = nested_call_parent_map()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(id);
+            if let Some(pid) = parent_id {
+                let scroll_h = state.separator_row();
+                let render_info = if let Some(buf) = state.agent_buffers.get_mut(&pid) {
+                    buf.last_result_success = Some(success);
+                    if buf.has_live_line {
+                        let live_key = format!("{pid}:live");
+                        let off = state.offset_tracker.get_offset(&live_key, scroll_h);
+                        Some((
+                            buf.current_tool_name.clone(),
+                            buf.current_tool_args.clone(),
+                            off,
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                drop(guard);
+                if let Some((cur_name, cur_args, Some(off))) = render_info {
+                    update_live_nested_dot_to(&mut out, &cur_name, &cur_args, success, off).ok();
+                }
+            } else {
+                drop(guard);
+            }
             return;
         };
         let (name, args, duration, nesting_depth) =
@@ -1002,23 +1170,57 @@ pub fn tool_result(id: &str, success: bool) {
         // If this parent has buffered nested calls, render an agent summary line.
         if let Some(buf) = state.agent_buffers.remove(id) {
             let summary = buf.summary_line(state.usage_tokens, buf.start_time.elapsed());
+            let has_live_line = buf.has_live_line;
+            let live_key = format!("{id}:live");
             let scroll_height = state.separator_row();
-            let offset = state.offset_tracker.get_offset(id, scroll_height);
+            let live_offset = state.offset_tracker.get_offset(&live_key, scroll_height);
+            let header_offset = state.offset_tracker.get_offset(id, scroll_height);
             state.offset_tracker.remove(id);
+            state.offset_tracker.remove(&live_key);
             let tw = state.term_width;
             drop(guard);
-            render_tty_agent_summary_to(&mut out, &name, &args, &summary, offset, nesting_depth)
+
+            if has_live_line {
+                if let Some(off) = live_offset {
+                    replace_live_line_with_summary_to(&mut out, &summary, off).ok();
+                } else {
+                    // Live line scrolled off; append summary as a new line.
+                    agent_summary_line_to(&mut out, &name, &args, &summary, nesting_depth).ok();
+                    let suffix = format!("  {summary}");
+                    let line_visible = 2
+                        + name.chars().count()
+                        + 2
+                        + args.chars().count()
+                        + suffix.chars().count();
+                    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(state) = guard.as_mut() {
+                        state.offset_tracker.increment_all(line_visible, tw);
+                    }
+                }
+            } else {
+                render_tty_agent_summary_to(
+                    &mut out,
+                    &name,
+                    &args,
+                    &summary,
+                    header_offset,
+                    nesting_depth,
+                )
                 .ok();
-            log_line(&format!("● {name}  {args}  {summary}"));
-            if offset.is_none() {
-                let suffix = format!("  {summary}");
-                let line_visible =
-                    2 + name.chars().count() + 2 + args.chars().count() + suffix.chars().count();
-                let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(state) = guard.as_mut() {
-                    state.offset_tracker.increment_all(line_visible, tw);
+                if header_offset.is_none() {
+                    let suffix = format!("  {summary}");
+                    let line_visible = 2
+                        + name.chars().count()
+                        + 2
+                        + args.chars().count()
+                        + suffix.chars().count();
+                    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(state) = guard.as_mut() {
+                        state.offset_tracker.increment_all(line_visible, tw);
+                    }
                 }
             }
+            log_line(&format!("● {name}  {args}  {summary}"));
             return;
         }
 
@@ -3053,9 +3255,9 @@ mod tests {
     #[test]
     fn agent_buffer_push_tool_call_increments_count() {
         let mut buf = AgentBuffer::new(None);
-        buf.push_tool_call();
-        buf.push_tool_call();
-        buf.push_tool_call();
+        buf.push_tool_call("A", "a");
+        buf.push_tool_call("B", "b");
+        buf.push_tool_call("C", "c");
         assert_eq!(buf.tool_call_count, 3);
     }
 
@@ -3089,8 +3291,8 @@ mod tests {
     #[test]
     fn agent_buffer_summary_line_tool_call_count_shown() {
         let mut buf = AgentBuffer::new(None);
-        buf.push_tool_call();
-        buf.push_tool_call();
+        buf.push_tool_call("X", "x");
+        buf.push_tool_call("Y", "y");
         let summary = buf.summary_line(None, Duration::from_millis(500));
         assert!(
             summary.contains("2 tool uses"),
@@ -3145,6 +3347,135 @@ mod tests {
     #[test]
     fn format_tokens_short_m_range() {
         assert_eq!(format_tokens_short(2_000_000), "2.0M tokens");
+    }
+
+    #[test]
+    fn agent_buffer_new_has_no_live_line() {
+        let buf = AgentBuffer::new(None);
+        assert!(!buf.has_live_line, "new buffer must not have a live line");
+        assert_eq!(buf.current_tool_name, "");
+        assert_eq!(buf.current_tool_args, "");
+        assert!(buf.last_result_success.is_none());
+    }
+
+    #[test]
+    fn agent_buffer_push_tool_call_updates_current_name_and_args() {
+        let mut buf = AgentBuffer::new(None);
+        buf.push_tool_call("Read", "src/main.rs");
+        assert_eq!(buf.current_tool_name, "Read");
+        assert_eq!(buf.current_tool_args, "src/main.rs");
+    }
+
+    #[test]
+    fn agent_buffer_push_tool_call_resets_last_result() {
+        let mut buf = AgentBuffer::new(None);
+        buf.push_tool_call("A", "a");
+        buf.last_result_success = Some(true);
+        buf.push_tool_call("B", "b");
+        assert!(
+            buf.last_result_success.is_none(),
+            "last_result_success must be reset on new tool call"
+        );
+    }
+
+    #[test]
+    fn render_live_nested_line_contains_prefix_and_name() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_live_nested_line_to(&mut buf, "Bash", "ls -la").unwrap();
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("⎿"), "live line must contain ⎿ prefix");
+        assert!(out.contains("●"), "live line must contain dot");
+        assert!(out.contains("Bash"), "live line must contain tool name");
+        assert!(out.contains("ls -la"), "live line must contain args");
+        assert!(out.ends_with('\n'), "live line must end with newline");
+    }
+
+    #[test]
+    fn render_live_nested_line_uses_blink_dot() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_live_nested_line_to(&mut buf, "Read", "file.rs").unwrap();
+        assert!(
+            contains_seq(&buf, BLINK_ANSI),
+            "live line dot must use SlowBlink"
+        );
+    }
+
+    #[test]
+    fn overwrite_live_nested_line_emits_cursor_up() {
+        let mut buf: Vec<u8> = Vec::new();
+        overwrite_live_nested_line_to(&mut buf, "Write", "out.rs", 1).unwrap();
+        assert!(
+            buf.windows(4).any(|w| w == b"\x1b[1A"),
+            "overwrite must emit cursor-up(1)"
+        );
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("Write"), "tool name must appear");
+        assert!(out.contains("out.rs"), "args must appear");
+        assert!(out.contains("⎿"), "prefix must appear");
+    }
+
+    #[test]
+    fn overwrite_live_nested_line_uses_save_restore() {
+        let mut buf: Vec<u8> = Vec::new();
+        overwrite_live_nested_line_to(&mut buf, "Bash", "cmd", 2).unwrap();
+        // cursor::SavePosition → ESC[s, RestorePosition → ESC[u
+        assert!(
+            buf.windows(2).any(|w| w == b"\x1b[s" || w == b"\x1b\x37"),
+            "must emit SavePosition"
+        );
+    }
+
+    #[test]
+    fn update_live_nested_dot_success_emits_green() {
+        let mut buf: Vec<u8> = Vec::new();
+        update_live_nested_dot_to(&mut buf, "Bash", "ls", true, 1).unwrap();
+        assert!(
+            contains_seq(&buf, GREEN_ANSI),
+            "success dot update must use green; buf: {:?}",
+            String::from_utf8_lossy(&buf)
+        );
+        let out = String::from_utf8_lossy(&buf);
+        assert!(out.contains("Bash"), "tool name must appear");
+        assert!(out.contains("⎿"), "prefix must appear");
+    }
+
+    #[test]
+    fn update_live_nested_dot_failure_emits_red() {
+        let mut buf: Vec<u8> = Vec::new();
+        update_live_nested_dot_to(&mut buf, "Write", "f.rs", false, 1).unwrap();
+        assert!(
+            contains_seq(&buf, RED_ANSI),
+            "failure dot update must use red"
+        );
+    }
+
+    #[test]
+    fn replace_live_line_with_summary_emits_cursor_up_and_summary() {
+        let mut buf: Vec<u8> = Vec::new();
+        replace_live_line_with_summary_to(&mut buf, "Done (3 tool uses · 5.0k tokens · 1.2s)", 1)
+            .unwrap();
+        assert!(
+            buf.windows(4).any(|w| w == b"\x1b[1A"),
+            "summary replace must emit cursor-up(1)"
+        );
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains("Done (3 tool uses"),
+            "summary text must appear; got: {out:?}"
+        );
+        assert!(out.contains("⎿"), "prefix must appear");
+    }
+
+    #[test]
+    fn live_nested_visible_width_counts_correctly() {
+        let name = "Read";
+        let args = "src/lib.rs";
+        let expected = LIVE_NESTED_PREFIX.chars().count()
+            + 2
+            + name.chars().count()
+            + 2
+            + args.chars().count();
+        assert_eq!(live_nested_visible_width(name, args), expected);
     }
 
     #[test]

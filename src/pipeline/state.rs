@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct PipelineState {
     pub current_idx: usize,
     pub global_counter: u32,
+    #[serde(alias = "fail_counts")]
     pub retry_counts: HashMap<String, u32>,
     #[serde(default)]
     pub failure_totals: HashMap<String, u32>,

@@ -1117,6 +1117,22 @@ mod tests {
         assert_eq!(restored.failure_totals, HashMap::new());
     }
 
+    #[test]
+    fn pipeline_state_deserializes_legacy_fail_counts_key() {
+        let json = serde_json::json!({
+            "current_idx": 1,
+            "global_counter": 3,
+            "fail_counts": {"stage-a": 2},
+            "failure_totals": {},
+            "last_stage": null,
+            "last_verdict": null,
+            "loop_iterations": {},
+            "env": {}
+        });
+        let state: PipelineState = serde_json::from_value(json).unwrap();
+        assert_eq!(state.retry_counts.get("stage-a"), Some(&2));
+    }
+
     // ── max_failure tests ──────────────────────────────────────────────────────
 
     fn run_result_with_state(

@@ -179,7 +179,7 @@ fn replace_live_line_with_summary_to<W: Write + QueueableCommand>(
 }
 
 fn format_tokens_short(n: u64) -> String {
-    if n >= 1_000_000 {
+    if n >= 999_950 {
         format!("{:.1}M tokens", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
         format!("{:.1}k tokens", n as f64 / 1_000.0)
@@ -2985,6 +2985,20 @@ mod tests {
     #[test]
     fn format_tokens_short_m_range() {
         assert_eq!(format_tokens_short(2_000_000), "2.0M tokens");
+    }
+
+    #[test]
+    fn format_tokens_short_rounds_up_to_1m() {
+        assert!(
+            format_tokens_short(999_999).contains('M'),
+            "999_999 should display as M (rounds to 1.0M), got: {}",
+            format_tokens_short(999_999)
+        );
+    }
+
+    #[test]
+    fn format_tokens_short_below_rounding_boundary() {
+        assert_eq!(format_tokens_short(999_949), "999.9k tokens");
     }
 
     #[test]

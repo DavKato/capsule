@@ -20,7 +20,10 @@ pub enum ToolEvent {
 }
 
 pub enum TextDisplay {
-    Content(String),
+    Content {
+        text: String,
+        parent_tool_use_id: Option<String>,
+    },
     Thinking(String),
 }
 
@@ -246,7 +249,10 @@ fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) 
                         if let Some(text) =
                             block.get("text").and_then(Value::as_str).map(str::to_owned)
                         {
-                            text_displays.push(TextDisplay::Content(text));
+                            text_displays.push(TextDisplay::Content {
+                                text,
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                            });
                         }
                     }
                     Some("thinking") => {
@@ -890,7 +896,7 @@ mod tests {
         p.feed(TEXT_LINE);
         let displays = p.last_text_displays();
         assert_eq!(displays.len(), 1);
-        assert!(matches!(&displays[0], TextDisplay::Content(t) if t == "thinking..."));
+        assert!(matches!(&displays[0], TextDisplay::Content { text: t, .. } if t == "thinking..."));
     }
 
     #[test]
@@ -911,7 +917,9 @@ mod tests {
         let displays = p.last_text_displays();
         assert_eq!(displays.len(), 2);
         assert!(matches!(&displays[0], TextDisplay::Thinking(t) if t == "hmm let me think"));
-        assert!(matches!(&displays[1], TextDisplay::Content(t) if t == "here is my answer"));
+        assert!(
+            matches!(&displays[1], TextDisplay::Content { text: t, .. } if t == "here is my answer")
+        );
     }
 
     #[test]
@@ -927,7 +935,9 @@ mod tests {
         assert_eq!(tu.name, "Bash");
         let text_displays = p.last_text_displays();
         assert_eq!(text_displays.len(), 1);
-        assert!(matches!(&text_displays[0], TextDisplay::Content(t) if t == "I'll run this"));
+        assert!(
+            matches!(&text_displays[0], TextDisplay::Content { text: t, .. } if t == "I'll run this")
+        );
     }
 
     #[test]
@@ -1148,5 +1158,39 @@ mod tests {
             };
             assert_eq!(tu.parent_tool_use_id.as_deref(), Some("toolu_agent01"));
         }
+    }
+
+    #[test]
+    fn text_content_carries_parent_tool_use_id_when_present() {
+        let line = r#"{"type":"assistant","parent_tool_use_id":"toolu_agent01","message":{"content":[{"type":"text","text":"working on it"}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let displays = p.last_text_displays();
+        assert_eq!(displays.len(), 1);
+        let TextDisplay::Content {
+            text,
+            parent_tool_use_id,
+        } = &displays[0]
+        else {
+            panic!("expected TextDisplay::Content");
+        };
+        assert_eq!(text, "working on it");
+        assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_agent01"));
+    }
+
+    #[test]
+    fn text_content_parent_tool_use_id_is_none_when_absent() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"top level text"}]}}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        let displays = p.last_text_displays();
+        assert_eq!(displays.len(), 1);
+        let TextDisplay::Content {
+            parent_tool_use_id, ..
+        } = &displays[0]
+        else {
+            panic!("expected TextDisplay::Content");
+        };
+        assert!(parent_tool_use_id.is_none());
     }
 }

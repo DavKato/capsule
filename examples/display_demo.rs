@@ -60,18 +60,18 @@ fn main() {
 
     // --- agent text: short lines ---
     pause(400);
-    display::agent_text("I'll start by reading the project structure…");
-    display::agent_text("The codebase uses a pipeline model with stages.");
+    display::agent_text("I'll start by reading the project structure…", None);
+    display::agent_text("The codebase uses a pipeline model with stages.", None);
     pause(200);
 
     // --- agent text: long line that wraps ---
     section("Agent text — wrapping");
-    display::agent_text("This is a much longer line of text that should demonstrate the word-wrapping behavior. When the terminal is narrower than the content, the display layer breaks it at word boundaries and indents continuation lines so everything stays aligned under the bullet point.");
+    display::agent_text("This is a much longer line of text that should demonstrate the word-wrapping behavior. When the terminal is narrower than the content, the display layer breaks it at word boundaries and indents continuation lines so everything stays aligned under the bullet point.", None);
     pause(400);
 
     // --- agent text: preserves newlines (e.g. code / structured output) ---
     section("Agent text — newlines preserved");
-    display::agent_text("Here's what I found:\n\nsrc/main.rs  — entry point\nsrc/display.rs — terminal rendering\nsrc/pipeline.rs — stage orchestration");
+    display::agent_text("Here's what I found:\n\nsrc/main.rs  — entry point\nsrc/display.rs — terminal rendering\nsrc/pipeline.rs — stage orchestration", None);
     pause(400);
 
     // --- tool call states ---
@@ -99,7 +99,7 @@ fn main() {
 
     // --- agent text after tools ---
     pause(300);
-    display::agent_text("The test failure was expected — fixing now.");
+    display::agent_text("The test failure was expected — fixing now.", None);
 
     // --- usage counter in panel ---
     section("Usage counter");

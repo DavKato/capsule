@@ -1136,9 +1136,26 @@ fn is_list_item(s: &str) -> bool {
 /// Print agent text (thinking or content) with a dot on the first
 /// line of each new block, and indented continuation lines within the same block.
 /// Text is wrapped at `content_width` so wrapped portions also get indented.
-pub fn agent_text(text: &str) {
+/// If `parent_tool_use_id` matches an active agent buffer, the text is silently discarded.
+pub fn agent_text(text: &str, parent_tool_use_id: Option<&str>) {
     if text.is_empty() {
         return;
+    }
+    if let Some(pid) = parent_tool_use_id {
+        let guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = guard.as_ref() {
+            if state.agent_buffers.contains_key(pid) {
+                return;
+            }
+        } else {
+            if agent_buffer_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(pid)
+            {
+                return;
+            }
+        }
     }
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
     let last_list = LAST_TEXT_WAS_LIST_ITEM.load(Ordering::Relaxed);
@@ -3130,5 +3147,43 @@ mod tests {
     #[test]
     fn format_tokens_short_m_range() {
         assert_eq!(format_tokens_short(2_000_000), "2.0M tokens");
+    }
+
+    #[test]
+    fn agent_text_suppressed_when_parent_buffer_exists() {
+        // Set up a buffer in the non-TTY cache for a known parent id.
+        let pid = "toolu_suppress_test";
+        agent_buffer_cache()
+            .lock()
+            .unwrap()
+            .insert(pid.to_owned(), AgentBuffer::new(None));
+
+        LAST_WAS_TEXT.store(false, Ordering::Relaxed);
+        // This call should be suppressed — the buffer exists for pid.
+        agent_text("agent said something", Some(pid));
+        assert!(
+            !LAST_WAS_TEXT.load(Ordering::Relaxed),
+            "LAST_WAS_TEXT must stay false when text is suppressed by an active buffer"
+        );
+
+        // Clean up so other tests are not affected.
+        agent_buffer_cache().lock().unwrap().remove(pid);
+    }
+
+    #[test]
+    fn agent_text_not_suppressed_without_buffer() {
+        let pid = "toolu_no_buffer_test";
+        // Ensure no buffer exists for this id.
+        agent_buffer_cache().lock().unwrap().remove(pid);
+
+        LAST_WAS_TEXT.store(false, Ordering::Relaxed);
+        // Should render normally — no buffer for pid.
+        agent_text("top-level text", Some(pid));
+        assert!(
+            LAST_WAS_TEXT.load(Ordering::Relaxed),
+            "LAST_WAS_TEXT must be true after unbuffered agent_text call"
+        );
+
+        LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     }
 }

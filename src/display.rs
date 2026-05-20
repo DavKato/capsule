@@ -29,7 +29,6 @@ struct ToolCallEntry {
     name: String,
     args: String,
     start_time: Instant,
-    nesting_depth: u16,
 }
 
 struct AgentBuffer {
@@ -829,43 +828,13 @@ fn notice_box_to<W: Write + QueueableCommand>(
 }
 
 const TOOL_ARGS_MAX: usize = 60;
-const NESTING_BRANCH: &str = "├─ ";
-const NESTING_PIPE: &str = "│  ";
-const NESTING_SEGMENT_LEN: usize = 3;
-
-fn nesting_prefix(depth: u16) -> String {
-    match depth {
-        0 => String::new(),
-        1 => NESTING_BRANCH.to_owned(),
-        d => {
-            let mut s =
-                String::with_capacity(NESTING_PIPE.len() * (d as usize - 1) + NESTING_BRANCH.len());
-            for _ in 0..d - 1 {
-                s.push_str(NESTING_PIPE);
-            }
-            s.push_str(NESTING_BRANCH);
-            s
-        }
-    }
-}
-
-fn nesting_prefix_len(depth: u16) -> usize {
-    NESTING_SEGMENT_LEN * depth as usize
-}
 
 fn render_tty_tool_call_to<W: Write + QueueableCommand>(
     out: &mut W,
     name: &str,
     display_args: &str,
-    depth: u16,
 ) -> std::io::Result<()> {
     out.queue(Print("\n"))?;
-    if depth > 0 {
-        let prefix = nesting_prefix(depth);
-        out.queue(SetForegroundColor(Color::DarkGrey))?;
-        out.queue(Print(prefix))?;
-        out.queue(ResetColor)?;
-    }
     out.queue(SetAttribute(Attribute::SlowBlink))?;
     out.queue(SetForegroundColor(Color::DarkGrey))?;
     out.queue(Print("●"))?;
@@ -878,51 +847,27 @@ fn render_tty_tool_result_to<W: Write + QueueableCommand>(
     out: &mut W,
     name: &str,
     args: &str,
-    duration: Duration,
     success: bool,
     offset: Option<u16>,
-    depth: u16,
 ) -> std::io::Result<()> {
     let color = if success { GREEN } else { RED };
-    let label = if success { "Done" } else { "Failed" };
-    let prefix = nesting_prefix(depth);
-
-    let duration_suffix = format!("  {label} ({:.1}s)", duration.as_secs_f64());
-
     match offset {
         Some(n) => {
             out.queue(cursor::SavePosition)?;
             out.queue(cursor::MoveUp(n))?;
             out.queue(cursor::MoveToColumn(0))?;
             out.queue(terminal::Clear(ClearType::CurrentLine))?;
-            if depth > 0 {
-                out.queue(SetForegroundColor(Color::DarkGrey))?;
-                out.queue(Print(&prefix))?;
-                out.queue(ResetColor)?;
-            }
             out.queue(SetForegroundColor(color))?;
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
             out.queue(Print(format!(" {name}  {args}")))?;
-            out.queue(SetForegroundColor(Color::DarkGrey))?;
-            out.queue(Print(&duration_suffix))?;
-            out.queue(ResetColor)?;
             out.queue(cursor::RestorePosition)?;
         }
         None => {
-            if depth > 0 {
-                out.queue(SetForegroundColor(Color::DarkGrey))?;
-                out.queue(Print(&prefix))?;
-                out.queue(ResetColor)?;
-            }
             out.queue(SetForegroundColor(color))?;
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
-            out.queue(Print(format!(" {name}  {args}")))?;
-            out.queue(SetForegroundColor(Color::DarkGrey))?;
-            out.queue(Print(&duration_suffix))?;
-            out.queue(ResetColor)?;
-            out.queue(Print("\n"))?;
+            out.queue(Print(format!(" {name}  {args}\n")))?;
         }
     }
     out.flush()
@@ -934,9 +879,7 @@ fn render_tty_agent_summary_to<W: Write + QueueableCommand>(
     args: &str,
     summary: &str,
     offset: Option<u16>,
-    depth: u16,
 ) -> std::io::Result<()> {
-    let prefix = nesting_prefix(depth);
     let suffix = format!("  {summary}");
     match offset {
         Some(n) => {
@@ -944,11 +887,6 @@ fn render_tty_agent_summary_to<W: Write + QueueableCommand>(
             out.queue(cursor::MoveUp(n))?;
             out.queue(cursor::MoveToColumn(0))?;
             out.queue(terminal::Clear(ClearType::CurrentLine))?;
-            if depth > 0 {
-                out.queue(SetForegroundColor(Color::DarkGrey))?;
-                out.queue(Print(&prefix))?;
-                out.queue(ResetColor)?;
-            }
             out.queue(SetForegroundColor(GREEN))?;
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
@@ -959,11 +897,6 @@ fn render_tty_agent_summary_to<W: Write + QueueableCommand>(
             out.queue(cursor::RestorePosition)?;
         }
         None => {
-            if depth > 0 {
-                out.queue(SetForegroundColor(Color::DarkGrey))?;
-                out.queue(Print(&prefix))?;
-                out.queue(ResetColor)?;
-            }
             out.queue(SetForegroundColor(GREEN))?;
             out.queue(Print("●"))?;
             out.queue(ResetColor)?;
@@ -982,12 +915,7 @@ fn agent_summary_line_to<W: Write + QueueableCommand>(
     name: &str,
     args: &str,
     summary: &str,
-    depth: u16,
 ) -> std::io::Result<()> {
-    let prefix = nesting_prefix(depth);
-    if depth > 0 {
-        out.queue(Print(&prefix))?;
-    }
     out.queue(SetForegroundColor(GREEN))?;
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
@@ -1052,11 +980,9 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
             }
             return;
         }
-        let nesting_depth = 0;
-        let plen = nesting_prefix_len(nesting_depth);
         log_line(&format!("\n● {name}  {display_args}"));
         state.offset_tracker.increment_all(1, state.term_width);
-        let visible_width = plen + 2 + name.chars().count() + 2 + display_args.chars().count();
+        let visible_width = 2 + name.chars().count() + 2 + display_args.chars().count();
         state
             .offset_tracker
             .increment_all(visible_width, state.term_width);
@@ -1069,11 +995,10 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
                 name: name.to_owned(),
                 args: display_args.clone(),
                 start_time: Instant::now(),
-                nesting_depth,
             },
         ));
         drop(guard);
-        render_tty_tool_call_to(&mut out, name, &display_args, nesting_depth).ok();
+        render_tty_tool_call_to(&mut out, name, &display_args).ok();
     } else {
         drop(guard);
         if let Some(pid) = parent_tool_use_id {
@@ -1085,7 +1010,6 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
                 .push_tool_call(name, &display_args);
             return;
         }
-        let nesting_depth = 0;
         log_line(&format!("\n● {name}  {display_args}"));
         tool_call_cache()
             .lock()
@@ -1096,10 +1020,9 @@ pub fn tool_call(name: &str, args: &str, id: &str, parent_tool_use_id: Option<&s
                     name: name.to_owned(),
                     args: display_args.clone(),
                     start_time: Instant::now(),
-                    nesting_depth,
                 },
             );
-        tool_call_to(&mut out, name, &display_args, nesting_depth).ok();
+        tool_call_to(&mut out, name, &display_args).ok();
     }
 }
 
@@ -1107,12 +1030,8 @@ fn tool_call_to<W: Write + QueueableCommand>(
     out: &mut W,
     name: &str,
     display_args: &str,
-    depth: u16,
 ) -> std::io::Result<()> {
     out.queue(Print("\n"))?;
-    if depth > 0 {
-        out.queue(Print(nesting_prefix(depth)))?;
-    }
     out.queue(SetForegroundColor(YELLOW))?;
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
@@ -1165,8 +1084,7 @@ pub fn tool_result(id: &str, success: bool) {
             }
             return;
         };
-        let (name, args, duration, nesting_depth) =
-            (e.name, e.args, e.start_time.elapsed(), e.nesting_depth);
+        let (name, args, duration) = (e.name, e.args, e.start_time.elapsed());
 
         if let Some(buf) = state.agent_buffers.remove(id) {
             let summary = buf.summary_line(state.usage_tokens, buf.start_time.elapsed());
@@ -1181,7 +1099,7 @@ pub fn tool_result(id: &str, success: bool) {
             drop(guard);
 
             let append_summary_fallback = |out: &mut std::io::StdoutLock| {
-                agent_summary_line_to(out, &name, &args, &summary, nesting_depth).ok();
+                agent_summary_line_to(out, &name, &args, &summary).ok();
                 let suffix_len = 2 + summary.chars().count();
                 let line_visible = 2 + name.chars().count() + 2 + args.chars().count() + suffix_len;
                 let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -1197,15 +1115,7 @@ pub fn tool_result(id: &str, success: bool) {
                     append_summary_fallback(&mut out);
                 }
             } else {
-                render_tty_agent_summary_to(
-                    &mut out,
-                    &name,
-                    &args,
-                    &summary,
-                    header_offset,
-                    nesting_depth,
-                )
-                .ok();
+                render_tty_agent_summary_to(&mut out, &name, &args, &summary, header_offset).ok();
                 if header_offset.is_none() {
                     append_summary_fallback(&mut out);
                 }
@@ -1220,28 +1130,11 @@ pub fn tool_result(id: &str, success: bool) {
         let tw = state.term_width;
         drop(guard);
 
-        render_tty_tool_result_to(
-            &mut out,
-            &name,
-            &args,
-            duration,
-            success,
-            offset,
-            nesting_depth,
-        )
-        .ok();
-        log_tool_result(&name, &args, duration, success, nesting_depth);
+        render_tty_tool_result_to(&mut out, &name, &args, success, offset).ok();
+        log_tool_result(&name, &args, duration, success);
 
         if offset.is_none() {
-            let label = if success { "Done" } else { "Failed" };
-            let duration_suffix = format!("  {label} ({:.1}s)", duration.as_secs_f64());
-            let plen = nesting_prefix_len(nesting_depth);
-            let line_visible = plen
-                + 2
-                + name.chars().count()
-                + 2
-                + args.chars().count()
-                + duration_suffix.chars().count();
+            let line_visible = 2 + name.chars().count() + 2 + args.chars().count();
             let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
             if let Some(state) = guard.as_mut() {
                 state.offset_tracker.increment_all(line_visible, tw);
@@ -1261,7 +1154,7 @@ pub fn tool_result(id: &str, success: bool) {
                 .remove(id);
             if let Some(i) = info {
                 let summary = buf.summary_line(None, buf.start_time.elapsed());
-                agent_summary_line_to(&mut out, &i.name, &i.args, &summary, i.nesting_depth).ok();
+                agent_summary_line_to(&mut out, &i.name, &i.args, &summary).ok();
                 log_line(&format!("● {}  {}  {summary}", i.name, i.args));
             }
             return;
@@ -1273,18 +1166,16 @@ pub fn tool_result(id: &str, success: bool) {
         let Some(i) = info else {
             return;
         };
-        let (name, args, duration, nesting_depth) =
-            (i.name, i.args, i.start_time.elapsed(), i.nesting_depth);
-        tool_result_to(&mut out, &name, &args, duration, success, nesting_depth).ok();
-        log_tool_result(&name, &args, duration, success, nesting_depth);
+        let (name, args, duration) = (i.name, i.args, i.start_time.elapsed());
+        tool_result_to(&mut out, &name, &args, success).ok();
+        log_tool_result(&name, &args, duration, success);
     }
 }
 
-fn log_tool_result(name: &str, args: &str, duration: Duration, success: bool, depth: u16) {
+fn log_tool_result(name: &str, args: &str, duration: Duration, success: bool) {
     let status = if success { "Done" } else { "Failed" };
-    let prefix = nesting_prefix(depth);
     log_line(&format!(
-        "{prefix}● {name}  {args}  {status} ({:.1}s)",
+        "● {name}  {args}  {status} ({:.1}s)",
         duration.as_secs_f64()
     ));
 }
@@ -1293,27 +1184,13 @@ fn tool_result_to<W: Write + QueueableCommand>(
     out: &mut W,
     name: &str,
     args: &str,
-    duration: Duration,
     success: bool,
-    depth: u16,
 ) -> std::io::Result<()> {
     let color = if success { GREEN } else { RED };
-    let status = if success { "Done" } else { "Failed" };
-    let prefix = nesting_prefix(depth);
-    if depth > 0 {
-        out.queue(Print(&prefix))?;
-    }
     out.queue(SetForegroundColor(color))?;
     out.queue(Print("● "))?;
     out.queue(ResetColor)?;
-    out.queue(Print(format!("{name}  {args}")))?;
-    out.queue(SetForegroundColor(Color::DarkGrey))?;
-    out.queue(Print(format!(
-        "  {status} ({:.1}s)",
-        duration.as_secs_f64()
-    )))?;
-    out.queue(ResetColor)?;
-    out.queue(Print("\n"))?;
+    out.queue(Print(format!("{name}  {args}\n")))?;
     out.flush()
 }
 
@@ -1866,7 +1743,7 @@ mod tests {
     #[test]
     fn tool_call_renders_name_and_args() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_call_to(&mut buf, "Bash", "ls -la", 0).unwrap();
+        tool_call_to(&mut buf, "Bash", "ls -la").unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("Bash"), "tool name must appear in output");
         assert!(out.contains("ls -la"), "args must appear in output");
@@ -1879,7 +1756,7 @@ mod tests {
         let truncated: String = long_args.chars().take(TOOL_ARGS_MAX).collect();
         let display_args = format!("{truncated}…");
         let mut buf: Vec<u8> = Vec::new();
-        tool_call_to(&mut buf, "Bash", &display_args, 0).unwrap();
+        tool_call_to(&mut buf, "Bash", &display_args).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("…"), "truncated args must end with ellipsis");
         assert!(
@@ -1892,84 +1769,24 @@ mod tests {
     fn tool_call_short_args_not_truncated() {
         let short_args = "short";
         let mut buf: Vec<u8> = Vec::new();
-        tool_call_to(&mut buf, "Read", short_args, 0).unwrap();
+        tool_call_to(&mut buf, "Read", short_args).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains(short_args), "short args must appear verbatim");
         assert!(!out.contains("…"), "short args must not be truncated");
     }
 
     #[test]
-    fn nesting_prefix_depth_0_is_empty() {
-        assert_eq!(nesting_prefix(0), "");
-        assert_eq!(nesting_prefix_len(0), 0);
-    }
-
-    #[test]
-    fn nesting_prefix_depth_1_is_branch_only() {
-        assert_eq!(nesting_prefix(1), "├─ ");
-        assert_eq!(nesting_prefix_len(1), 3);
-    }
-
-    #[test]
-    fn nesting_prefix_depth_2_is_pipe_then_branch() {
-        assert_eq!(nesting_prefix(2), "│  ├─ ");
-        assert_eq!(nesting_prefix_len(2), 6);
-    }
-
-    #[test]
-    fn nesting_prefix_depth_3_has_two_pipes() {
-        assert_eq!(nesting_prefix(3), "│  │  ├─ ");
-        assert_eq!(nesting_prefix_len(3), 9);
-    }
-
-    #[test]
-    fn tool_call_depth_zero_no_prefix() {
+    fn tool_call_no_nesting_prefix() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_call_to(&mut buf, "Bash", "ls", 0).unwrap();
+        tool_call_to(&mut buf, "Bash", "ls").unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(
-            !out.contains("├"),
-            "depth-0 call must not emit nesting prefix"
-        );
-    }
-
-    #[test]
-    fn tool_call_depth_nonzero_emits_prefix() {
-        let mut buf: Vec<u8> = Vec::new();
-        tool_call_to(&mut buf, "Bash", "ls", 1).unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("├─"), "depth-1 call must emit nesting prefix");
-        assert!(out.contains("●"), "dot must still appear after prefix");
-        assert!(out.contains("Bash"), "tool name must appear");
-    }
-
-    #[test]
-    fn tool_call_depth_2_emits_pipe_then_branch() {
-        let mut buf: Vec<u8> = Vec::new();
-        tool_call_to(&mut buf, "Bash", "ls", 2).unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("│"), "depth-2 must include pipe segment");
-        assert!(out.contains("├─"), "depth-2 must include branch segment");
-        let pipe_pos = out.find('│').unwrap();
-        let branch_pos = out.find("├─").unwrap();
-        assert!(
-            pipe_pos < branch_pos,
-            "pipe must appear before branch; output: {out:?}"
-        );
+        assert!(!out.contains("├"), "tool call must not emit nesting prefix");
     }
 
     #[test]
     fn tool_result_non_tty_no_cursor_up_emits_green_dot() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(
-            &mut buf,
-            "Bash",
-            "ls -la",
-            Duration::from_millis(123),
-            true,
-            0,
-        )
-        .unwrap();
+        tool_result_to(&mut buf, "Bash", "ls -la", true).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[1A"),
@@ -1977,8 +1794,6 @@ mod tests {
         );
         assert!(out.contains("Bash"), "tool name must appear");
         assert!(out.contains("ls -la"), "args must appear");
-        assert!(out.contains("Done"), "done label must appear on success");
-        assert!(out.contains("0.1s"), "duration must appear formatted");
         assert!(out.contains("●"), "dot must appear");
         assert!(
             contains_seq(&buf, GREEN_ANSI),
@@ -1989,15 +1804,7 @@ mod tests {
     #[test]
     fn tool_result_non_tty_no_cursor_up_emits_red_dot() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(
-            &mut buf,
-            "Write",
-            "path/to/file",
-            Duration::from_millis(456),
-            false,
-            0,
-        )
-        .unwrap();
+        tool_result_to(&mut buf, "Write", "path/to/file", false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[1A"),
@@ -2006,47 +1813,19 @@ mod tests {
         assert!(out.contains("Write"), "tool name must appear on failure");
         assert!(out.contains("path/to/file"), "args must appear on failure");
         assert!(
-            out.contains("Failed"),
-            "failed label must appear on failure"
-        );
-        assert!(out.contains("0.5s"), "duration must appear formatted");
-        assert!(
             contains_seq(&buf, RED_ANSI),
             "red escape must be emitted for failure; output: {out:?}"
         );
     }
 
     #[test]
-    fn tool_result_non_tty_depth_zero_no_prefix() {
+    fn tool_result_non_tty_no_nesting_prefix() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(&mut buf, "Bash", "ls", Duration::from_millis(100), true, 0).unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(!out.contains("├"), "depth-0 result must not emit prefix");
-    }
-
-    #[test]
-    fn tool_result_non_tty_depth_nonzero_emits_prefix() {
-        let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(
-            &mut buf,
-            "Read",
-            "file.rs",
-            Duration::from_millis(50),
-            true,
-            1,
-        )
-        .unwrap();
+        tool_result_to(&mut buf, "Bash", "ls", true).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
-            out.contains("├─"),
-            "depth-1 result must emit nesting prefix"
-        );
-        assert!(out.contains("●"), "dot must still appear");
-        assert!(out.contains("Read"), "tool name must appear");
-        let prefix_count = out.matches("├─").count();
-        assert_eq!(
-            prefix_count, 1,
-            "prefix must appear on the single-line result; output: {out:?}"
+            !out.contains("├"),
+            "tool result must not emit nesting prefix"
         );
     }
 
@@ -2907,7 +2686,7 @@ mod tests {
     #[test]
     fn tty_tool_call_emits_slow_blink_and_dark_grey_dot() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_call_to(&mut buf, "Bash", "ls -la", 0).unwrap();
+        render_tty_tool_call_to(&mut buf, "Bash", "ls -la").unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             contains_seq(&buf, BLINK_ANSI),
@@ -2926,7 +2705,7 @@ mod tests {
     #[test]
     fn tty_tool_call_includes_name_and_args() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_call_to(&mut buf, "Read", "src/main.rs", 0).unwrap();
+        render_tty_tool_call_to(&mut buf, "Read", "src/main.rs").unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             out.contains("Read"),
@@ -2940,40 +2719,17 @@ mod tests {
     }
 
     #[test]
-    fn tty_tool_call_depth_zero_no_prefix() {
+    fn tty_tool_call_no_nesting_prefix() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_call_to(&mut buf, "Bash", "ls", 0).unwrap();
+        render_tty_tool_call_to(&mut buf, "Bash", "ls").unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(!out.contains("├"), "depth-0 TTY call must not emit prefix");
-    }
-
-    #[test]
-    fn tty_tool_call_depth_nonzero_emits_prefix_before_dot() {
-        let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_call_to(&mut buf, "Read", "file.rs", 1).unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(
-            out.contains("├─"),
-            "depth-1 TTY call must emit prefix; output: {out:?}"
-        );
-        let prefix_pos = out.find("├─").expect("prefix must be present");
-        let dot_pos = out.find('●').expect("dot must be present");
-        assert!(prefix_pos < dot_pos, "prefix must appear before dot");
+        assert!(!out.contains("├"), "TTY call must not emit nesting prefix");
     }
 
     #[test]
     fn tty_tool_result_in_place_emits_cursor_up() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Bash",
-            "ls -la",
-            Duration::from_millis(200),
-            true,
-            Some(3),
-            0,
-        )
-        .unwrap();
+        render_tty_tool_result_to(&mut buf, "Bash", "ls -la", true, Some(3)).unwrap();
         let out = String::from_utf8_lossy(&buf);
         // cursor::MoveUp(3) → ESC[3A
         assert!(
@@ -2985,68 +2741,33 @@ mod tests {
     #[test]
     fn tty_tool_result_in_place_emits_green_dot_and_sub_line() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Read",
-            "foo.rs",
-            Duration::from_millis(200),
-            true,
-            Some(2),
-            0,
-        )
-        .unwrap();
+        render_tty_tool_result_to(&mut buf, "Read", "foo.rs", true, Some(2)).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             contains_seq(&buf, GREEN_ANSI),
             "success result must use green dot; output: {out:?}"
         );
         assert!(
-            out.contains("Done"),
-            "Done label must appear; output: {out:?}"
-        );
-        assert!(
-            out.contains("0.2s"),
-            "duration must appear; output: {out:?}"
+            out.contains("Read"),
+            "tool name must appear; output: {out:?}"
         );
     }
 
     #[test]
     fn tty_tool_result_in_place_red_dot_on_failure() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Write",
-            "out.rs",
-            Duration::from_millis(300),
-            false,
-            Some(1),
-            0,
-        )
-        .unwrap();
+        render_tty_tool_result_to(&mut buf, "Write", "out.rs", false, Some(1)).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             contains_seq(&buf, RED_ANSI),
             "failure result must use red dot; output: {out:?}"
-        );
-        assert!(
-            out.contains("Failed"),
-            "Failed label must appear; output: {out:?}"
         );
     }
 
     #[test]
     fn tty_tool_result_off_screen_no_cursor_up() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Bash",
-            "ls",
-            Duration::from_millis(100),
-            true,
-            None,
-            0,
-        )
-        .unwrap();
+        render_tty_tool_result_to(&mut buf, "Bash", "ls", true, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             !buf.windows(3).any(|w| w == b"\x1b[A" || {
@@ -3058,25 +2779,12 @@ mod tests {
             out.contains("Bash"),
             "tool name must appear in off-screen result; output: {out:?}"
         );
-        assert!(
-            out.contains("Done"),
-            "Done label must appear; output: {out:?}"
-        );
     }
 
     #[test]
     fn tty_tool_result_off_screen_emits_dot_and_sub_line() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Grep",
-            "pattern",
-            Duration::from_millis(450),
-            true,
-            None,
-            0,
-        )
-        .unwrap();
+        render_tty_tool_result_to(&mut buf, "Grep", "pattern", true, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(out.contains("●"), "dot must appear; output: {out:?}");
         assert!(
@@ -3084,14 +2792,6 @@ mod tests {
             "tool name must appear; output: {out:?}"
         );
         assert!(out.contains("pattern"), "args must appear; output: {out:?}");
-        assert!(
-            out.contains("Done"),
-            "Done label must appear; output: {out:?}"
-        );
-        assert!(
-            out.contains("0.5s"),
-            "duration must appear; output: {out:?}"
-        );
         assert!(
             contains_seq(&buf, GREEN_ANSI),
             "green must be emitted for success; output: {out:?}"
@@ -3101,16 +2801,7 @@ mod tests {
     #[test]
     fn tty_tool_result_args_preserved_in_updated_line() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Read",
-            "my/special/path.rs",
-            Duration::from_millis(50),
-            true,
-            Some(5),
-            0,
-        )
-        .unwrap();
+        render_tty_tool_result_to(&mut buf, "Read", "my/special/path.rs", true, Some(5)).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
             out.contains("my/special/path.rs"),
@@ -3121,35 +2812,26 @@ mod tests {
     #[test]
     fn tool_result_to_renders_done_line() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(&mut buf, "Bash", "ls", Duration::from_millis(300), true, 0).unwrap();
+        tool_result_to(&mut buf, "Bash", "ls", true).unwrap();
         let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("Done"), "must contain Done; output: {out:?}");
-        assert!(
-            out.contains("0.3s"),
-            "must contain duration; output: {out:?}"
-        );
         assert!(
             out.contains("Bash"),
             "must contain tool name; output: {out:?}"
+        );
+        assert!(
+            contains_seq(&buf, GREEN_ANSI),
+            "must use green for success; output: {out:?}"
         );
     }
 
     #[test]
     fn tool_result_to_renders_failed_line() {
         let mut buf: Vec<u8> = Vec::new();
-        tool_result_to(
-            &mut buf,
-            "Bash",
-            "rm -rf",
-            Duration::from_millis(100),
-            false,
-            0,
-        )
-        .unwrap();
+        tool_result_to(&mut buf, "Bash", "rm -rf", false).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
-            out.contains("Failed"),
-            "must contain Failed; output: {out:?}"
+            out.contains("Bash"),
+            "must contain tool name; output: {out:?}"
         );
         assert!(
             contains_seq(&buf, RED_ANSI),
@@ -3158,48 +2840,14 @@ mod tests {
     }
 
     #[test]
-    fn tty_tool_result_depth_nonzero_emits_prefix_off_screen() {
+    fn tty_tool_result_no_nesting_prefix() {
         let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Read",
-            "file.rs",
-            Duration::from_millis(100),
-            true,
-            None,
-            1,
-        )
-        .unwrap();
+        render_tty_tool_result_to(&mut buf, "Read", "file.rs", true, None).unwrap();
         let out = String::from_utf8_lossy(&buf);
         assert!(
-            out.contains("├─"),
-            "depth-1 off-screen result must emit prefix; output: {out:?}"
+            !out.contains("├"),
+            "TTY tool result must not emit nesting prefix"
         );
-        let prefix_pos = out.find("├─").expect("prefix must be present");
-        let dot_pos = out.find('●').expect("dot must be present");
-        assert!(prefix_pos < dot_pos, "prefix must appear before dot");
-        let prefix_count = out.matches("├─").count();
-        assert_eq!(
-            prefix_count, 1,
-            "prefix must appear on the single-line result; output: {out:?}"
-        );
-    }
-
-    #[test]
-    fn tty_tool_result_depth_zero_off_screen_no_prefix() {
-        let mut buf: Vec<u8> = Vec::new();
-        render_tty_tool_result_to(
-            &mut buf,
-            "Read",
-            "file.rs",
-            Duration::from_millis(100),
-            true,
-            None,
-            0,
-        )
-        .unwrap();
-        let out = String::from_utf8_lossy(&buf);
-        assert!(!out.contains("├"), "depth-0 result must not emit prefix");
     }
 
     #[test]
@@ -3214,7 +2862,6 @@ mod tests {
                     name: "TestTool".to_owned(),
                     args: "some_arg".to_owned(),
                     start_time: Instant::now(),
-                    nesting_depth: 0,
                 },
             );
 
@@ -3298,7 +2945,6 @@ mod tests {
             "Agent",
             "task description",
             "Done (3 tool uses · 1.2s)",
-            0,
         )
         .unwrap();
         let out = String::from_utf8_lossy(&buf);
@@ -3317,7 +2963,7 @@ mod tests {
     #[test]
     fn agent_summary_line_to_no_cursor_up() {
         let mut buf: Vec<u8> = Vec::new();
-        agent_summary_line_to(&mut buf, "Agent", "args", "Done (1 tool uses · 0.5s)", 0).unwrap();
+        agent_summary_line_to(&mut buf, "Agent", "args", "Done (1 tool uses · 0.5s)").unwrap();
         assert!(
             !buf.windows(4).any(|w| w == b"\x1b[1A"),
             "non-TTY agent summary must not emit cursor-up"

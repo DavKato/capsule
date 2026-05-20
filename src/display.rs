@@ -417,6 +417,7 @@ pub fn clear_stage() {
         state.usage_tokens = None;
         state.active_tool_calls.clear();
         state.offset_tracker.clear();
+        state.agent_buffers.clear();
         let (info_r, warn_r) = (state.info_row(), state.warning_row());
         drop(guard);
         clear_panel_row_to(&mut out, info_r);
@@ -1167,7 +1168,6 @@ pub fn tool_result(id: &str, success: bool) {
         let (name, args, duration, nesting_depth) =
             (e.name, e.args, e.start_time.elapsed(), e.nesting_depth);
 
-        // If this parent has buffered nested calls, render an agent summary line.
         if let Some(buf) = state.agent_buffers.remove(id) {
             let summary = buf.summary_line(state.usage_tokens, buf.start_time.elapsed());
             let has_live_line = buf.has_live_line;
@@ -1180,22 +1180,21 @@ pub fn tool_result(id: &str, success: bool) {
             let tw = state.term_width;
             drop(guard);
 
+            let append_summary_fallback = |out: &mut std::io::StdoutLock| {
+                agent_summary_line_to(out, &name, &args, &summary, nesting_depth).ok();
+                let suffix_len = 2 + summary.chars().count();
+                let line_visible = 2 + name.chars().count() + 2 + args.chars().count() + suffix_len;
+                let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(state) = guard.as_mut() {
+                    state.offset_tracker.increment_all(line_visible, tw);
+                }
+            };
+
             if has_live_line {
                 if let Some(off) = live_offset {
                     replace_live_line_with_summary_to(&mut out, &summary, off).ok();
                 } else {
-                    // Live line scrolled off; append summary as a new line.
-                    agent_summary_line_to(&mut out, &name, &args, &summary, nesting_depth).ok();
-                    let suffix = format!("  {summary}");
-                    let line_visible = 2
-                        + name.chars().count()
-                        + 2
-                        + args.chars().count()
-                        + suffix.chars().count();
-                    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(state) = guard.as_mut() {
-                        state.offset_tracker.increment_all(line_visible, tw);
-                    }
+                    append_summary_fallback(&mut out);
                 }
             } else {
                 render_tty_agent_summary_to(
@@ -1208,16 +1207,7 @@ pub fn tool_result(id: &str, success: bool) {
                 )
                 .ok();
                 if header_offset.is_none() {
-                    let suffix = format!("  {summary}");
-                    let line_visible = 2
-                        + name.chars().count()
-                        + 2
-                        + args.chars().count()
-                        + suffix.chars().count();
-                    let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(state) = guard.as_mut() {
-                        state.offset_tracker.increment_all(line_visible, tw);
-                    }
+                    append_summary_fallback(&mut out);
                 }
             }
             log_line(&format!("● {name}  {args}  {summary}"));

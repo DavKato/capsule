@@ -558,3 +558,17 @@ stages:
         "error should mention setup; got: {chain}"
     );
 }
+
+// ── Schema sync test ─────────────────────────────────────────────────────────
+
+#[test]
+fn committed_schema_matches_generated() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/schema/config.schema.json");
+    let generated = capsule::config::json_schema();
+    let generated_str = serde_json::to_string_pretty(&generated).unwrap() + "\n";
+    let committed = std::fs::read_to_string(path).unwrap_or_default();
+    if committed != generated_str {
+        std::fs::write(path, &generated_str).expect("failed to update schema file");
+        panic!("schema/config.schema.json was out of date — updated automatically, re-run tests");
+    }
+}

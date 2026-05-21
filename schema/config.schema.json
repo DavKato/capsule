@@ -1,0 +1,218 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "GitIdentity": {
+      "description": "Git commit identity mode.",
+      "oneOf": [
+        {
+          "description": "Use the host user's git name and email.",
+          "enum": [
+            "user"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Use a generic \"Capsule\" identity.",
+          "enum": [
+            "capsule"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "GithubScope": {
+      "description": "GitHub token injection scope.",
+      "oneOf": [
+        {
+          "description": "Read GH_TOKEN from `.capsule/.env` only.",
+          "enum": [
+            "local"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Read GH_TOKEN from process environment; fall back to `gh auth token`.",
+          "enum": [
+            "global"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Loop": {
+      "properties": {
+        "max_iteration": {
+          "description": "Maximum iterations for this loop block.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stages": {
+          "description": "Stages to execute in each loop iteration.",
+          "items": {
+            "$ref": "#/definitions/Stage"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "stages"
+      ],
+      "type": "object"
+    },
+    "LoopEntry": {
+      "properties": {
+        "loop": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Loop"
+            }
+          ],
+          "description": "A loop block containing stages to repeat."
+        }
+      },
+      "required": [
+        "loop"
+      ],
+      "type": "object"
+    },
+    "PipelineEntry": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LoopEntry"
+        },
+        {
+          "$ref": "#/definitions/Stage"
+        }
+      ]
+    },
+    "Stage": {
+      "properties": {
+        "max_failure": {
+          "description": "Cap on total failures for this stage, independent of retry counting.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_retries": {
+          "description": "Maximum retry attempts when `on_fail` is \"retry\".",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "Claude model override for this stage.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Stage identifier (must be unique across the pipeline).",
+          "type": "string"
+        },
+        "on_fail": {
+          "description": "Routing on failure: \"exit\", \"retry\", or a stage name. Default: \"exit\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_pass": {
+          "description": "Routing on success: \"exit\" or a stage name. Default: advance to next stage.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "description": "Prompt file path or inline prompt text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "setup": {
+          "description": "Stage-specific setup command or script path, runs inside the container.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "commit_as": {
+      "$ref": "#/definitions/GitIdentity",
+      "description": "Git identity for commits made inside capsules."
+    },
+    "github_token_from": {
+      "$ref": "#/definitions/GithubScope",
+      "description": "Token injection source for GitHub access inside capsules."
+    },
+    "log_file": {
+      "description": "File path to tee all display output.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_stages": {
+      "description": "Maximum total stage invocations across the entire pipeline.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "model": {
+      "description": "Default Claude model for all stages.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "setup": {
+      "description": "Host-side setup command or script path, run before any container starts.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stages": {
+      "description": "Ordered list of stages and loop blocks.",
+      "items": {
+        "$ref": "#/definitions/PipelineEntry"
+      },
+      "type": "array"
+    },
+    "verbose": {
+      "description": "Enable verbose output.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "stages"
+  ],
+  "title": "Capsule Config",
+  "type": "object"
+}

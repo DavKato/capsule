@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -6,14 +7,18 @@ pub const MAX_STAGES_DEFAULT: u32 = 1000;
 pub const MAX_RETRIES_DEFAULT: u32 = 10;
 
 /// Git commit identity mode.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum GitIdentity {
+    /// Use the host user's git name and email.
     User,
+    /// Use a generic "Capsule" identity.
     Capsule,
 }
 
 /// GitHub token injection scope.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum GithubScope {
     /// Read GH_TOKEN from `.capsule/.env` only.
     Local,
@@ -115,48 +120,74 @@ pub struct CliOverrides {
 
 // ── Multi-stage serde types ───────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-struct StageConfigRaw {
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "Stage")]
+pub struct StageConfigRaw {
+    /// Stage identifier (must be unique across the pipeline).
     name: String,
+    /// Prompt file path or inline prompt text.
     prompt: Option<String>,
+    /// Claude model override for this stage.
     model: Option<String>,
+    /// Routing on success: "exit" or a stage name. Default: advance to next stage.
     on_pass: Option<String>,
+    /// Routing on failure: "exit", "retry", or a stage name. Default: "exit".
     on_fail: Option<String>,
+    /// Maximum retry attempts when `on_fail` is "retry".
     max_retries: Option<u32>,
+    /// Cap on total failures for this stage, independent of retry counting.
     max_failure: Option<u32>,
+    /// Stage-specific setup command or script path, runs inside the container.
     setup: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct LoopConfigRaw {
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "Loop")]
+pub struct LoopConfigRaw {
+    /// Maximum iterations for this loop block.
     max_iteration: Option<u32>,
+    /// Stages to execute in each loop iteration.
     stages: Vec<StageConfigRaw>,
+    #[serde(default)]
+    #[schemars(skip)]
     setup: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct LoopEntryRaw {
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "LoopEntry")]
+pub struct LoopEntryRaw {
+    /// A loop block containing stages to repeat.
     #[serde(rename = "loop")]
     loop_block: LoopConfigRaw,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "PipelineEntry")]
 #[serde(untagged)]
-enum PipelineEntryRaw {
+pub enum PipelineEntryRaw {
     Loop(LoopEntryRaw),
     Stage(StageConfigRaw),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(rename = "CapsuleConfig", title = "Capsule Config")]
 #[serde(deny_unknown_fields)]
-struct MultiStageConfigFile {
+pub struct MultiStageConfigFile {
+    /// Ordered list of stages and loop blocks.
     stages: Vec<PipelineEntryRaw>,
+    /// Maximum total stage invocations across the entire pipeline.
     max_stages: Option<u32>,
+    /// Default Claude model for all stages.
     model: Option<String>,
+    /// Enable verbose output.
     verbose: Option<bool>,
-    commit_as: Option<String>,
-    github_token_from: Option<String>,
+    /// Git identity for commits made inside capsules.
+    commit_as: Option<GitIdentity>,
+    /// Token injection source for GitHub access inside capsules.
+    github_token_from: Option<GithubScope>,
+    /// File path to tee all display output.
     log_file: Option<String>,
+    /// Host-side setup command or script path, run before any container starts.
     setup: Option<String>,
 }
 
@@ -349,22 +380,6 @@ fn build_pipeline_from_multi_stage(cfg: MultiStageConfigFile) -> Result<Pipeline
     })
 }
 
-fn git_identity_from_str(s: &str) -> Option<GitIdentity> {
-    match s.to_ascii_lowercase().as_str() {
-        "user" => Some(GitIdentity::User),
-        "capsule" => Some(GitIdentity::Capsule),
-        _ => None,
-    }
-}
-
-fn github_scope_from_str(s: &str) -> Option<GithubScope> {
-    match s.to_ascii_lowercase().as_str() {
-        "local" => Some(GithubScope::Local),
-        "global" => Some(GithubScope::Global),
-        _ => None,
-    }
-}
-
 /// Resolve configuration by merging (highest → lowest priority):
 ///   CLI overrides → config file → compiled-in defaults.
 pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
@@ -386,19 +401,11 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     let verbose = cli.verbose || file_cfg.as_ref().and_then(|f| f.verbose).unwrap_or(false);
     let commit_as = cli
         .commit_as
-        .or_else(|| {
-            file_cfg
-                .as_ref()
-                .and_then(|f| f.commit_as.as_deref())
-                .and_then(git_identity_from_str)
-        })
+        .or_else(|| file_cfg.as_ref().and_then(|f| f.commit_as.clone()))
         .unwrap_or(GitIdentity::User);
-    let github_token_from = cli.github_token_from.or_else(|| {
-        file_cfg
-            .as_ref()
-            .and_then(|f| f.github_token_from.as_deref())
-            .and_then(github_scope_from_str)
-    });
+    let github_token_from = cli
+        .github_token_from
+        .or_else(|| file_cfg.as_ref().and_then(|f| f.github_token_from.clone()));
     let log_file = cli.log_file.or_else(|| {
         file_cfg
             .as_ref()
@@ -432,6 +439,45 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
         log_file,
         setup,
     })
+}
+
+/// Generate the JSON Schema for `config.yml`.
+pub fn json_schema() -> serde_json::Value {
+    let root = schemars::schema_for!(MultiStageConfigFile);
+    let mut val = serde_json::to_value(root).expect("schema serializes to JSON");
+    strip_nullable_anyof(&mut val);
+    val
+}
+
+/// Simplify `anyOf: [$ref, {type: "null"}]` → plain `$ref` throughout.
+/// YAML treats absent keys as null, so the null branch adds noise without value.
+fn strip_nullable_anyof(val: &mut serde_json::Value) {
+    match val {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Array(any_of)) = map.get("anyOf") {
+                if any_of.len() == 2 {
+                    let null_idx = any_of
+                        .iter()
+                        .position(|s| s.get("type").and_then(|t| t.as_str()) == Some("null"));
+                    let ref_idx = any_of.iter().position(|s| s.get("$ref").is_some());
+                    if let (Some(_), Some(ri)) = (null_idx, ref_idx) {
+                        let ref_val = any_of[ri]["$ref"].as_str().unwrap().to_string();
+                        map.remove("anyOf");
+                        map.insert("$ref".to_string(), serde_json::Value::String(ref_val));
+                    }
+                }
+            }
+            for v in map.values_mut() {
+                strip_nullable_anyof(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                strip_nullable_anyof(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Parsed representation of the `setup` config field.

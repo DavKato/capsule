@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/DavKato/capsule/main/schema/config.schema.json
 stages:
   - name: main
     prompt: prompt.md

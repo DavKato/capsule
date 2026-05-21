@@ -62,6 +62,20 @@ fn cleanup_image(tag: &str) {
         .output();
 }
 
+fn host_user_arg(path: &std::path::Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).unwrap();
+        format!("{}:{}", meta.uid(), meta.gid())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        "0:0".to_string()
+    }
+}
+
 #[test]
 fn detect_compose_network_returns_none_when_no_project() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -372,18 +386,15 @@ fn entrypoint_runs_capsule_stage_setup_when_env_set() {
 
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
-    // Workaround: container runs as uid 1000 which may differ from the host uid.
-    // Drop once `docker run` passes `--user $(id -u):$(id -g)`.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&prompt, std::fs::Permissions::from_mode(0o666)).unwrap();
-    }
+
+    let user_arg = host_user_arg(&prompt);
 
     let _output = std::process::Command::new("docker")
         .args([
             "run",
             "--rm",
+            "--user",
+            &user_arg,
             "-v",
             &format!("{}:/home/claude/stage-setup.sh:ro", setup_script.display()),
             "-v",
@@ -419,16 +430,15 @@ fn entrypoint_runs_capsule_stage_setup_inline_command() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&prompt, std::fs::Permissions::from_mode(0o666)).unwrap();
-    }
+
+    let user_arg = host_user_arg(&prompt);
 
     let _output = std::process::Command::new("docker")
         .args([
             "run",
             "--rm",
+            "--user",
+            &user_arg,
             "-v",
             &format!("{}:/home/claude/prompt.txt", prompt.display()),
             "-e",
@@ -700,11 +710,9 @@ fn extra_env_file_visible_across_stages() {
     };
     let active = Arc::new(Mutex::new(None));
 
-    // Stage 1
     let r1 = run_iteration(&cfg, 1, &active);
     assert!(r1.is_ok(), "stage 1 should not error: {:?}", r1);
 
-    // Stage 2
     let r2 = run_iteration(&cfg, 2, &active);
     assert!(r2.is_ok(), "stage 2 should not error: {:?}", r2);
 

@@ -20,8 +20,8 @@ RUN git config --system core.pager ""
 # preventing agents from overriding commit_as with arbitrary values.
 COPY --chmod=755 git-wrapper.sh /usr/local/bin/git
 
-# Create a non-root user.  UID 1000 matches the typical single-user Arch host,
-# so bind-mounted files are owned by the same UID.
+# Create a non-root user.  UID 1000 is for build-time installation only;
+# runtime uid comes from --user and may differ from 1000.
 RUN useradd -mu 1000 -s /bin/bash claude
 
 USER claude
@@ -30,6 +30,9 @@ ENV NPM_CONFIG_PREFIX=/home/claude/.npm-global
 ENV PATH="/home/claude/.npm-global/bin:${PATH}"
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Make home dir world-accessible so the container can run as any uid via --user.
+RUN chmod -R o+rwX /home/claude
 
 ENV PATH="/home/claude/.local/bin:/home/claude/.npm-global/bin:${PATH}"
 ENV CI=true

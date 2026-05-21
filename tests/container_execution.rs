@@ -372,18 +372,22 @@ fn entrypoint_runs_capsule_stage_setup_when_env_set() {
 
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
-    // Workaround: container runs as uid 1000 which may differ from the host uid.
-    // Drop once `docker run` passes `--user $(id -u):$(id -g)`.
+
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&prompt, std::fs::Permissions::from_mode(0o666)).unwrap();
-    }
+    let user_arg = {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(&prompt).unwrap();
+        format!("{}:{}", meta.uid(), meta.gid())
+    };
+    #[cfg(not(unix))]
+    let user_arg = "0:0".to_string();
 
     let _output = std::process::Command::new("docker")
         .args([
             "run",
             "--rm",
+            "--user",
+            &user_arg,
             "-v",
             &format!("{}:/home/claude/stage-setup.sh:ro", setup_script.display()),
             "-v",
@@ -481,16 +485,22 @@ fn entrypoint_runs_capsule_stage_setup_inline_command() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
+
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&prompt, std::fs::Permissions::from_mode(0o666)).unwrap();
-    }
+    let user_arg = {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(&prompt).unwrap();
+        format!("{}:{}", meta.uid(), meta.gid())
+    };
+    #[cfg(not(unix))]
+    let user_arg = "0:0".to_string();
 
     let _output = std::process::Command::new("docker")
         .args([
             "run",
             "--rm",
+            "--user",
+            &user_arg,
             "-v",
             &format!("{}:/home/claude/prompt.txt", prompt.display()),
             "-e",

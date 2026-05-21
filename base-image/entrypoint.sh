@@ -1,5 +1,7 @@
 #!/bin/bash
 set -e
+# Docker's --user doesn't set HOME; pin it so all tools find the right home dir.
+export HOME=/home/claude
 if [ -n "${GH_TOKEN}" ]; then
   git config --global credential.helper store
   echo "https://oauth2:${GH_TOKEN}@github.com" > "${HOME}/.git-credentials"

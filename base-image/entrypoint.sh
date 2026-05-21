@@ -13,6 +13,7 @@ export GIT_AUTHOR_EMAIL="${_email}"
 export GIT_COMMITTER_NAME="${_name}"
 export GIT_COMMITTER_EMAIL="${_email}"
 IDENTITY
+# Export directly for processes that bypass the git wrapper
 export GIT_AUTHOR_NAME="${_name}"
 export GIT_AUTHOR_EMAIL="${_email}"
 export GIT_COMMITTER_NAME="${_name}"

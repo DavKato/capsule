@@ -7,6 +7,61 @@ use serial_test::serial;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+const STUB_CLAUDE_DOCKERFILE: &str = "FROM capsule\n\
+    RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
+    && chmod +x /home/claude/.local/bin/claude\n";
+
+fn build_stub_capsule_image(tag: &str) {
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", tag, "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(STUB_CLAUDE_DOCKERFILE.as_bytes())
+        .unwrap();
+    child.wait().expect("docker build should complete");
+}
+
+fn run_entrypoint_cmd(tag: &str, env: &[(&str, &str)], shell_cmd: &str) -> std::process::Output {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt = dir.path().join("prompt.txt");
+    std::fs::write(&prompt, "placeholder\n").unwrap();
+
+    let vol = format!("{}:/home/claude/prompt.txt", prompt.display());
+    let full_cmd = format!("bash /home/claude/entrypoint.sh && {shell_cmd}");
+
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        "--entrypoint".into(),
+        "bash".into(),
+        "-v".into(),
+        vol,
+    ];
+    for (k, v) in env {
+        args.push("-e".into());
+        args.push(format!("{k}={v}"));
+    }
+    args.push(tag.into());
+    args.push("-c".into());
+    args.push(full_cmd);
+
+    std::process::Command::new("docker")
+        .args(&args)
+        .output()
+        .expect("docker run should succeed")
+}
+
+fn cleanup_image(tag: &str) {
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", tag])
+        .output();
+}
+
 #[test]
 fn detect_compose_network_returns_none_when_no_project() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -383,23 +438,7 @@ fn mcp_serve_handles_initialize_and_submit_verdict_in_container() {
 #[serial(base_image)]
 fn entrypoint_runs_capsule_stage_setup_when_env_set() {
     build_base_image(false).expect("base image should be available");
-
-    // Thin test image: real capsule entrypoint, stub claude that exits immediately.
-    let dockerfile =
-        "FROM capsule\nRUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-         && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-stage-setup-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
+    build_stub_capsule_image("capsule-stage-setup-test");
 
     let dir = tempfile::tempdir().expect("temp dir");
 
@@ -447,9 +486,7 @@ fn entrypoint_runs_capsule_stage_setup_when_env_set() {
         "CAPSULE_STAGE_SETUP script should have appended SENTINEL to prompt.txt: {contents:?}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-stage-setup-test"])
-        .output();
+    cleanup_image("capsule-stage-setup-test");
 }
 
 #[test]
@@ -457,22 +494,7 @@ fn entrypoint_runs_capsule_stage_setup_when_env_set() {
 #[serial(base_image)]
 fn entrypoint_runs_capsule_stage_setup_inline_command() {
     build_base_image(false).expect("base image should be available");
-
-    let dockerfile =
-        "FROM capsule\nRUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-         && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-stage-setup-inline-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
+    build_stub_capsule_image("capsule-stage-setup-inline-test");
 
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt = dir.path().join("prompt.txt");
@@ -507,9 +529,7 @@ fn entrypoint_runs_capsule_stage_setup_inline_command() {
         "CAPSULE_STAGE_SETUP inline command should have appended INLINE to prompt.txt: {contents:?}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-stage-setup-inline-test"])
-        .output();
+    cleanup_image("capsule-stage-setup-inline-test");
 }
 
 #[test]
@@ -578,52 +598,22 @@ fn entrypoint_uses_resume_when_env_set() {
 #[serial(base_image)]
 fn git_wrapper_enforces_identity_over_agent_override() {
     build_base_image(false).expect("base image should be available");
+    build_stub_capsule_image("capsule-git-wrapper-test");
 
-    let dockerfile = "FROM capsule\n\
-        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-        && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-git-wrapper-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let prompt = dir.path().join("prompt.txt");
-    std::fs::write(&prompt, "placeholder\n").unwrap();
-
-    let output = std::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--entrypoint",
-            "bash",
-            "-v",
-            &format!("{}:/home/claude/prompt.txt", prompt.display()),
-            "-e",
-            "GIT_AUTHOR_NAME=Capsule",
-            "-e",
-            "GIT_AUTHOR_EMAIL=capsule@localhost",
-            "capsule-git-wrapper-test",
-            "-c",
-            concat!(
-                "bash /home/claude/entrypoint.sh && ",
-                "cd /tmp && git init testrepo && cd testrepo && ",
-                "GIT_AUTHOR_NAME=Agent GIT_AUTHOR_EMAIL=agent@fake.com ",
-                "GIT_COMMITTER_NAME=Agent GIT_COMMITTER_EMAIL=agent@fake.com ",
-                "git commit --allow-empty -m test && ",
-                "git log -1 --format='%an <%ae>'"
-            ),
-        ])
-        .output()
-        .expect("docker run should succeed");
+    let output = run_entrypoint_cmd(
+        "capsule-git-wrapper-test",
+        &[
+            ("GIT_AUTHOR_NAME", "Capsule"),
+            ("GIT_AUTHOR_EMAIL", "capsule@localhost"),
+        ],
+        concat!(
+            "cd /tmp && git init testrepo && cd testrepo && ",
+            "GIT_AUTHOR_NAME=Agent GIT_AUTHOR_EMAIL=agent@fake.com ",
+            "GIT_COMMITTER_NAME=Agent GIT_COMMITTER_EMAIL=agent@fake.com ",
+            "git commit --allow-empty -m test && ",
+            "git log -1 --format='%an <%ae>'"
+        ),
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -633,9 +623,7 @@ fn git_wrapper_enforces_identity_over_agent_override() {
         "wrapper should enforce capsule identity over agent override.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-git-wrapper-test"])
-        .output();
+    cleanup_image("capsule-git-wrapper-test");
 }
 
 #[test]
@@ -643,52 +631,22 @@ fn git_wrapper_enforces_identity_over_agent_override() {
 #[serial(base_image)]
 fn git_wrapper_prevents_git_config_override() {
     build_base_image(false).expect("base image should be available");
+    build_stub_capsule_image("capsule-git-config-test");
 
-    let dockerfile = "FROM capsule\n\
-        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-        && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-git-config-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let prompt = dir.path().join("prompt.txt");
-    std::fs::write(&prompt, "placeholder\n").unwrap();
-
-    let output = std::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--entrypoint",
-            "bash",
-            "-v",
-            &format!("{}:/home/claude/prompt.txt", prompt.display()),
-            "-e",
-            "GIT_AUTHOR_NAME=Capsule",
-            "-e",
-            "GIT_AUTHOR_EMAIL=capsule@localhost",
-            "capsule-git-config-test",
-            "-c",
-            concat!(
-                "bash /home/claude/entrypoint.sh && ",
-                "cd /tmp && git init testrepo && cd testrepo && ",
-                "git config --global user.name 'Config Hacker' && ",
-                "git config --global user.email 'hacker@fake.com' && ",
-                "git commit --allow-empty -m test && ",
-                "git log -1 --format='%an <%ae>'"
-            ),
-        ])
-        .output()
-        .expect("docker run should succeed");
+    let output = run_entrypoint_cmd(
+        "capsule-git-config-test",
+        &[
+            ("GIT_AUTHOR_NAME", "Capsule"),
+            ("GIT_AUTHOR_EMAIL", "capsule@localhost"),
+        ],
+        concat!(
+            "cd /tmp && git init testrepo && cd testrepo && ",
+            "git config --global user.name 'Config Hacker' && ",
+            "git config --global user.email 'hacker@fake.com' && ",
+            "git commit --allow-empty -m test && ",
+            "git log -1 --format='%an <%ae>'"
+        ),
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -698,9 +656,7 @@ fn git_wrapper_prevents_git_config_override() {
         "wrapper should enforce capsule identity even when git config is set.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-git-config-test"])
-        .output();
+    cleanup_image("capsule-git-config-test");
 }
 
 #[test]
@@ -708,45 +664,16 @@ fn git_wrapper_prevents_git_config_override() {
 #[serial(base_image)]
 fn git_wrapper_is_discoverable_via_which() {
     build_base_image(false).expect("base image should be available");
+    build_stub_capsule_image("capsule-which-test");
 
-    let dockerfile = "FROM capsule\n\
-        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-        && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-which-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let prompt = dir.path().join("prompt.txt");
-    std::fs::write(&prompt, "placeholder\n").unwrap();
-
-    let output = std::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--entrypoint",
-            "bash",
-            "-v",
-            &format!("{}:/home/claude/prompt.txt", prompt.display()),
-            "-e",
-            "GIT_AUTHOR_NAME=Capsule",
-            "-e",
-            "GIT_AUTHOR_EMAIL=capsule@localhost",
-            "capsule-which-test",
-            "-c",
-            concat!("bash /home/claude/entrypoint.sh && ", "command -v git"),
-        ])
-        .output()
-        .expect("docker run should succeed");
+    let output = run_entrypoint_cmd(
+        "capsule-which-test",
+        &[
+            ("GIT_AUTHOR_NAME", "Capsule"),
+            ("GIT_AUTHOR_EMAIL", "capsule@localhost"),
+        ],
+        "command -v git",
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -756,9 +683,7 @@ fn git_wrapper_is_discoverable_via_which() {
         "git wrapper should be found by PATH resolution.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-which-test"])
-        .output();
+    cleanup_image("capsule-which-test");
 }
 
 #[test]
@@ -766,60 +691,27 @@ fn git_wrapper_is_discoverable_via_which() {
 #[serial(base_image)]
 fn git_wrapper_works_with_capsule_identity_in_full_scenario() {
     build_base_image(false).expect("base image should be available");
+    build_stub_capsule_image("capsule-full-scenario");
 
-    let dockerfile = "FROM capsule\n\
-        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-        && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-full-scenario", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let prompt = dir.path().join("prompt.txt");
-    std::fs::write(&prompt, "placeholder\n").unwrap();
-
-    let output = std::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--entrypoint",
-            "bash",
-            "-v",
-            &format!("{}:/home/claude/prompt.txt", prompt.display()),
-            "-e",
-            "GIT_AUTHOR_NAME=Capsule",
-            "-e",
-            "GIT_AUTHOR_EMAIL=capsule@localhost",
-            "-e",
-            "GIT_COMMITTER_NAME=Capsule",
-            "-e",
-            "GIT_COMMITTER_EMAIL=capsule@localhost",
-            "capsule-full-scenario",
-            "-c",
-            concat!(
-                "bash /home/claude/entrypoint.sh && ",
-                "cd /tmp && git init fulltest && cd fulltest && ",
-                "git commit --allow-empty -m 'initial' && ",
-                "echo 'modified' > file.txt && ",
-                "git add file.txt && ",
-                "git commit -m 'with git config override' && ",
-                "git log --format='%an <%ae>' | sort | uniq"
-            ),
-        ])
-        .output()
-        .expect("docker run should succeed");
+    let output = run_entrypoint_cmd(
+        "capsule-full-scenario",
+        &[
+            ("GIT_AUTHOR_NAME", "Capsule"),
+            ("GIT_AUTHOR_EMAIL", "capsule@localhost"),
+            ("GIT_COMMITTER_NAME", "Capsule"),
+            ("GIT_COMMITTER_EMAIL", "capsule@localhost"),
+        ],
+        concat!(
+            "cd /tmp && git init fulltest && cd fulltest && ",
+            "git commit --allow-empty -m 'initial' && ",
+            "echo 'modified' > file.txt && ",
+            "git add file.txt && ",
+            "git commit -m 'with git config override' && ",
+            "git log --format='%an <%ae>' | sort | uniq"
+        ),
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let _stderr = String::from_utf8_lossy(&output.stderr);
 
     let commits_output: Vec<&str> = stdout
         .lines()
@@ -838,9 +730,7 @@ fn git_wrapper_works_with_capsule_identity_in_full_scenario() {
         );
     }
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-full-scenario"])
-        .output();
+    cleanup_image("capsule-full-scenario");
 }
 
 #[test]
@@ -882,48 +772,16 @@ fn git_wrapper_script_exists_and_is_correct() {
 #[serial(base_image)]
 fn identity_file_created_with_capsule_values() {
     build_base_image(false).expect("base image should be available");
+    build_stub_capsule_image("capsule-identity-file-test");
 
-    let dockerfile = "FROM capsule\n\
-        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-        && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-identity-file-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let prompt = dir.path().join("prompt.txt");
-    std::fs::write(&prompt, "placeholder\n").unwrap();
-
-    let output = std::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--entrypoint",
-            "bash",
-            "-v",
-            &format!("{}:/home/claude/prompt.txt", prompt.display()),
-            "-e",
-            "GIT_AUTHOR_NAME=Capsule",
-            "-e",
-            "GIT_AUTHOR_EMAIL=capsule@localhost",
-            "capsule-identity-file-test",
-            "-c",
-            concat!(
-                "bash /home/claude/entrypoint.sh && ",
-                "cat /tmp/.capsule-git-identity"
-            ),
-        ])
-        .output()
-        .expect("docker run should succeed");
+    let output = run_entrypoint_cmd(
+        "capsule-identity-file-test",
+        &[
+            ("GIT_AUTHOR_NAME", "Capsule"),
+            ("GIT_AUTHOR_EMAIL", "capsule@localhost"),
+        ],
+        "cat /tmp/.capsule-git-identity",
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -945,9 +803,7 @@ fn identity_file_created_with_capsule_values() {
         "identity file should export GIT_COMMITTER_EMAIL=capsule@localhost.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-identity-file-test"])
-        .output();
+    cleanup_image("capsule-identity-file-test");
 }
 
 #[test]
@@ -955,50 +811,20 @@ fn identity_file_created_with_capsule_values() {
 #[serial(base_image)]
 fn user_identity_passthrough_works_correctly() {
     build_base_image(false).expect("base image should be available");
+    build_stub_capsule_image("capsule-user-identity-test");
 
-    let dockerfile = "FROM capsule\n\
-        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-        && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-user-identity-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let prompt = dir.path().join("prompt.txt");
-    std::fs::write(&prompt, "placeholder\n").unwrap();
-
-    let output = std::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--entrypoint",
-            "bash",
-            "-v",
-            &format!("{}:/home/claude/prompt.txt", prompt.display()),
-            "-e",
-            "GIT_AUTHOR_NAME=Alice Developer",
-            "-e",
-            "GIT_AUTHOR_EMAIL=alice@example.com",
-            "capsule-user-identity-test",
-            "-c",
-            concat!(
-                "bash /home/claude/entrypoint.sh && ",
-                "cd /tmp && git init usertest && cd usertest && ",
-                "git commit --allow-empty -m 'test' && ",
-                "git log -1 --format='%an <%ae>'"
-            ),
-        ])
-        .output()
-        .expect("docker run should succeed");
+    let output = run_entrypoint_cmd(
+        "capsule-user-identity-test",
+        &[
+            ("GIT_AUTHOR_NAME", "Alice Developer"),
+            ("GIT_AUTHOR_EMAIL", "alice@example.com"),
+        ],
+        concat!(
+            "cd /tmp && git init usertest && cd usertest && ",
+            "git commit --allow-empty -m 'test' && ",
+            "git log -1 --format='%an <%ae>'"
+        ),
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1008,32 +834,15 @@ fn user_identity_passthrough_works_correctly() {
         "user identity should be passed through and used for commits.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-user-identity-test"])
-        .output();
+    cleanup_image("capsule-user-identity-test");
 }
 
 #[test]
 #[requires_docker]
 #[serial(base_image)]
-fn absolute_path_to_real_git_binary_bypasses_wrapper() {
+fn direct_git_binary_still_uses_capsule_identity() {
     build_base_image(false).expect("base image should be available");
-
-    let dockerfile = "FROM capsule\n\
-        RUN printf '#!/bin/sh\\nexit 0\\n' > /home/claude/.local/bin/claude \
-        && chmod +x /home/claude/.local/bin/claude\n";
-    let mut child = std::process::Command::new("docker")
-        .args(["build", "-t", "capsule-bypass-test", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .expect("docker build should spawn");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(dockerfile.as_bytes())
-        .unwrap();
-    child.wait().expect("docker build should complete");
+    build_stub_capsule_image("capsule-bypass-test");
 
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt = dir.path().join("prompt.txt");
@@ -1064,16 +873,13 @@ fn absolute_path_to_real_git_binary_bypasses_wrapper() {
         .expect("docker run should succeed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let _stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         stdout.contains("Capsule <capsule@localhost>"),
         "even when using absolute /usr/bin/git, the wrapper identity should be used because the identity env vars are still set.\nstdout: {stdout}"
     );
 
-    let _ = std::process::Command::new("docker")
-        .args(["rmi", "-f", "capsule-bypass-test"])
-        .output();
+    cleanup_image("capsule-bypass-test");
 }
 
 /// Verify that extra_env_file values are visible in every container invocation.

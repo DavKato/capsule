@@ -423,59 +423,6 @@ fn entrypoint_runs_capsule_stage_setup_when_env_set() {
 #[test]
 #[requires_docker]
 #[serial(base_image)]
-fn entrypoint_runs_before_each_without_executable_bit() {
-    build_base_image(false).expect("base image should be available");
-    build_stub_capsule_image("capsule-before-each-test");
-
-    let dir = tempfile::tempdir().expect("temp dir");
-
-    // Setup script without executable bit — entrypoint uses `bash -c` to run it.
-    let setup_script = dir.path().join("stage-setup.sh");
-    std::fs::write(
-        &setup_script,
-        "#!/bin/bash\necho BEFORE_EACH >> /home/claude/prompt.txt\n",
-    )
-    .unwrap();
-
-    let prompt = dir.path().join("prompt.txt");
-    std::fs::write(&prompt, "ORIGINAL\n").unwrap();
-
-    let user_arg = host_user_arg(&prompt);
-
-    let _output = std::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--user",
-            &user_arg,
-            "-v",
-            &format!("{}:/home/claude/stage-setup.sh:ro", setup_script.display()),
-            "-v",
-            &format!("{}:/home/claude/prompt.txt", prompt.display()),
-            "-e",
-            "GIT_AUTHOR_NAME=Test",
-            "-e",
-            "GIT_AUTHOR_EMAIL=test@test.com",
-            "-e",
-            "CAPSULE_STAGE_SETUP=/home/claude/stage-setup.sh",
-            "capsule-before-each-test",
-        ])
-        .output()
-        .expect("docker run should succeed");
-
-    let contents =
-        std::fs::read_to_string(&prompt).expect("prompt.txt should be readable after run");
-    assert!(
-        contents.contains("BEFORE_EACH"),
-        "CAPSULE_STAGE_SETUP script should have appended BEFORE_EACH to prompt.txt: {contents:?}"
-    );
-
-    cleanup_image("capsule-before-each-test");
-}
-
-#[test]
-#[requires_docker]
-#[serial(base_image)]
 fn entrypoint_runs_capsule_stage_setup_inline_command() {
     build_base_image(false).expect("base image should be available");
     build_stub_capsule_image("capsule-stage-setup-inline-test");

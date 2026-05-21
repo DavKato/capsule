@@ -161,6 +161,37 @@ fn update_live_nested_dot_to<W: Write + QueueableCommand>(
     out.flush()
 }
 
+struct AgentCompletionCtx<'a> {
+    name: &'a str,
+    args: &'a str,
+    success: bool,
+    summary: &'a str,
+    has_live_line: bool,
+    live_offset: Option<u16>,
+    header_offset: Option<u16>,
+}
+
+fn render_agent_completion_to<W: Write + QueueableCommand>(
+    out: &mut W,
+    ctx: &AgentCompletionCtx<'_>,
+) -> std::io::Result<()> {
+    if ctx.has_live_line {
+        if let Some(off) = ctx.live_offset {
+            replace_live_line_with_summary_to(out, ctx.summary, off)?;
+        } else {
+            agent_summary_line_to(out, ctx.name, ctx.args, ctx.summary)?;
+        }
+        if let Some(off) = ctx.header_offset {
+            render_tty_tool_result_to(out, ctx.name, ctx.args, ctx.success, Some(off))?;
+        }
+    } else if let Some(off) = ctx.header_offset {
+        render_tty_agent_summary_to(out, ctx.name, ctx.args, ctx.summary, off)?;
+    } else {
+        agent_summary_line_to(out, ctx.name, ctx.args, ctx.summary)?;
+    }
+    Ok(())
+}
+
 fn replace_live_line_with_summary_to<W: Write + QueueableCommand>(
     out: &mut W,
     summary: &str,
@@ -1093,26 +1124,28 @@ pub fn tool_result(id: &str, success: bool) {
             let tw = state.term_width;
             drop(guard);
 
-            let append_summary_fallback = |out: &mut std::io::StdoutLock| {
-                agent_summary_line_to(out, &name, &args, &summary).ok();
+            render_agent_completion_to(
+                &mut out,
+                &AgentCompletionCtx {
+                    name: &name,
+                    args: &args,
+                    success,
+                    summary: &summary,
+                    has_live_line,
+                    live_offset,
+                    header_offset,
+                },
+            )
+            .ok();
+            if (has_live_line && live_offset.is_none())
+                || (!has_live_line && header_offset.is_none())
+            {
                 let suffix_len = 2 + summary.chars().count();
                 let line_visible = 2 + name.chars().count() + 2 + args.chars().count() + suffix_len;
                 let mut guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(state) = guard.as_mut() {
                     state.offset_tracker.increment_all(line_visible, tw);
                 }
-            };
-
-            if has_live_line {
-                if let Some(off) = live_offset {
-                    replace_live_line_with_summary_to(&mut out, &summary, off).ok();
-                } else {
-                    append_summary_fallback(&mut out);
-                }
-            } else if let Some(off) = header_offset {
-                render_tty_agent_summary_to(&mut out, &name, &args, &summary, off).ok();
-            } else {
-                append_summary_fallback(&mut out);
             }
             log_line(&format!("● {name}  {args}  {summary}"));
             return;
@@ -1203,19 +1236,8 @@ pub fn agent_text(text: &str, parent_tool_use_id: Option<&str>) {
     if text.is_empty() {
         return;
     }
-    if let Some(pid) = parent_tool_use_id {
-        let guard = get_state().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(state) = guard.as_ref() {
-            if state.agent_buffers.contains_key(pid) {
-                return;
-            }
-        } else if agent_buffer_cache()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(pid)
-        {
-            return;
-        }
+    if parent_tool_use_id.is_some() {
+        return;
     }
     let mut last = LAST_WAS_TEXT.load(Ordering::Relaxed);
     let last_list = LAST_TEXT_WAS_LIST_ITEM.load(Ordering::Relaxed);
@@ -3023,6 +3045,34 @@ mod tests {
     }
 
     #[test]
+    fn render_agent_completion_updates_header_dot_when_live_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_agent_completion_to(
+            &mut buf,
+            &AgentCompletionCtx {
+                name: "Agent",
+                args: "Explore codebase",
+                success: true,
+                summary: "Done (3 tool uses · 1.4s)",
+                has_live_line: true,
+                live_offset: Some(2),
+                header_offset: Some(5),
+            },
+        )
+        .unwrap();
+
+        let out = String::from_utf8_lossy(&buf);
+        assert!(
+            out.contains('●'),
+            "header dot must be updated to green on completion; got: {out:?}"
+        );
+        assert!(
+            out.contains("Done (3 tool uses"),
+            "summary must appear in output"
+        );
+    }
+
+    #[test]
     fn format_tokens_short_below_k() {
         assert_eq!(format_tokens_short(500), "500 tokens");
     }
@@ -3202,19 +3252,15 @@ mod tests {
     }
 
     #[test]
-    fn agent_text_not_suppressed_without_buffer() {
+    fn agent_text_suppressed_even_without_buffer() {
         let pid = "toolu_no_buffer_test";
-        // Ensure no buffer exists for this id.
         agent_buffer_cache().lock().unwrap().remove(pid);
 
         LAST_WAS_TEXT.store(false, Ordering::Relaxed);
-        // Should render normally — no buffer for pid.
-        agent_text("top-level text", Some(pid));
+        agent_text("sub-agent reasoning", Some(pid));
         assert!(
-            LAST_WAS_TEXT.load(Ordering::Relaxed),
-            "LAST_WAS_TEXT must be true after unbuffered agent_text call"
+            !LAST_WAS_TEXT.load(Ordering::Relaxed),
+            "agent_text with parent_tool_use_id must be suppressed regardless of buffer existence"
         );
-
-        LAST_WAS_TEXT.store(false, Ordering::Relaxed);
     }
 }

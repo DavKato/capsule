@@ -101,6 +101,47 @@ fn main() {
     pause(300);
     display::agent_text("The test failure was expected — fixing now.", None);
 
+    // --- sub-agent output (buffered with live progress) ---
+    section("Sub-agent output — buffered with live progress");
+    display::agent_text("Let me delegate this to a sub-agent for analysis.", None);
+    pause(300);
+    let parent_id = "agent-delegate-1";
+    display::tool_call("Agent", "Explore codebase", parent_id, None);
+    pause(200);
+
+    // Sub-agent text (suppressed during buffering)
+    display::agent_text(
+        "Starting analysis of the codebase structure…",
+        Some(parent_id),
+    );
+    pause(150);
+
+    // Sub-agent tool calls (buffered, shown as live progress)
+    display::tool_call("Read", "src/lib.rs", "nested-1", Some(parent_id));
+    pause(100);
+    display::tool_call("Bash", "grep -r fn src/", "nested-2", Some(parent_id));
+    pause(100);
+    display::tool_call("Read", "Cargo.toml", "nested-3", Some(parent_id));
+    pause(600);
+
+    // Tool results complete the buffered calls
+    display::tool_result("nested-1", true);
+    pause(100);
+    display::tool_result("nested-2", true);
+    pause(100);
+    display::tool_result("nested-3", true);
+    pause(400);
+
+    // Parent tool completes, showing buffered summary
+    display::tool_result(parent_id, true);
+    pause(400);
+
+    // Agent continues with sub-agent findings
+    display::agent_text(
+        "Sub-agent found the codebase is well-structured with clear module boundaries.",
+        None,
+    );
+
     // --- usage counter in panel ---
     section("Usage counter");
     display::set_usage(12_400);

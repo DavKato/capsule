@@ -175,6 +175,15 @@ impl RunSession {
         // resume-retry re-copies host credentials.
         let credentials_guard = self.credentials_guard.take();
         let credentials_file = credentials_guard.as_ref().map(|g| g.path().to_path_buf());
+        #[cfg(unix)]
+        let (host_uid, host_gid) = {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&self.pwd)
+                .context("failed to stat workspace to resolve host uid/gid")?;
+            (meta.uid(), meta.gid())
+        };
+        #[cfg(not(unix))]
+        let (host_uid, host_gid) = (0u32, 0u32);
         let base_cfg = ExecutionConfig {
             image: self.image.clone(),
             prompt: String::new(),
@@ -198,6 +207,8 @@ impl RunSession {
             claude_dir: self.claude_dir.clone(),
             credentials_file,
             volumes: self.cfg.volumes.clone(),
+            host_uid,
+            host_gid,
         };
         let stage_volumes = build_stage_volumes(&self.cfg);
         let resume = self.resume.take();

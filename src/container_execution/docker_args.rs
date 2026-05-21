@@ -91,6 +91,8 @@ pub fn build_docker_args(
         }
     }
 
+    args.push(format!("--user={}:{}", cfg.host_uid, cfg.host_gid));
+
     if let Some(network) = &cfg.compose_network {
         args.push("--network".to_string());
         args.push(network.clone());
@@ -759,6 +761,23 @@ mod tests {
         assert_eq!(
             args_with_volumes, args_no_volumes,
             "empty volumes must not add extra -v flags"
+        );
+    }
+
+    #[test]
+    fn build_docker_args_includes_user_flag_with_uid_gid() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            host_uid: 1234,
+            host_gid: 5678,
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        assert!(
+            args.contains(&"--user=1234:5678".to_string()),
+            "expected --user=1234:5678 in docker args: {args:?}"
         );
     }
 

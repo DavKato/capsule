@@ -63,6 +63,11 @@ pub struct ExecutionConfig {
     /// Extra host volumes to bind-mount (`host-path:container-path[:opts]`).
     /// Relative source paths are resolved against `pwd` by `build_docker_args`.
     pub volumes: Vec<String>,
+    /// Host user ID passed as `--user uid:gid` so the container process runs as
+    /// the same user as the host, avoiding file-ownership mismatches.
+    pub host_uid: u32,
+    /// Host group ID — paired with `host_uid` for the `--user` flag.
+    pub host_gid: u32,
 }
 
 /// Outcome of a single iteration.

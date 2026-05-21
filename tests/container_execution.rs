@@ -710,11 +710,9 @@ fn extra_env_file_visible_across_stages() {
     };
     let active = Arc::new(Mutex::new(None));
 
-    // Stage 1
     let r1 = run_iteration(&cfg, 1, &active);
     assert!(r1.is_ok(), "stage 1 should not error: {:?}", r1);
 
-    // Stage 2
     let r2 = run_iteration(&cfg, 2, &active);
     assert!(r2.is_ok(), "stage 2 should not error: {:?}", r2);
 

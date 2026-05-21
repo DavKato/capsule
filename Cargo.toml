@@ -11,6 +11,10 @@ edition = "2021"
 name = "capsule"
 path = "src/main.rs"
 
+[[bin]]
+name = "gen_schema"
+path = "src/bin/gen_schema.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

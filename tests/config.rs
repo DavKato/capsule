@@ -567,8 +567,8 @@ fn committed_schema_matches_generated() {
     let generated = capsule::config::json_schema();
     let generated_str = serde_json::to_string_pretty(&generated).unwrap() + "\n";
     let committed = std::fs::read_to_string(path).unwrap_or_default();
-    if committed != generated_str {
-        std::fs::write(path, &generated_str).expect("failed to update schema file");
-        panic!("schema/config.schema.json was out of date — updated automatically, re-run tests");
-    }
+    assert_eq!(
+        committed, generated_str,
+        "schema/config.schema.json is out of date — run `make gen-schema` to regenerate"
+    );
 }

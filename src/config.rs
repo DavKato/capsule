@@ -122,7 +122,7 @@ pub struct CliOverrides {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(rename = "Stage")]
-pub struct StageConfigRaw {
+struct StageConfigRaw {
     /// Stage identifier (must be unique across the pipeline).
     name: String,
     /// Prompt file path or inline prompt text.
@@ -143,7 +143,7 @@ pub struct StageConfigRaw {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(rename = "Loop")]
-pub struct LoopConfigRaw {
+struct LoopConfigRaw {
     /// Maximum iterations for this loop block.
     max_iteration: Option<u32>,
     /// Stages to execute in each loop iteration.
@@ -155,7 +155,7 @@ pub struct LoopConfigRaw {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(rename = "LoopEntry")]
-pub struct LoopEntryRaw {
+struct LoopEntryRaw {
     /// A loop block containing stages to repeat.
     #[serde(rename = "loop")]
     loop_block: LoopConfigRaw,
@@ -164,7 +164,7 @@ pub struct LoopEntryRaw {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(rename = "PipelineEntry")]
 #[serde(untagged)]
-pub enum PipelineEntryRaw {
+enum PipelineEntryRaw {
     Loop(LoopEntryRaw),
     Stage(StageConfigRaw),
 }
@@ -172,7 +172,7 @@ pub enum PipelineEntryRaw {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(rename = "CapsuleConfig", title = "Capsule Config")]
 #[serde(deny_unknown_fields)]
-pub struct MultiStageConfigFile {
+struct MultiStageConfigFile {
     /// Ordered list of stages and loop blocks.
     stages: Vec<PipelineEntryRaw>,
     /// Maximum total stage invocations across the entire pipeline.
@@ -445,13 +445,14 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
 pub fn json_schema() -> serde_json::Value {
     let root = schemars::schema_for!(MultiStageConfigFile);
     let mut val = serde_json::to_value(root).expect("schema serializes to JSON");
-    strip_nullable_anyof(&mut val);
+    cleanup_schema(&mut val);
     val
 }
 
-/// Simplify `anyOf: [$ref, {type: "null"}]` → plain `$ref` throughout.
-/// YAML treats absent keys as null, so the null branch adds noise without value.
-fn strip_nullable_anyof(val: &mut serde_json::Value) {
+/// Post-process schemars output:
+/// - Simplify `anyOf: [$ref, {type: "null"}]` → plain `$ref`.
+/// - Coerce float `minimum`/`maximum` to integers when the field is integer-typed.
+fn cleanup_schema(val: &mut serde_json::Value) {
     match val {
         serde_json::Value::Object(map) => {
             if let Some(serde_json::Value::Array(any_of)) = map.get("anyOf") {
@@ -467,13 +468,30 @@ fn strip_nullable_anyof(val: &mut serde_json::Value) {
                     }
                 }
             }
+            let is_integer = map
+                .get("type")
+                .map(|t| {
+                    t.as_str() == Some("integer")
+                        || t.as_array()
+                            .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("integer")))
+                })
+                .unwrap_or(false);
+            if is_integer {
+                for key in &["minimum", "maximum"] {
+                    if let Some(v) = map.get_mut(*key) {
+                        if let Some(f) = v.as_f64() {
+                            *v = serde_json::Value::Number(serde_json::Number::from(f as i64));
+                        }
+                    }
+                }
+            }
             for v in map.values_mut() {
-                strip_nullable_anyof(v);
+                cleanup_schema(v);
             }
         }
         serde_json::Value::Array(arr) => {
             for v in arr.iter_mut() {
-                strip_nullable_anyof(v);
+                cleanup_schema(v);
             }
         }
         _ => {}

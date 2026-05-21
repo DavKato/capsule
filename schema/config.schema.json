@@ -45,7 +45,7 @@
         "max_iteration": {
           "description": "Maximum iterations for this loop block.",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -95,7 +95,7 @@
         "max_failure": {
           "description": "Cap on total failures for this stage, independent of retry counting.",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -104,7 +104,7 @@
         "max_retries": {
           "description": "Maximum retry attempts when `on_fail` is \"retry\".",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -175,7 +175,7 @@
     "max_stages": {
       "description": "Maximum total stage invocations across the entire pipeline.",
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"

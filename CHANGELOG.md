@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-21
+
+### Added
+
+- `docker.volumes` config option for mounting host directories into containers, with support for top-level and per-stage volumes and relative path resolution against the workspace
+
+### Changed
+
+- Containers now run as the host user's uid/gid (`--user`) instead of hardcoded uid 1000, eliminating permission issues with bind-mounted files
+
 ## [0.7.2] - 2026-05-21
 
 ### Added
@@ -73,7 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-token-lifetime-minutes` flag (credential lifetime is now managed internally)
 - `before-all.sh` / `before-each.sh` convention (presence now triggers a migration error)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/DavKato/capsule/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/DavKato/capsule/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/DavKato/capsule/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/DavKato/capsule/compare/v0.6.1...v0.7.0

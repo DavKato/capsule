@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -100,6 +101,9 @@ pub struct DockerStageRunner {
     last_usage_snapshot: Option<UsageSnapshot>,
     credentials_guard: Option<CredentialsGuard>,
     resume_session_id: Option<String>,
+    /// Merged volumes (top-level + per-stage) keyed by stage name.
+    /// Falls back to `base_cfg.volumes` for unknown stage names.
+    stage_volumes: HashMap<String, Vec<String>>,
 }
 
 impl DockerStageRunner {
@@ -108,6 +112,7 @@ impl DockerStageRunner {
         active_container: Arc<Mutex<Option<String>>>,
         credentials_guard: Option<CredentialsGuard>,
         resume_session_id: Option<String>,
+        stage_volumes: HashMap<String, Vec<String>>,
     ) -> Self {
         Self {
             base_cfg,
@@ -118,6 +123,7 @@ impl DockerStageRunner {
             last_usage_snapshot: None,
             credentials_guard,
             resume_session_id,
+            stage_volumes,
         }
     }
 
@@ -145,7 +151,12 @@ impl StageRunner for DockerStageRunner {
             .unwrap_or("unknown");
         crate::display::stage_header(stage_name, self.iteration, effective_model, retry);
         let start = std::time::Instant::now();
-        let result = self.execute_stage(prompt, model, setup);
+        let volumes = self
+            .stage_volumes
+            .get(stage_name)
+            .cloned()
+            .unwrap_or_else(|| self.base_cfg.volumes.clone());
+        let result = self.execute_stage(prompt, model, setup, volumes);
         let duration = start.elapsed();
         crate::display::clear_stage();
         let usage_str = self
@@ -191,6 +202,7 @@ impl DockerStageRunner {
         prompt: &str,
         model: Option<&str>,
         setup: Option<&str>,
+        volumes: Vec<String>,
     ) -> anyhow::Result<Option<Verdict>> {
         let mut cfg = self.base_cfg.clone();
         cfg.prompt = prompt.to_string();
@@ -198,6 +210,7 @@ impl DockerStageRunner {
             cfg.model = Some(m.to_string());
         }
         cfg.setup = setup.map(|s| s.to_string());
+        cfg.volumes = volumes;
         if let Some(session_id) = self.resume_session_id.take() {
             let name = format!("{}-resume-pipeline", container_name_for(self.iteration));
             let (result, status) =

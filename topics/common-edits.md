@@ -71,6 +71,27 @@ Edit `on_fail:` or `on_pass:` on the relevant stage.
 
 Run `capsule check` after every routing change.
 
+## Mount host volumes
+
+Add a `docker:` block with `volumes:` to bind-mount host directories into containers. Top-level volumes apply to all stages; per-stage volumes are merged on top.
+
+```yaml
+# Top-level: every stage gets these mounts
+docker:
+  volumes:
+    - /host/data:/container/data:ro
+
+stages:
+  - name: main
+    prompt: prompts/main.md
+    # Per-stage: additional mount for this stage only
+    docker:
+      volumes:
+        - ./local:/workspace/local
+```
+
+Relative source paths are resolved against the host workspace. Run `capsule check` after adding volumes.
+
 ## Adjust loop counters
 
 ```yaml

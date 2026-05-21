@@ -309,6 +309,7 @@ mod tests {
             max_retries: MAX_RETRIES_DEFAULT,
             max_failure: None,
             setup: None,
+            volumes: vec![],
         }
     }
 

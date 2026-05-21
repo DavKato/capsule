@@ -197,7 +197,9 @@ impl RunSession {
             compose_network: self.compose_network.clone(),
             claude_dir: self.claude_dir.clone(),
             credentials_file,
+            volumes: self.cfg.volumes.clone(),
         };
+        let stage_volumes = build_stage_volumes(&self.cfg);
         let resume = self.resume.take();
         let resume_session_id = resume.as_ref().map(|(id, _)| id.clone());
         let runner = DockerStageRunner::new(
@@ -205,6 +207,7 @@ impl RunSession {
             Arc::clone(&self.active_container),
             credentials_guard,
             resume_session_id,
+            stage_volumes,
         );
         let (mut result, runner) = if let Some((_, state)) = resume {
             PipelineExecutor::resume(self.cfg.pipeline.clone(), runner, state)
@@ -237,6 +240,29 @@ impl RunSession {
         update_check::maybe_print_notice(update_rx);
         Ok(summary::exit_decision_from_summary(&result.summary))
     }
+}
+
+/// Build a map of stage_name → merged volumes (top-level + per-stage).
+fn build_stage_volumes(cfg: &capsule::config::Config) -> HashMap<String, Vec<String>> {
+    use capsule::config::PipelineEntry;
+    let mut map = HashMap::new();
+    for entry in &cfg.pipeline.entries {
+        match entry {
+            PipelineEntry::Stage(s) => {
+                let mut v = cfg.volumes.clone();
+                v.extend(s.volumes.iter().cloned());
+                map.insert(s.name.clone(), v);
+            }
+            PipelineEntry::Loop(l) => {
+                for s in &l.stages {
+                    let mut v = cfg.volumes.clone();
+                    v.extend(s.volumes.iter().cloned());
+                    map.insert(s.name.clone(), v);
+                }
+            }
+        }
+    }
+    map
 }
 
 fn check_docker() -> Result<()> {

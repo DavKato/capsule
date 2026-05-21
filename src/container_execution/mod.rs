@@ -60,6 +60,9 @@ pub struct ExecutionConfig {
     /// each other's sessions (issue #55). `None` when the credentials file does not
     /// exist on the host.
     pub credentials_file: Option<PathBuf>,
+    /// Extra host volumes to bind-mount (`host-path:container-path[:opts]`).
+    /// Relative source paths are resolved against `pwd` by `build_docker_args`.
+    pub volumes: Vec<String>,
 }
 
 /// Outcome of a single iteration.

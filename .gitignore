@@ -4,6 +4,7 @@
 *~
 /target/
 /.cargo/
+/.cargo-cache/
 .capsule/.env
 .capsule*/last-run.json
 .claude/settings.local.json

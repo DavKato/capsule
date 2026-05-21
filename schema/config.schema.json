@@ -2,6 +2,23 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "DockerConfig": {
+      "additionalProperties": false,
+      "description": "Docker runtime options for a stage or the whole pipeline.",
+      "properties": {
+        "volumes": {
+          "description": "Host volumes to bind-mount into the container (`host-path:container-path[:opts]`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "GitIdentity": {
       "description": "Git commit identity mode.",
       "oneOf": [
@@ -92,6 +109,10 @@
     },
     "Stage": {
       "properties": {
+        "docker": {
+          "$ref": "#/definitions/DockerConfig",
+          "description": "Docker runtime options for this stage."
+        },
         "max_failure": {
           "description": "Cap on total failures for this stage, independent of retry counting.",
           "format": "uint32",
@@ -160,6 +181,10 @@
     "commit_as": {
       "$ref": "#/definitions/GitIdentity",
       "description": "Git identity for commits made inside capsules."
+    },
+    "docker": {
+      "$ref": "#/definitions/DockerConfig",
+      "description": "Docker runtime options for all stages."
     },
     "github_token_from": {
       "$ref": "#/definitions/GithubScope",

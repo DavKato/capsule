@@ -62,6 +62,20 @@ fn cleanup_image(tag: &str) {
         .output();
 }
 
+fn host_user_arg(path: &std::path::Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).unwrap();
+        format!("{}:{}", meta.uid(), meta.gid())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        "0:0".to_string()
+    }
+}
+
 #[test]
 fn detect_compose_network_returns_none_when_no_project() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -373,14 +387,7 @@ fn entrypoint_runs_capsule_stage_setup_when_env_set() {
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
 
-    #[cfg(unix)]
-    let user_arg = {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(&prompt).unwrap();
-        format!("{}:{}", meta.uid(), meta.gid())
-    };
-    #[cfg(not(unix))]
-    let user_arg = "0:0".to_string();
+    let user_arg = host_user_arg(&prompt);
 
     let _output = std::process::Command::new("docker")
         .args([
@@ -433,16 +440,7 @@ fn entrypoint_runs_before_each_without_executable_bit() {
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
 
-    // Resolve the host uid/gid from the just-created file — no 0o666 workaround needed
-    // because the container runs as the same user via --user uid:gid.
-    #[cfg(unix)]
-    let user_arg = {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(&prompt).unwrap();
-        format!("{}:{}", meta.uid(), meta.gid())
-    };
-    #[cfg(not(unix))]
-    let user_arg = "0:0".to_string();
+    let user_arg = host_user_arg(&prompt);
 
     let _output = std::process::Command::new("docker")
         .args([
@@ -486,14 +484,7 @@ fn entrypoint_runs_capsule_stage_setup_inline_command() {
     let prompt = dir.path().join("prompt.txt");
     std::fs::write(&prompt, "ORIGINAL\n").unwrap();
 
-    #[cfg(unix)]
-    let user_arg = {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(&prompt).unwrap();
-        format!("{}:{}", meta.uid(), meta.gid())
-    };
-    #[cfg(not(unix))]
-    let user_arg = "0:0".to_string();
+    let user_arg = host_user_arg(&prompt);
 
     let _output = std::process::Command::new("docker")
         .args([

@@ -6,6 +6,15 @@ use std::path::{Path, PathBuf};
 pub const MAX_STAGES_DEFAULT: u32 = 1000;
 pub const MAX_RETRIES_DEFAULT: u32 = 10;
 
+/// Docker runtime options for a stage or the whole pipeline.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(rename = "DockerConfig")]
+#[serde(deny_unknown_fields)]
+pub struct DockerConfig {
+    /// Host volumes to bind-mount into the container (`host-path:container-path[:opts]`).
+    pub volumes: Option<Vec<String>>,
+}
+
 /// Git commit identity mode.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -59,6 +68,8 @@ pub struct StageConfig {
     pub max_retries: u32,
     pub max_failure: Option<u32>,
     pub setup: Option<String>,
+    /// Per-stage volumes (raw strings from `docker.volumes`; not yet merged with top-level).
+    pub volumes: Vec<String>,
 }
 
 /// A `loop:` block containing an ordered list of stages.
@@ -98,6 +109,8 @@ pub struct Config {
     pub log_file: Option<PathBuf>,
     /// Host-side setup command or script path, run before any container starts.
     pub setup: Option<String>,
+    /// Top-level volumes from `docker.volumes` in `config.yml`.
+    pub volumes: Vec<String>,
 }
 
 /// CLI-supplied overrides. `None` means "not provided on the command line".
@@ -139,6 +152,8 @@ struct StageConfigRaw {
     max_failure: Option<u32>,
     /// Stage-specific setup command or script path, runs inside the container.
     setup: Option<String>,
+    /// Docker runtime options for this stage.
+    docker: Option<DockerConfig>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -189,6 +204,8 @@ struct MultiStageConfigFile {
     log_file: Option<String>,
     /// Host-side setup command or script path, run before any container starts.
     setup: Option<String>,
+    /// Docker runtime options for all stages.
+    docker: Option<DockerConfig>,
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -273,6 +290,7 @@ fn convert_stage(raw: StageConfigRaw) -> StageConfig {
         .as_deref()
         .and_then(parse_on_fail)
         .unwrap_or(OnFail::Exit);
+    let volumes = raw.docker.and_then(|d| d.volumes).unwrap_or_default();
     StageConfig {
         name: raw.name,
         prompt: raw.prompt,
@@ -282,6 +300,7 @@ fn convert_stage(raw: StageConfigRaw) -> StageConfig {
         max_retries: raw.max_retries.unwrap_or(MAX_RETRIES_DEFAULT),
         max_failure: raw.max_failure,
         setup: raw.setup,
+        volumes,
     }
 }
 
@@ -414,6 +433,11 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     });
     let rebuild = cli.rebuild;
     let setup = file_cfg.as_ref().and_then(|f| f.setup.clone());
+    let volumes = file_cfg
+        .as_ref()
+        .and_then(|f| f.docker.as_ref())
+        .and_then(|d| d.volumes.clone())
+        .unwrap_or_default();
 
     let mut pipeline = if let Some(multi) = file_cfg {
         build_pipeline_from_multi_stage(multi)
@@ -438,6 +462,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
         pipeline,
         log_file,
         setup,
+        volumes,
     })
 }
 
@@ -550,5 +575,120 @@ fn collect_names_from_value(val: &serde_yaml::Value, names: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_level_docker_volumes_parse() {
+        let yaml = r#"
+stages:
+  - name: a
+    prompt: hi
+docker:
+  volumes:
+    - /host/src:/container/dst
+    - /abs/path:/abs/dst:ro
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        let volumes = cfg.docker.unwrap().volumes.unwrap();
+        assert_eq!(
+            volumes,
+            vec!["/host/src:/container/dst", "/abs/path:/abs/dst:ro"]
+        );
+    }
+
+    #[test]
+    fn per_stage_docker_volumes_parse() {
+        let yaml = r#"
+stages:
+  - name: a
+    prompt: hi
+    docker:
+      volumes:
+        - ./data:/data
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        let stage = match &cfg.stages[0] {
+            PipelineEntryRaw::Stage(s) => s,
+            _ => panic!("expected stage"),
+        };
+        let volumes = stage.docker.as_ref().unwrap().volumes.as_ref().unwrap();
+        assert_eq!(volumes, &["./data:/data"]);
+    }
+
+    #[test]
+    fn unknown_field_in_docker_block_is_rejected() {
+        let yaml = r#"
+stages:
+  - name: a
+    prompt: hi
+docker:
+  volumes:
+    - /x:/y
+  unknown_option: true
+"#;
+        let err = parse_config_file(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("unknown") || err.contains("unknown_option"),
+            "expected rejection of unknown docker field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn stage_volumes_stored_in_stage_config() {
+        let yaml = r#"
+stages:
+  - name: a
+    prompt: hi
+    docker:
+      volumes:
+        - ./local:/remote
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        let pipeline = build_pipeline_from_multi_stage(cfg).unwrap();
+        let stage = match &pipeline.entries[0] {
+            PipelineEntry::Stage(s) => s,
+            _ => panic!("expected stage"),
+        };
+        assert_eq!(stage.volumes, vec!["./local:/remote"]);
+    }
+
+    #[test]
+    fn absent_docker_volumes_yields_empty_vec() {
+        let yaml = r#"
+stages:
+  - name: a
+    prompt: hi
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        let pipeline = build_pipeline_from_multi_stage(cfg).unwrap();
+        let stage = match &pipeline.entries[0] {
+            PipelineEntry::Stage(s) => s,
+            _ => panic!("expected stage"),
+        };
+        assert!(stage.volumes.is_empty());
+    }
+
+    #[test]
+    fn resolve_propagates_top_level_volumes() {
+        let capsule_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            capsule_dir.path().join("config.yml"),
+            r#"
+stages:
+  - name: a
+    prompt: hi
+docker:
+  volumes:
+    - /host:/container
+"#,
+        )
+        .unwrap();
+        let cfg = resolve(capsule_dir.path(), CliOverrides::default()).unwrap();
+        assert_eq!(cfg.volumes, vec!["/host:/container"]);
     }
 }

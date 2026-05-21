@@ -96,8 +96,36 @@ pub fn build_docker_args(
         args.push(network.clone());
     }
 
+    for spec in &cfg.volumes {
+        args.push(format!("-v={}", resolve_volume_src(spec, &cfg.pwd)));
+    }
+
     args.push(cfg.image.clone());
     Ok(args)
+}
+
+/// Resolve a volume spec's source path against `pwd` when it is relative.
+///
+/// Splits on the first `:` to separate `src` from `dst[:opts]`.
+/// Absolute sources pass through unchanged; relative sources are joined with `pwd`.
+/// Specs without `:` (named volumes) are returned as-is.
+fn resolve_volume_src(spec: &str, pwd: &std::path::Path) -> String {
+    match spec.split_once(':') {
+        Some((src, rest)) => {
+            let src_path = std::path::Path::new(src);
+            let resolved = if src_path.is_absolute() {
+                src_path.to_path_buf()
+            } else {
+                // Join then strip CurDir components (`./`) to produce a clean path.
+                pwd.join(src_path)
+                    .components()
+                    .filter(|c| !matches!(c, std::path::Component::CurDir))
+                    .collect::<std::path::PathBuf>()
+            };
+            format!("{}:{}", resolved.display(), rest)
+        }
+        None => spec.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -652,6 +680,85 @@ mod tests {
         assert!(
             !joined.contains(".credentials.json"),
             "expected no credentials mount when credentials_file is None: {joined}"
+        );
+    }
+
+    #[test]
+    fn volume_flags_emitted_for_configured_volumes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            volumes: vec!["/abs/src:/abs/dst".to_string(), "/x:/y:ro".to_string()],
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("-v=/abs/src:/abs/dst"),
+            "expected absolute volume mount in args: {joined}"
+        );
+        assert!(
+            joined.contains("-v=/x:/y:ro"),
+            "expected read-only volume mount in args: {joined}"
+        );
+    }
+
+    #[test]
+    fn relative_volume_src_resolved_against_workspace() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            volumes: vec!["./data:/container/data".to_string()],
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        let joined = args.join(" ");
+        let expected_src = dir.path().join("data");
+        assert!(
+            joined.contains(&format!("-v={}:/container/data", expected_src.display())),
+            "expected relative src resolved to workspace in args: {joined}"
+        );
+    }
+
+    #[test]
+    fn absolute_volume_src_passes_through_unchanged() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            volumes: vec!["/absolute/host:/container/path".to_string()],
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("-v=/absolute/host:/container/path"),
+            "expected absolute src unchanged in args: {joined}"
+        );
+    }
+
+    #[test]
+    fn empty_volumes_produces_no_extra_v_flags() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            volumes: vec![],
+            ..ExecutionConfig::default()
+        };
+        let args_with_volumes =
+            build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        let cfg_no_volumes = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            ..ExecutionConfig::default()
+        };
+        let args_no_volumes =
+            build_docker_args(&cfg_no_volumes, prompt_file.path(), "capsule-test").unwrap();
+        assert_eq!(
+            args_with_volumes, args_no_volumes,
+            "empty volumes must not add extra -v flags"
         );
     }
 

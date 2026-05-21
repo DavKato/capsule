@@ -13,6 +13,10 @@ export GIT_AUTHOR_EMAIL="${_email}"
 export GIT_COMMITTER_NAME="${_name}"
 export GIT_COMMITTER_EMAIL="${_email}"
 IDENTITY
+export GIT_AUTHOR_NAME="${_name}"
+export GIT_AUTHOR_EMAIL="${_email}"
+export GIT_COMMITTER_NAME="${_name}"
+export GIT_COMMITTER_EMAIL="${_email}"
 if [ -n "${CAPSULE_STAGE_SETUP}" ]; then
   if [ -f "${CAPSULE_STAGE_SETUP}" ]; then
     bash "${CAPSULE_STAGE_SETUP}"

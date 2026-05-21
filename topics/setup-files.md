@@ -10,6 +10,7 @@ Load before editing any `.capsule/` file — maps each file to its ownership, pu
 | `Dockerfile` | Container OS packages and tools | At image build time |
 | `setup` (top-level) | Host-side setup command or script (optional) | Once on host, before any stage |
 | `setup` (per-stage) | Per-invocation container setup (optional) | Inside each container, before prompt |
+| `docker.volumes` | Host volumes to bind-mount into containers | At `docker run` invocation |
 | `.env` | Env-var defaults and secrets (gitignore) | Sourced on host before top-level `setup` |
 | `prompts/<stage>.md` | Stage prompt content | Mounted into container per invocation |
 
@@ -45,6 +46,28 @@ stages:
     prompt: prompts/main.md
     setup: pip install -r requirements.txt
 ```
+
+## docker.volumes
+
+Bind-mounts host directories into every container invocation. Specified under a `docker:` block at top level (applies to all stages) or per stage (merged on top of top-level volumes).
+
+```yaml
+# Top-level: mounted in every stage
+docker:
+  volumes:
+    - /host/data:/container/data
+    - /host/models:/models:ro
+
+stages:
+  - name: main
+    prompt: prompts/main.md
+    # Per-stage: merged with top-level volumes
+    docker:
+      volumes:
+        - ./local:/workspace/local
+```
+
+Relative source paths (e.g. `./local`) are resolved against the host workspace (`pwd`). Absolute paths pass through unchanged. Format follows Docker's `-v` syntax: `host-path:container-path[:opts]`.
 
 ## .env
 

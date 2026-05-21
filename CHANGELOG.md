@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-21
+
+### Added
+
+- Buffered sub-agent display — each sub-agent shows a live progress line that collapses to a one-line summary on completion
+- `max_failure` config field — caps total failures per stage, independent of retry counting
+
+### Changed
+
+- `max_retries` default raised from 3 to 10; only counts when `on_fail: retry`
+- Forced pipeline exits now explain which stage hit which limit
+- Tool result duration now appears on the tool call line, not a separate line
+
 ## [0.6.1] - 2026-05-19
 
 ### Fixed
@@ -48,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-token-lifetime-minutes` flag (credential lifetime is now managed internally)
 - `before-all.sh` / `before-each.sh` convention (presence now triggers a migration error)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/DavKato/capsule/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/DavKato/capsule/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/DavKato/capsule/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/DavKato/capsule/compare/v0.4.2...v0.5.0

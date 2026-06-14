@@ -7,6 +7,127 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+/// The container-side MCP shim, embedded at compile time. Interpreted by the
+/// node in the base image (see `mcp_shim.js`).
+const MCP_SHIM_JS: &str = include_str!("mcp_shim.js");
+
+/// Write the MCP shim and its (Rust-generated) manifest to temp files. Returned
+/// as owned `NamedTempFile`s so the caller keeps them alive while they're
+/// bind-mounted into the container.
+fn write_shim_and_manifest() -> Result<(tempfile::NamedTempFile, tempfile::NamedTempFile)> {
+    let mut shim_file = tempfile::Builder::new()
+        .prefix("capsule-mcp-shim-")
+        .suffix(".js")
+        .tempfile()
+        .context("failed to create mcp shim temp file")?;
+    shim_file
+        .write_all(MCP_SHIM_JS.as_bytes())
+        .context("failed to write mcp shim")?;
+    shim_file.flush().context("failed to flush mcp shim")?;
+
+    let mut manifest_file = tempfile::Builder::new()
+        .prefix("capsule-mcp-manifest-")
+        .suffix(".json")
+        .tempfile()
+        .context("failed to create mcp manifest temp file")?;
+    manifest_file
+        .write_all(crate::mcp_server::shim_manifest_json().as_bytes())
+        .context("failed to write mcp manifest")?;
+    manifest_file
+        .flush()
+        .context("failed to flush mcp manifest")?;
+
+    Ok((shim_file, manifest_file))
+}
+
+/// Verify the run image can actually run the MCP shim before the pipeline starts:
+/// spawn `node <shim> <manifest>` in `image` and complete the JSON-RPC handshake,
+/// confirming `submit_verdict` is advertised. Catches a missing/broken `node`, an
+/// unmounted shim, or a bad manifest deterministically and upfront — rather than
+/// letting it surface mid-run as a confusing "submit_verdict not registered"
+/// (MCP connects asynchronously at run time, so the stream can't reliably report
+/// this; see `StreamParser::submit_verdict_missing`).
+pub fn preflight_mcp_shim(image: &str) -> Result<()> {
+    let (shim_file, manifest_file) = write_shim_and_manifest()?;
+    // The shim (code) and manifest (tool schema + version) carry no secrets, so
+    // make them world-readable: the preflight container runs as the image's
+    // default user, which need not match the temp files' owner.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [shim_file.path(), manifest_file.path()] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+                .with_context(|| format!("failed to chmod {}", path.display()))?;
+        }
+    }
+
+    let mut child = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "-i",
+            "--entrypoint",
+            "node",
+            &format!(
+                "--mount=type=bind,src={},dst=/shim.js,readonly",
+                shim_file.path().display()
+            ),
+            &format!(
+                "--mount=type=bind,src={},dst=/manifest.json,readonly",
+                manifest_file.path().display()
+            ),
+            image,
+            "/shim.js",
+            "/manifest.json",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn MCP shim preflight (`docker run`)")?;
+
+    {
+        let mut stdin = child.stdin.take().expect("preflight stdin piped");
+        stdin
+            .write_all(
+                b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}\n\
+                  {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n",
+            )
+            .context("failed to write to MCP shim preflight")?;
+    } // drop stdin → EOF so the shim exits
+
+    let output = child
+        .wait_with_output()
+        .context("MCP shim preflight did not complete")?;
+
+    let advertises_submit_verdict = output
+        .stdout
+        .split(|&b| b == b'\n')
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .filter_map(|v| {
+            v.pointer("/result/tools")
+                .and_then(|t| t.as_array())
+                .cloned()
+        })
+        .flatten()
+        .any(|tool| {
+            tool.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|n| n == "submit_verdict" || n.ends_with("__submit_verdict"))
+        });
+
+    if !advertises_submit_verdict {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "MCP shim preflight failed: the image could not run the capsule MCP shim with `node`. \
+             Ensure the image provides `node` (the base image installs it; a custom `.capsule/Dockerfile` must not remove it). \
+             Details: {}",
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
 pub struct StreamResult {
     pub auth_failed: bool,
     pub submit_verdict_missing: bool,
@@ -30,9 +151,8 @@ pub fn post_stream_error(
     if result.submit_verdict_missing {
         return Some(anyhow::anyhow!(
             "The `submit_verdict` MCP tool was not registered. \
-             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
-             the capsule binary is not on PATH inside the container, \
-             or `.mcp.json` was not mounted."
+             Likely causes: the base image is stale or lacks `node` (run `capsule run --rebuild` to force a rebuild), \
+             or the MCP shim / `.mcp.json` was not mounted."
         ));
     }
     if !status.success() {
@@ -172,8 +292,19 @@ pub fn run_container(
     prompt_file.flush().context("failed to flush prompt file")?;
     let prompt_path = prompt_file.path().to_owned();
 
-    const CAPSULE_CONTAINER_BIN: &str = "/usr/local/bin/capsule";
-    let mcp_config = make_mcp_config(std::path::Path::new(CAPSULE_CONTAINER_BIN));
+    // The container's MCP server is a tiny node shim (interpreted by the node
+    // already in the image) rather than the capsule binary, so nothing
+    // host-built needs to run inside the container — this works regardless of
+    // host OS/arch/libc. The shim replays per-method responses generated here
+    // from capsule's Rust schema (the single source of truth).
+    const SHIM_CONTAINER_PATH: &str = "/home/claude/.capsule-mcp-shim.js";
+    const MANIFEST_CONTAINER_PATH: &str = "/home/claude/.capsule-mcp-manifest.json";
+
+    let (shim_file, manifest_file) = write_shim_and_manifest()?;
+    let shim_path = shim_file.path().to_owned();
+    let manifest_path = manifest_file.path().to_owned();
+
+    let mcp_config = make_mcp_config(SHIM_CONTAINER_PATH, MANIFEST_CONTAINER_PATH);
     let mut mcp_file = tempfile::Builder::new()
         .prefix("capsule-mcp-")
         .suffix(".json")
@@ -184,9 +315,6 @@ pub fn run_container(
         .context("failed to write mcp config")?;
     mcp_file.flush().context("failed to flush mcp config")?;
     let mcp_path = mcp_file.path().to_owned();
-
-    let capsule_host_bin =
-        std::env::current_exe().context("failed to resolve capsule binary path")?;
 
     if let Ok(mut slot) = active_container.lock() {
         *slot = Some(container_name.to_string());
@@ -204,8 +332,13 @@ pub fn run_container(
         .expect("docker args must end with image name");
     docker_args.push(format!(
         "--mount=type=bind,src={},dst={},readonly",
-        capsule_host_bin.display(),
-        CAPSULE_CONTAINER_BIN
+        shim_path.display(),
+        SHIM_CONTAINER_PATH
+    ));
+    docker_args.push(format!(
+        "--mount=type=bind,src={},dst={},readonly",
+        manifest_path.display(),
+        MANIFEST_CONTAINER_PATH
     ));
     docker_args.push(format!(
         "--mount=type=bind,src={},dst=/home/claude/.mcp.json,readonly",

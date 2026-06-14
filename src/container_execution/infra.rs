@@ -52,20 +52,23 @@ pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Returns the JSON content for a per-run `.mcp.json` file that points
-/// `capsule mcp-serve` at the given binary path inside the container.
-pub fn make_mcp_config(capsule_container_bin: &std::path::Path) -> String {
-    let bin = capsule_container_bin.to_string_lossy();
+/// Returns the JSON content for a per-run `.mcp.json` file that runs the
+/// container-side MCP shim (`node <shim> <manifest>`). The shim is interpreted
+/// by the node already in the image, so no host binary needs to be mounted —
+/// this works regardless of host OS/arch/libc.
+pub fn make_mcp_config(shim_path: &str, manifest_path: &str) -> String {
     serde_json::json!({
-        "mcpServers": {"capsule": {"command": bin.as_ref(), "args": ["mcp-serve"]}}
+        "mcpServers": {
+            "capsule": {"command": "node", "args": [shim_path, manifest_path]}
+        }
     })
     .to_string()
 }
 
 fn read_expires_at(claude_dir: &std::path::Path) -> Option<u64> {
-    let path = claude_dir.join(".credentials.json");
-    let content = std::fs::read_to_string(&path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let source = super::credentials_source::CredentialsSource::detect(claude_dir);
+    let bytes = source.read().ok().flatten()?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     json.pointer("/claudeAiOauth/expiresAt")
         .and_then(serde_json::Value::as_u64)
 }
@@ -96,22 +99,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn make_mcp_config_contains_binary_path_and_mcp_serve() {
-        let bin = std::path::Path::new("/usr/local/bin/capsule");
-        let cfg = make_mcp_config(bin);
-        let v: serde_json::Value = serde_json::from_str(&cfg).expect("valid JSON");
-        assert_eq!(
-            v["mcpServers"]["capsule"]["command"],
-            "/usr/local/bin/capsule"
+    fn make_mcp_config_runs_node_shim_with_manifest() {
+        let cfg = make_mcp_config(
+            "/home/claude/.capsule-mcp-shim.js",
+            "/home/claude/.capsule-mcp-manifest.json",
         );
-        assert_eq!(v["mcpServers"]["capsule"]["args"][0], "mcp-serve");
+        let v: serde_json::Value = serde_json::from_str(&cfg).expect("valid JSON");
+        assert_eq!(v["mcpServers"]["capsule"]["command"], "node");
+        assert_eq!(
+            v["mcpServers"]["capsule"]["args"][0],
+            "/home/claude/.capsule-mcp-shim.js"
+        );
+        assert_eq!(
+            v["mcpServers"]["capsule"]["args"][1],
+            "/home/claude/.capsule-mcp-manifest.json"
+        );
     }
 
+    // Credentials must include an `accessToken` so `CredentialsSource::detect`
+    // selects the File source on every platform (on macOS, a file without a
+    // token falls back to the Keychain — see `credentials_source`).
     #[test]
     fn host_token_expired_when_expires_at_in_past() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":1000}}"#).unwrap();
+        std::fs::write(
+            &creds,
+            r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":1000}}"#,
+        )
+        .unwrap();
         assert!(host_token_is_expired(dir.path()));
     }
 
@@ -119,16 +135,29 @@ mod tests {
     fn host_token_not_expired_when_expires_at_in_future() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":2524608000000}}"#).unwrap();
+        std::fs::write(
+            &creds,
+            r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":2524608000000}}"#,
+        )
+        .unwrap();
         assert!(!host_token_is_expired(dir.path()));
     }
 
+    // On macOS a missing file falls back to the login Keychain, so "no file" no
+    // longer means "no credentials"; this case only holds without that fallback.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn host_token_expired_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
         assert!(host_token_is_expired(dir.path()));
     }
 
+    // `detect` falls back to the Keychain only when compiled for macOS; other
+    // targets stay on the File source. So only on macOS is the malformed file
+    // replaced by the Keychain (which on a real machine holds valid creds),
+    // masking the "malformed → expired" outcome. Gated to the targets that
+    // actually read the file.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn host_token_expired_when_malformed_json() {
         let dir = tempfile::tempdir().unwrap();
@@ -137,6 +166,8 @@ mod tests {
         assert!(host_token_is_expired(dir.path()));
     }
 
+    // See note above: skipped on macOS due to Keychain fallback.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn token_remaining_none_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
@@ -147,7 +178,11 @@ mod tests {
     fn token_remaining_none_when_expired() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":1000}}"#).unwrap();
+        std::fs::write(
+            &creds,
+            r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":1000}}"#,
+        )
+        .unwrap();
         assert_eq!(token_remaining_minutes(dir.path()), Some(0));
     }
 
@@ -160,7 +195,7 @@ mod tests {
             .unwrap()
             .as_millis() as u64;
         let future_ms = now_ms + 30 * 60 * 1000; // 30 min from now
-        let json = format!(r#"{{"claudeAiOauth":{{"expiresAt":{future_ms}}}}}"#);
+        let json = format!(r#"{{"claudeAiOauth":{{"accessToken":"t","expiresAt":{future_ms}}}}}"#);
         std::fs::write(&creds, json).unwrap();
         let remaining = token_remaining_minutes(dir.path()).unwrap();
         assert!((29..=31).contains(&remaining), "got {remaining}");

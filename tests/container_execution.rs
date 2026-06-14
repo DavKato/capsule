@@ -310,30 +310,49 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
 
 #[test]
 #[requires_docker]
-fn mcp_serve_handles_initialize_and_submit_verdict_in_container() {
+#[serial(base_image)]
+fn mcp_shim_handles_initialize_and_submit_verdict_in_container() {
     use std::io::{BufRead, BufReader, Write};
 
-    let capsule_bin = assert_cmd::cargo::cargo_bin("capsule");
+    // The container-side MCP server is now a node shim driven by a Rust-generated
+    // manifest — no host binary is mounted, so this runs on any host OS/arch
+    // (e.g. macOS), unlike the old binary-mount approach. It runs against the
+    // built `capsule` base image because that's where `node` is installed (the
+    // raw upstream image has none), with `--entrypoint node` to bypass the
+    // image's claude entrypoint.
+    build_base_image(false).expect("base image should be available");
 
-    let _ = std::process::Command::new("docker")
-        .args(["pull", "--quiet", "archlinux:base"])
-        .output();
+    // The shim source lives in the crate; read it straight from the source tree.
+    let shim_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/container_execution/mcp_shim.js");
+    let mut manifest_file = tempfile::Builder::new()
+        .prefix("capsule-mcp-manifest-")
+        .suffix(".json")
+        .tempfile()
+        .expect("manifest temp file");
+    manifest_file
+        .write_all(capsule::mcp_server::shim_manifest_json().as_bytes())
+        .expect("write manifest");
+    manifest_file.flush().expect("flush manifest");
 
     let mut child = std::process::Command::new("docker")
         .args([
             "run",
             "--rm",
             "-i",
-            &format!("-v={}:/usr/local/bin/capsule:ro", capsule_bin.display()),
-            "archlinux:base",
-            "/usr/local/bin/capsule",
-            "mcp-serve",
+            "--entrypoint",
+            "node",
+            &format!("-v={}:/shim.js:ro", shim_src.display()),
+            &format!("-v={}:/manifest.json:ro", manifest_file.path().display()),
+            "capsule",
+            "/shim.js",
+            "/manifest.json",
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("failed to spawn docker run capsule mcp-serve");
+        .expect("failed to spawn docker run node shim");
 
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
@@ -365,6 +384,33 @@ fn mcp_serve_handles_initialize_and_submit_verdict_in_container() {
 
     drop(stdin);
     let _ = child.wait();
+}
+
+#[test]
+#[requires_docker]
+#[serial(base_image)]
+fn preflight_mcp_shim_passes_for_base_image() {
+    build_base_image(false).expect("base image should be available");
+    capsule::container_execution::preflight_mcp_shim("capsule")
+        .expect("preflight should pass: base image has node and the shim handshakes");
+}
+
+#[test]
+#[requires_docker]
+fn preflight_mcp_shim_fails_when_image_lacks_node() {
+    // The raw upstream image (ubuntu) has no `node`, so the shim cannot run and
+    // the preflight must fail with a clear message rather than letting it surface
+    // mid-run.
+    let base = capsule::image_build::upstream_base_image();
+    let _ = std::process::Command::new("docker")
+        .args(["pull", "--quiet", base])
+        .output();
+    let err = capsule::container_execution::preflight_mcp_shim(base)
+        .expect_err("preflight should fail when the image lacks node");
+    assert!(
+        format!("{err:#}").contains("MCP shim preflight failed"),
+        "unexpected error: {err:#}"
+    );
 }
 
 #[test]

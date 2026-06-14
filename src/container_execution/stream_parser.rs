@@ -111,14 +111,23 @@ impl StreamParser {
         if is_init_event(&msg) {
             self.init_seen = true;
             self.session_id = extract_session_id(&msg);
-            if let Some(tools) = extract_init_tools(&msg) {
-                self.submit_verdict_registered = tools.iter().any(|t| {
+            let tool_listed = extract_init_tools(&msg).is_some_and(|tools| {
+                tools.iter().any(|t| {
                     let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
                     name.is_some_and(is_submit_verdict)
-                });
-            }
+                })
+            });
+            // MCP servers connect asynchronously, so the tool is usually absent
+            // from the init tool list (server still `pending`). Treat the tool as
+            // registered if its server is present and not `failed` — it is
+            // connecting and will provide the tool shortly.
+            self.submit_verdict_registered =
+                tool_listed || capsule_server_live(&msg) || self.submit_verdict_registered;
         }
         if let Some(v) = extract_verdict(&msg) {
+            // The tool was actually called — definitive proof it registered,
+            // regardless of what the init snapshot showed.
+            self.submit_verdict_registered = true;
             if self.verdict.is_some() {
                 crate::display::warning("submit_verdict called more than once; using latest");
             }
@@ -149,7 +158,9 @@ impl StreamParser {
         self.auth_failed
     }
 
-    /// True when the init event was seen but `submit_verdict` was not in the tool list.
+    /// True when the init event was seen but `submit_verdict` is neither
+    /// registered, served by a live (connecting/connected) `capsule` MCP server,
+    /// nor ever used — i.e. the tool genuinely never became available.
     pub fn submit_verdict_missing(&self) -> bool {
         self.init_seen && !self.submit_verdict_registered
     }
@@ -215,6 +226,20 @@ fn is_submit_verdict(name: &str) -> bool {
 
 fn extract_init_tools(msg: &Value) -> Option<Vec<Value>> {
     Some(msg.get("tools")?.as_array()?.clone())
+}
+
+/// True when the init event lists capsule's MCP server (named `capsule` by
+/// `make_mcp_config`) in a non-`failed` state — i.e. connected or still
+/// connecting. Used to avoid a false "tool not registered" when the server is
+/// merely `pending` at init because MCP connection is asynchronous.
+fn capsule_server_live(msg: &Value) -> bool {
+    let Some(servers) = msg.get("mcp_servers").and_then(Value::as_array) else {
+        return false;
+    };
+    servers.iter().any(|s| {
+        s.get("name").and_then(Value::as_str) == Some("capsule")
+            && s.get("status").and_then(Value::as_str) != Some("failed")
+    })
 }
 
 fn extract_assistant_content(msg: &Value) -> (Vec<ToolEvent>, Vec<TextDisplay>) {
@@ -617,6 +642,35 @@ mod tests {
         let mut p = StreamParser::new();
         p.feed(line);
         assert!(p.submit_verdict_missing());
+    }
+
+    // MCP servers connect asynchronously: the tool is absent from the init tool
+    // list while the server is still `pending`. That must NOT read as missing.
+    #[test]
+    fn system_init_with_pending_capsule_server_not_missing() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_06","tools":["Bash","Read"],"mcp_servers":[{"name":"capsule","status":"pending"}]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert!(!p.submit_verdict_missing());
+    }
+
+    #[test]
+    fn system_init_with_failed_capsule_server_signals_missing() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"sess_07","tools":["Bash","Read"],"mcp_servers":[{"name":"capsule","status":"failed"}]}"#;
+        let mut p = StreamParser::new();
+        p.feed(line);
+        assert!(p.submit_verdict_missing());
+    }
+
+    // Even if the init snapshot lacked the tool, an actual submit_verdict call
+    // proves it registered.
+    #[test]
+    fn submit_verdict_use_clears_missing_after_toolless_init() {
+        let mut p = StreamParser::new();
+        p.feed(SYSTEM_INIT_WITHOUT_VERDICT_TOOL);
+        assert!(p.submit_verdict_missing());
+        p.feed(PASS_LINE);
+        assert!(!p.submit_verdict_missing());
     }
 
     #[test]

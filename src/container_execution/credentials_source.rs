@@ -39,12 +39,16 @@ pub enum CredentialsSource {
 }
 
 impl CredentialsSource {
-    /// Pick a source for `claude_dir`. An existing `.credentials.json` always
-    /// wins (every platform); only an absent file on macOS falls back to the
-    /// Keychain.
+    /// Pick a source for `claude_dir`. A `.credentials.json` that actually holds
+    /// an OAuth token wins (every platform); otherwise macOS falls back to the
+    /// Keychain. The file is checked for real credentials, not mere
+    /// presence/size: Claude Code on macOS leaves a zero-byte (or otherwise
+    /// content-less) `.credentials.json` placeholder while storing the secret in
+    /// the Keychain, and a missing/empty/malformed/incomplete file should never
+    /// shadow a valid Keychain item.
     pub fn detect(claude_dir: &Path) -> Self {
         let file = claude_dir.join(".credentials.json");
-        if file.exists() {
+        if file_has_oauth_token(&file) {
             return Self::File(FileSource { path: file });
         }
         #[cfg(target_os = "macos")]
@@ -83,6 +87,30 @@ impl CredentialsSource {
             Self::Keychain(s) => s.write(bytes),
         }
     }
+}
+
+/// JSON pointer to the OAuth access token within a Claude credentials blob.
+/// The single field that proves a source actually holds a usable credential.
+const OAUTH_ACCESS_TOKEN_POINTER: &str = "/claudeAiOauth/accessToken";
+
+/// True when `bytes` parse as JSON carrying a non-empty OAuth access token.
+/// Used to decide whether a credential source is usable rather than merely
+/// present — an empty, malformed, or incomplete blob is not.
+fn bytes_have_oauth_token(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .as_ref()
+        .and_then(|json| json.pointer(OAUTH_ACCESS_TOKEN_POINTER))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|token| !token.is_empty())
+}
+
+/// True when the file at `path` holds a usable OAuth credential. Any read or
+/// parse failure (absent, empty, malformed, incomplete) is treated as "no".
+fn file_has_oauth_token(path: &Path) -> bool {
+    std::fs::read(path)
+        .map(|bytes| bytes_have_oauth_token(&bytes))
+        .unwrap_or(false)
 }
 
 /// File-backed credentials at `~/.claude/.credentials.json`.
@@ -228,14 +256,46 @@ fn normalize_json_single_line(bytes: &[u8]) -> Result<String> {
 mod tests {
     use super::*;
 
+    const VALID_CREDS: &[u8] = br#"{"claudeAiOauth":{"accessToken":"sk-ant-xyz","expiresAt":123}}"#;
+
     #[test]
-    fn detect_uses_file_when_present() {
+    fn detect_uses_file_when_it_has_oauth_token() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".credentials.json"), b"{}").unwrap();
+        std::fs::write(dir.path().join(".credentials.json"), VALID_CREDS).unwrap();
         assert!(matches!(
             CredentialsSource::detect(dir.path()),
             CredentialsSource::File(_)
         ));
+    }
+
+    #[test]
+    fn file_has_oauth_token_distinguishes_real_credentials() {
+        assert!(bytes_have_oauth_token(VALID_CREDS));
+        assert!(!bytes_have_oauth_token(b"")); // empty placeholder
+        assert!(!bytes_have_oauth_token(b"not json")); // malformed
+        assert!(!bytes_have_oauth_token(b"{}")); // valid JSON, no oauth block
+        assert!(!bytes_have_oauth_token(br#"{"claudeAiOauth":{}}"#)); // no token
+        assert!(!bytes_have_oauth_token(
+            br#"{"claudeAiOauth":{"accessToken":""}}"# // empty token
+        ));
+    }
+
+    // A content-less or incomplete `.credentials.json` (e.g. the zero-byte
+    // placeholder Claude Code leaves on macOS) must not win over the Keychain.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detect_falls_back_to_keychain_when_file_lacks_oauth_token() {
+        for content in [&b""[..], b"{}", b"not json", br#"{"claudeAiOauth":{}}"#] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".credentials.json"), content).unwrap();
+            assert!(
+                matches!(
+                    CredentialsSource::detect(dir.path()),
+                    CredentialsSource::Keychain(_)
+                ),
+                "content {content:?} should fall back to Keychain"
+            );
+        }
     }
 
     // The File adapter is exercised directly (not via `detect`) so these tests
@@ -272,7 +332,7 @@ mod tests {
     fn file_round_trips_bytes() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".credentials.json"), b"original").unwrap();
-        let source = CredentialsSource::detect(dir.path());
+        let source = file_source(dir.path());
         assert_eq!(source.read().unwrap().as_deref(), Some(&b"original"[..]));
         source.write(b"updated").unwrap();
         assert_eq!(source.read().unwrap().as_deref(), Some(&b"updated"[..]));

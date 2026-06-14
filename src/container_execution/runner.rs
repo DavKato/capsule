@@ -298,60 +298,72 @@ impl DockerStageRunner {
 mod tests {
     use super::*;
 
+    /// A credentials blob carrying `token` as the OAuth access token. The guard
+    /// only cares about byte equality and mtime, but the content must look like
+    /// real credentials so `CredentialsSource::detect` selects the File source on
+    /// every platform (on macOS, a non-credential file falls back to the
+    /// Keychain — see `credentials_source`).
+    fn creds(token: &str) -> Vec<u8> {
+        format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}"}}}}"#).into_bytes()
+    }
+
     #[test]
     fn credentials_written_back_after_reload_from_host() {
         let dir = tempfile::tempdir().unwrap();
         let creds_path = dir.path().join(".credentials.json");
-        std::fs::write(&creds_path, b"original").unwrap();
+        std::fs::write(&creds_path, creds("original")).unwrap();
 
         let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
         // Host rotated its token; resume-retry reloads it into the temp file.
-        std::fs::write(&creds_path, b"host-rotated").unwrap();
+        std::fs::write(&creds_path, creds("host-rotated")).unwrap();
         guard.reload_from_host().unwrap();
-        assert_eq!(std::fs::read(guard.path()).unwrap(), b"host-rotated");
+        assert_eq!(std::fs::read(guard.path()).unwrap(), creds("host-rotated"));
         // The resumed container then refreshes again.
-        std::fs::write(guard.path(), b"rotated-by-resume").unwrap();
+        std::fs::write(guard.path(), creds("rotated-by-resume")).unwrap();
         drop(guard);
 
-        assert_eq!(std::fs::read(&creds_path).unwrap(), b"rotated-by-resume");
+        assert_eq!(
+            std::fs::read(&creds_path).unwrap(),
+            creds("rotated-by-resume")
+        );
     }
 
     #[test]
     fn credentials_written_back_when_container_refreshed_and_host_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let creds_path = dir.path().join(".credentials.json");
-        std::fs::write(&creds_path, b"original").unwrap();
+        std::fs::write(&creds_path, creds("original")).unwrap();
 
         let guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
-        std::fs::write(guard.path(), b"refreshed").unwrap();
+        std::fs::write(guard.path(), creds("refreshed")).unwrap();
         drop(guard);
 
-        assert_eq!(std::fs::read(&creds_path).unwrap(), b"refreshed");
+        assert_eq!(std::fs::read(&creds_path).unwrap(), creds("refreshed"));
     }
 
     #[test]
     fn credentials_not_written_back_when_host_modified_during_run() {
         let dir = tempfile::tempdir().unwrap();
         let creds_path = dir.path().join(".credentials.json");
-        std::fs::write(&creds_path, b"original").unwrap();
+        std::fs::write(&creds_path, creds("original")).unwrap();
 
         let guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
-        std::fs::write(guard.path(), b"container-refreshed").unwrap();
-        std::fs::write(&creds_path, b"host-refreshed").unwrap();
+        std::fs::write(guard.path(), creds("container-refreshed")).unwrap();
+        std::fs::write(&creds_path, creds("host-refreshed")).unwrap();
         drop(guard);
 
-        assert_eq!(std::fs::read(&creds_path).unwrap(), b"host-refreshed");
+        assert_eq!(std::fs::read(&creds_path).unwrap(), creds("host-refreshed"));
     }
 
     #[test]
     fn credentials_unchanged_when_container_did_not_refresh() {
         let dir = tempfile::tempdir().unwrap();
         let creds_path = dir.path().join(".credentials.json");
-        std::fs::write(&creds_path, b"original").unwrap();
+        std::fs::write(&creds_path, creds("original")).unwrap();
 
         let guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
         drop(guard);
 
-        assert_eq!(std::fs::read(&creds_path).unwrap(), b"original");
+        assert_eq!(std::fs::read(&creds_path).unwrap(), creds("original"));
     }
 }

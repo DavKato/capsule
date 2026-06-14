@@ -116,11 +116,18 @@ mod tests {
         );
     }
 
+    // Credentials must include an `accessToken` so `CredentialsSource::detect`
+    // selects the File source on every platform (on macOS, a file without a
+    // token falls back to the Keychain — see `credentials_source`).
     #[test]
     fn host_token_expired_when_expires_at_in_past() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":1000}}"#).unwrap();
+        std::fs::write(
+            &creds,
+            r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":1000}}"#,
+        )
+        .unwrap();
         assert!(host_token_is_expired(dir.path()));
     }
 
@@ -128,7 +135,11 @@ mod tests {
     fn host_token_not_expired_when_expires_at_in_future() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":2524608000000}}"#).unwrap();
+        std::fs::write(
+            &creds,
+            r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":2524608000000}}"#,
+        )
+        .unwrap();
         assert!(!host_token_is_expired(dir.path()));
     }
 
@@ -141,6 +152,12 @@ mod tests {
         assert!(host_token_is_expired(dir.path()));
     }
 
+    // `detect` falls back to the Keychain only when compiled for macOS; other
+    // targets stay on the File source. So only on macOS is the malformed file
+    // replaced by the Keychain (which on a real machine holds valid creds),
+    // masking the "malformed → expired" outcome. Gated to the targets that
+    // actually read the file.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn host_token_expired_when_malformed_json() {
         let dir = tempfile::tempdir().unwrap();
@@ -161,7 +178,11 @@ mod tests {
     fn token_remaining_none_when_expired() {
         let dir = tempfile::tempdir().unwrap();
         let creds = dir.path().join(".credentials.json");
-        std::fs::write(&creds, r#"{"claudeAiOauth":{"expiresAt":1000}}"#).unwrap();
+        std::fs::write(
+            &creds,
+            r#"{"claudeAiOauth":{"accessToken":"t","expiresAt":1000}}"#,
+        )
+        .unwrap();
         assert_eq!(token_remaining_minutes(dir.path()), Some(0));
     }
 
@@ -174,7 +195,7 @@ mod tests {
             .unwrap()
             .as_millis() as u64;
         let future_ms = now_ms + 30 * 60 * 1000; // 30 min from now
-        let json = format!(r#"{{"claudeAiOauth":{{"expiresAt":{future_ms}}}}}"#);
+        let json = format!(r#"{{"claudeAiOauth":{{"accessToken":"t","expiresAt":{future_ms}}}}}"#);
         std::fs::write(&creds, json).unwrap();
         let remaining = token_remaining_minutes(dir.path()).unwrap();
         assert!((29..=31).contains(&remaining), "got {remaining}");

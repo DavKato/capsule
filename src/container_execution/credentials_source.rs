@@ -26,6 +26,7 @@ pub enum HostRevision {
     /// File-backed: last-modified time of `.credentials.json`.
     Mtime(std::time::SystemTime),
     /// Keychain-backed: the raw secret bytes.
+    #[cfg(target_os = "macos")]
     Bytes(Vec<u8>),
 }
 

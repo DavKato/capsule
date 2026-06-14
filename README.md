@@ -40,10 +40,10 @@ capsule completion fish > ~/.config/fish/completions/capsule.fish              #
 Add the skill to your repo and ask your AI to set up capsule:
 
 ```sh
-npx skills@latest add davkat/capsule/capsule
+npx skills@latest add davkato/capsule/skills
 ```
 
-The skill points the agent to `capsule explain` and `capsule templates list`, which is enough to initialize, customize, or debug a `.capsule/` setup. If you prefer not to install the skill, copy the [skill instruction](skills/capsule.md) into your prompt directly.
+The skill points the agent to `capsule explain` and `capsule templates list`, which is enough to initialize, customize, or debug a `.capsule/` setup. If you prefer not to install the skill, copy the [skill instruction](skills/capsule/SKILL.md) into your prompt directly.
 
 If you prefer to set up without AI, run `capsule init` and pick a template interactively, then edit the generated `.capsule/` files from there.
 

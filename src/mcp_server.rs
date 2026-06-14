@@ -22,6 +22,47 @@ pub fn handle_verdict_call(args: &Value) -> Value {
     json!({"ok": true, "verdict": verdict})
 }
 
+/// The `initialize` result — server capabilities and identity. Canonical
+/// source for both [`run_server`] and the container-side MCP shim manifest.
+pub fn initialize_result() -> Value {
+    json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": "capsule", "version": env!("CARGO_PKG_VERSION")}
+    })
+}
+
+/// The `tools/list` result — the `submit_verdict` tool schema. Canonical source
+/// for both [`run_server`] and the container-side MCP shim manifest.
+pub fn tools_list_result() -> Value {
+    json!({
+        "tools": [{
+            "name": "submit_verdict",
+            "description": "Signal stage completion with a pass or fail verdict.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["pass", "fail", "done"]},
+                    "notes": {"type": "string"}
+                },
+                "required": ["status"]
+            }
+        }]
+    })
+}
+
+/// The canned-response manifest handed to the container-side MCP shim
+/// (`mcp_shim.js`). The shim carries no protocol knowledge: it replays the
+/// per-method results generated here, keeping this Rust module the single
+/// source of truth for the protocol and the `submit_verdict` schema.
+pub fn shim_manifest_json() -> String {
+    json!({
+        "initialize": initialize_result(),
+        "tools/list": tools_list_result(),
+    })
+    .to_string()
+}
+
 /// Handle one JSON-RPC line. Returns `None` for notifications (no response),
 /// `Some(response_json)` for requests.
 pub fn handle_message(line: &str) -> Option<String> {
@@ -30,25 +71,8 @@ pub fn handle_message(line: &str) -> Option<String> {
     let id = msg.get("id")?;
 
     let result: Value = match method {
-        "initialize" => json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "capsule", "version": env!("CARGO_PKG_VERSION")}
-        }),
-        "tools/list" => json!({
-            "tools": [{
-                "name": "submit_verdict",
-                "description": "Signal stage completion with a pass or fail verdict.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "status": {"type": "string", "enum": ["pass", "fail", "done"]},
-                        "notes": {"type": "string"}
-                    },
-                    "required": ["status"]
-                }
-            }]
-        }),
+        "initialize" => initialize_result(),
+        "tools/list" => tools_list_result(),
         "tools/call" => {
             let name = msg
                 .pointer("/params/name")
@@ -99,6 +123,25 @@ pub fn run_server() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shim_manifest_replays_initialize_and_tools_list() {
+        let manifest: Value = serde_json::from_str(&shim_manifest_json()).unwrap();
+        // The shim looks up canned results keyed by JSON-RPC method name.
+        assert_eq!(manifest["initialize"], initialize_result());
+        assert_eq!(manifest["tools/list"], tools_list_result());
+        // Schema is the single source of truth for the shim's status validation.
+        let enum_ =
+            &manifest["tools/list"]["tools"][0]["inputSchema"]["properties"]["status"]["enum"];
+        let values: Vec<&str> = enum_
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(values, vec!["pass", "fail", "done"]);
+        assert_eq!(manifest["tools/list"]["tools"][0]["name"], "submit_verdict");
+    }
 
     #[test]
     fn valid_pass_returns_ok_with_verdict() {

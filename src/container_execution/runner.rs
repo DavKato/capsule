@@ -1,13 +1,12 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use crate::pipeline::{RetryInfo, StageRunner};
 use crate::verdict::Verdict;
 
+use super::credentials_source::{CredentialsSource, HostRevision};
 use super::{
     container_name_for, post_stream_error, run_container, run_iteration, ExecutionConfig,
     IterationOutcome, ModelUsage, UsageSnapshot,
@@ -16,22 +15,18 @@ use super::{
 pub struct CredentialsGuard {
     tempfile: tempfile::NamedTempFile,
     original_bytes: Vec<u8>,
-    host_mtime: SystemTime,
-    claude_dir: PathBuf,
+    host_revision: HostRevision,
+    source: CredentialsSource,
 }
 
 impl CredentialsGuard {
     pub fn new(claude_dir: &std::path::Path) -> Result<Option<Self>> {
-        let src = claude_dir.join(".credentials.json");
-        if !src.exists() {
-            return Ok(None);
-        }
-        let host_mtime = src
-            .metadata()
-            .and_then(|m| m.modified())
-            .context("failed to read credentials file mtime")?;
-        let content =
-            std::fs::read(&src).with_context(|| format!("failed to read {}", src.display()))?;
+        let source = CredentialsSource::detect(claude_dir);
+        let content = match source.read()? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        let host_revision = source.revision()?;
         let mut tmp = tempfile::Builder::new()
             .prefix("capsule-credentials-")
             .suffix(".json")
@@ -42,8 +37,8 @@ impl CredentialsGuard {
         Ok(Some(Self {
             tempfile: tmp,
             original_bytes: content,
-            host_mtime,
-            claude_dir: claude_dir.to_path_buf(),
+            host_revision,
+            source,
         }))
     }
 
@@ -51,27 +46,31 @@ impl CredentialsGuard {
         self.tempfile.path()
     }
 
-    /// Re-read host mtime and temp file content after an external mutation of the
-    /// temp file (e.g. re-copying host credentials for a resume-retry). Resets the
-    /// write-back baseline so the guard correctly detects further token rotations.
-    fn reset_baseline(&mut self) -> Result<()> {
-        let src = self.claude_dir.join(".credentials.json");
-        self.host_mtime = src
-            .metadata()
-            .and_then(|m| m.modified())
-            .context("failed to re-read credentials mtime")?;
-        self.original_bytes = std::fs::read(self.tempfile.path())
-            .context("failed to re-read credentials temp file")?;
+    /// Reload the host's current credentials through the source into the temp file
+    /// and reset the write-back baseline. Used for resume-retry, where the host may
+    /// have rotated its token; works identically for file- and Keychain-backed
+    /// sources. Resets the baseline so the guard correctly detects further token
+    /// rotations after the reload.
+    fn reload_from_host(&mut self) -> Result<()> {
+        let content = self
+            .source
+            .read()?
+            .context("host credentials disappeared during resume-retry")?;
+        std::fs::write(self.tempfile.path(), &content)
+            .context("failed to write reloaded credentials to temp file")?;
+        self.host_revision = self.source.revision()?;
+        self.original_bytes = content;
         Ok(())
     }
 }
 
 impl Drop for CredentialsGuard {
     fn drop(&mut self) {
-        let dest = self.claude_dir.join(".credentials.json");
-        // Skip write-back if the host refreshed its token during the run.
-        if let Ok(current_mtime) = dest.metadata().and_then(|m| m.modified()) {
-            if current_mtime != self.host_mtime {
+        // Skip write-back if the host rotated its token during the run (host
+        // revision changed since the snapshot). If the revision can't be read,
+        // proceed — best-effort, matching the file-mtime behavior.
+        if let Ok(current) = self.source.revision() {
+            if current != self.host_revision {
                 return;
             }
         }
@@ -86,7 +85,7 @@ impl Drop for CredentialsGuard {
         if current == self.original_bytes {
             return;
         }
-        if let Err(e) = std::fs::copy(self.tempfile.path(), &dest) {
+        if let Err(e) = self.source.write(&current) {
             crate::display::warning(&format!("failed to write back credentials: {e}"));
         }
     }
@@ -276,10 +275,7 @@ impl DockerStageRunner {
             "auth failed — host token valid, attempting resume-retry (session {session_id})"
         ));
         if let Some(ref mut guard) = self.credentials_guard {
-            let host_creds = cfg.claude_dir.join(".credentials.json");
-            std::fs::copy(&host_creds, guard.path())
-                .context("failed to re-copy credentials for resume-retry")?;
-            guard.reset_baseline()?;
+            guard.reload_from_host()?;
         }
         let resume_name = format!("{}-resume", container_name_for(self.iteration));
         let (result, status) =
@@ -303,14 +299,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn credentials_written_back_after_reset_baseline() {
+    fn credentials_written_back_after_reload_from_host() {
         let dir = tempfile::tempdir().unwrap();
         let creds_path = dir.path().join(".credentials.json");
         std::fs::write(&creds_path, b"original").unwrap();
 
         let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
-        std::fs::write(guard.path(), b"resumed-creds").unwrap();
-        guard.reset_baseline().unwrap();
+        // Host rotated its token; resume-retry reloads it into the temp file.
+        std::fs::write(&creds_path, b"host-rotated").unwrap();
+        guard.reload_from_host().unwrap();
+        assert_eq!(std::fs::read(guard.path()).unwrap(), b"host-rotated");
+        // The resumed container then refreshes again.
         std::fs::write(guard.path(), b"rotated-by-resume").unwrap();
         drop(guard);
 

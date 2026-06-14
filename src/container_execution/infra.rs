@@ -63,9 +63,9 @@ pub fn make_mcp_config(capsule_container_bin: &std::path::Path) -> String {
 }
 
 fn read_expires_at(claude_dir: &std::path::Path) -> Option<u64> {
-    let path = claude_dir.join(".credentials.json");
-    let content = std::fs::read_to_string(&path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let source = super::credentials_source::CredentialsSource::detect(claude_dir);
+    let bytes = source.read().ok().flatten()?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     json.pointer("/claudeAiOauth/expiresAt")
         .and_then(serde_json::Value::as_u64)
 }
@@ -123,6 +123,9 @@ mod tests {
         assert!(!host_token_is_expired(dir.path()));
     }
 
+    // On macOS a missing file falls back to the login Keychain, so "no file" no
+    // longer means "no credentials"; this case only holds without that fallback.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn host_token_expired_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
@@ -137,6 +140,8 @@ mod tests {
         assert!(host_token_is_expired(dir.path()));
     }
 
+    // See note above: skipped on macOS due to Keychain fallback.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn token_remaining_none_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();

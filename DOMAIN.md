@@ -141,11 +141,11 @@ _Avoid_: Checkpoint, executor state
 ### Credentials and recovery
 
 **Credential copy**:
-An isolated copy of `~/.claude/.credentials.json` held in a temp file for the run's lifetime, preventing concurrent token rotation races between host and container.
+An isolated copy of the host's Claude credentials — sourced from `~/.claude/.credentials.json` or, on macOS without that file, the login Keychain — held in a temp file for the run's lifetime, preventing concurrent token rotation races between host and container.
 _Avoid_: Snapshot, credential isolation
 
 **Resume-retry**:
-On `authentication_failed`, capsule re-copies the host's current credentials and re-launches with `claude --resume <session_id>`, recovering conversation context in one attempt.
+On `authentication_failed`, capsule re-reads the host's current credentials (from the file or the macOS Keychain) and re-launches with `claude --resume <session_id>`, recovering conversation context in one attempt.
 _Avoid_: Auth retry, credential refresh
 
 

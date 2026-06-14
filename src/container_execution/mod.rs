@@ -1,3 +1,4 @@
+mod credentials_source;
 mod docker_args;
 mod infra;
 mod process;

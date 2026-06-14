@@ -14,6 +14,30 @@ pub const GIT_WRAPPER_SH: &str = include_str!("../base-image/git-wrapper.sh");
 const BASE_IMAGE: &str = "capsule";
 const DOCKERFILE_HASH_LABEL: &str = "capsule.dockerfile.hash";
 
+/// The upstream OS image the base `capsule` image is built from (e.g.
+/// `ubuntu:24.04`), parsed from the embedded Dockerfile.
+///
+/// `base-image/Dockerfile` is the single source of truth for the base distro;
+/// callers that need the raw upstream image (e.g. tests) derive it from here
+/// rather than hardcoding it, so swapping the base OS is a one-line change.
+///
+/// Returns the image of the *last* `FROM` (the stage that ships in a
+/// multi-stage build, == the only stage in a single-stage one) with any
+/// `AS <alias>` suffix and `--flag` options stripped.
+pub fn upstream_base_image() -> &'static str {
+    parse_base_image(DOCKERFILE).expect("base-image/Dockerfile must contain a FROM line")
+}
+
+/// Extract the shipping stage's base image from Dockerfile text. See
+/// [`upstream_base_image`] for the selection rules.
+fn parse_base_image(dockerfile: &str) -> Option<&str> {
+    dockerfile
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("FROM "))
+        .next_back()
+        .and_then(|rest| rest.split_whitespace().find(|tok| !tok.starts_with("--")))
+}
+
 /// FNV-1a hash of a string, formatted as a 16-character hex string.
 ///
 /// Uses hardcoded FNV-1a constants for stability across Rust versions
@@ -190,15 +214,31 @@ mod tests {
     // ── Embedded assets ───────────────────────────────────────────────────────
 
     #[test]
-    fn embedded_dockerfile_is_non_empty() {
-        assert!(
-            !DOCKERFILE.is_empty(),
-            "embedded Dockerfile must not be empty"
+    fn parse_base_image_handles_single_stage_and_alias_and_flags() {
+        assert_eq!(
+            parse_base_image("FROM ubuntu:24.04\n"),
+            Some("ubuntu:24.04")
         );
-        assert!(
-            DOCKERFILE.contains("FROM archlinux"),
-            "Dockerfile must start from archlinux base"
+        assert_eq!(
+            parse_base_image("FROM ubuntu:24.04 AS runtime\n"),
+            Some("ubuntu:24.04")
         );
+        assert_eq!(
+            parse_base_image("FROM --platform=$BUILDPLATFORM ubuntu:24.04\n"),
+            Some("ubuntu:24.04")
+        );
+        // Multi-stage: the shipping (last) stage wins.
+        assert_eq!(
+            parse_base_image("FROM rust:1 AS builder\nRUN cargo build\nFROM ubuntu:24.04\n"),
+            Some("ubuntu:24.04")
+        );
+        assert_eq!(parse_base_image("# no from here\n"), None);
+    }
+
+    #[test]
+    fn upstream_base_image_matches_embedded_dockerfile() {
+        // Sanity: the real Dockerfile parses to a concrete, pullable image ref.
+        assert!(upstream_base_image().contains(':'));
     }
 
     #[test]

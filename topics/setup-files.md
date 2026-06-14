@@ -24,7 +24,7 @@ Central configuration file. Defines stages, loops, routing rules, models, and co
 
 ## Dockerfile
 
-Extends `FROM capsule` (base image ships `claude`, git, bash). Add runtime deps with `RUN pacman -Syu --noconfirm <pkg>`. Rebuilt on `capsule run --rebuild`.
+Extends `FROM capsule` (base image ships `claude`, git, bash). Add runtime deps with `RUN apt-get update && apt-get install -y --no-install-recommends <pkg>`. Rebuilt on `capsule run --rebuild`.
 
 ## setup (top-level)
 

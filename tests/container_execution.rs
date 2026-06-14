@@ -313,10 +313,20 @@ fn build_derived_image_rebuilds_when_dockerfile_changes() {
 fn mcp_serve_handles_initialize_and_submit_verdict_in_container() {
     use std::io::{BufRead, BufReader, Write};
 
+    // This test mounts the host-built `capsule` binary into a Linux container and
+    // execs it, so it only works when the host build is a Linux ELF. On non-Linux
+    // hosts (e.g. macOS dev machines) the binary is Mach-O and the exec fails, so
+    // skip rather than fail.
+    // TODO: make this test run on non-Linux hosts.
+    if cfg!(not(target_os = "linux")) {
+        return;
+    }
+
     let capsule_bin = assert_cmd::cargo::cargo_bin("capsule");
+    let base = capsule::image_build::upstream_base_image();
 
     let _ = std::process::Command::new("docker")
-        .args(["pull", "--quiet", "archlinux:base"])
+        .args(["pull", "--quiet", base])
         .output();
 
     let mut child = std::process::Command::new("docker")
@@ -325,7 +335,7 @@ fn mcp_serve_handles_initialize_and_submit_verdict_in_container() {
             "--rm",
             "-i",
             &format!("-v={}:/usr/local/bin/capsule:ro", capsule_bin.display()),
-            "archlinux:base",
+            base,
             "/usr/local/bin/capsule",
             "mcp-serve",
         ])

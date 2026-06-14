@@ -77,3 +77,17 @@ benefit while the server is a stateless echo.
 - The base image must contain `node` (it already installs `nodejs`). The
   `submit_verdict`-missing error hint now points at a stale image / missing node
   rather than a binary not on PATH.
+- MCP servers connect **asynchronously**: at the init event the `capsule` server
+  is usually still `pending`, so `submit_verdict` is absent from the init tool
+  list even though it connects (and is used) moments later — and Claude Code
+  emits no later "connected" event in the stream. So `submit_verdict_missing` can
+  no longer be read from the init tool list alone; the parser treats the tool as
+  registered if its server is present and not `failed`, or if the tool is ever
+  actually called. Claude Code has no "wait until MCP ready" flag, so capsule
+  cannot block on readiness.
+- Because a genuinely broken shim also looks `pending` at init (the failure is
+  invisible to the stream), capsule runs a one-time **preflight** before the
+  pipeline: it spawns `node <shim> <manifest>` in the run image and completes the
+  JSON-RPC handshake, failing fast with a precise message if `node` is missing or
+  the shim/manifest is broken. This restores the deterministic diagnostic the
+  stream can't provide.

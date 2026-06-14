@@ -389,6 +389,33 @@ fn mcp_shim_handles_initialize_and_submit_verdict_in_container() {
 #[test]
 #[requires_docker]
 #[serial(base_image)]
+fn preflight_mcp_shim_passes_for_base_image() {
+    build_base_image(false).expect("base image should be available");
+    capsule::container_execution::preflight_mcp_shim("capsule")
+        .expect("preflight should pass: base image has node and the shim handshakes");
+}
+
+#[test]
+#[requires_docker]
+fn preflight_mcp_shim_fails_when_image_lacks_node() {
+    // The raw upstream image (ubuntu) has no `node`, so the shim cannot run and
+    // the preflight must fail with a clear message rather than letting it surface
+    // mid-run.
+    let base = capsule::image_build::upstream_base_image();
+    let _ = std::process::Command::new("docker")
+        .args(["pull", "--quiet", base])
+        .output();
+    let err = capsule::container_execution::preflight_mcp_shim(base)
+        .expect_err("preflight should fail when the image lacks node");
+    assert!(
+        format!("{err:#}").contains("MCP shim preflight failed"),
+        "unexpected error: {err:#}"
+    );
+}
+
+#[test]
+#[requires_docker]
+#[serial(base_image)]
 fn entrypoint_runs_capsule_stage_setup_when_env_set() {
     build_base_image(false).expect("base image should be available");
     build_stub_capsule_image("capsule-stage-setup-test");

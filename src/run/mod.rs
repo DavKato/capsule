@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use capsule::config::{resolve, CliOverrides, Config};
 use capsule::container_execution::{
-    detect_compose_network, token_remaining_minutes, CredentialsGuard, DockerStageRunner,
-    ExecutionConfig,
+    detect_compose_network, preflight_mcp_shim, token_remaining_minutes, CredentialsGuard,
+    DockerStageRunner, ExecutionConfig,
 };
 use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
 use capsule::pipeline::{PipelineExecutor, PipelineState, TerminalReason};
@@ -210,6 +210,11 @@ impl RunSession {
             host_uid,
             host_gid,
         };
+        // Fail fast (with a precise message) if the image can't run the MCP
+        // shim, rather than letting it surface mid-run as "submit_verdict not
+        // registered".
+        preflight_mcp_shim(&self.image)?;
+
         let stage_volumes = build_stage_volumes(&self.cfg);
         let resume = self.resume.take();
         let resume_session_id = resume.as_ref().map(|(id, _)| id.clone());

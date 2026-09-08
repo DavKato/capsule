@@ -92,6 +92,9 @@ pub fn build_docker_args(
     }
 
     args.push(format!("--user={}:{}", cfg.host_uid, cfg.host_gid));
+    for gid in &cfg.host_groups {
+        args.push(format!("--group-add={gid}"));
+    }
 
     if let Some(network) = &cfg.compose_network {
         args.push("--network".to_string());
@@ -778,6 +781,49 @@ mod tests {
         assert!(
             args.contains(&"--user=1234:5678".to_string()),
             "expected --user=1234:5678 in docker args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_docker_args_emits_group_add_for_each_host_group() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            host_uid: 1234,
+            host_gid: 5678,
+            host_groups: vec![967, 998],
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        let user_pos = args.iter().position(|a| a == "--user=1234:5678").unwrap();
+        let group_args: Vec<&String> = args
+            .iter()
+            .filter(|a| a.starts_with("--group-add="))
+            .collect();
+        assert_eq!(
+            group_args,
+            vec!["--group-add=967", "--group-add=998"],
+            "expected one --group-add per host group: {args:?}"
+        );
+        assert!(
+            args[user_pos + 1] == "--group-add=967",
+            "--group-add must follow --user: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_docker_args_emits_no_group_add_without_host_groups() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let prompt_file = tempfile::NamedTempFile::new().unwrap();
+        let cfg = ExecutionConfig {
+            pwd: dir.path().to_path_buf(),
+            ..ExecutionConfig::default()
+        };
+        let args = build_docker_args(&cfg, prompt_file.path(), "capsule-test").unwrap();
+        assert!(
+            !args.iter().any(|a| a.starts_with("--group-add=")),
+            "no --group-add expected: {args:?}"
         );
     }
 

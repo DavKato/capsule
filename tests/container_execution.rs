@@ -170,6 +170,57 @@ fn run_iteration_with_model_passes_capsule_model_to_container() {
 
 #[test]
 #[requires_docker]
+#[serial(run_iteration)]
+fn run_iteration_adds_host_supplementary_groups_to_container_process() {
+    let workdir = tempfile::tempdir().expect("temp workdir");
+    let output_file = workdir.path().join("groups_output.txt");
+
+    let dockerfile =
+        "FROM busybox\nENTRYPOINT [\"sh\", \"-c\", \"id -G > \\\"$CAPSULE_WORKSPACE/groups_output.txt\\\"; exit 0\"]\n";
+    let mut child = std::process::Command::new("docker")
+        .args(["build", "-t", "capsule-test-groups", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("docker build should spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(dockerfile.as_bytes())
+        .unwrap();
+    child.wait().expect("docker build should complete");
+
+    let result = run_iteration(
+        &ExecutionConfig {
+            image: "capsule-test-groups".to_string(),
+            prompt: "hello".to_string(),
+            pwd: workdir.path().to_path_buf(),
+            claude_dir: std::env::temp_dir(),
+            host_uid: 1000,
+            host_gid: 1000,
+            host_groups: vec![4242, 4343],
+            ..ExecutionConfig::default()
+        },
+        1,
+        &Arc::new(Mutex::new(None)),
+    );
+    assert!(result.is_ok(), "groups run should not error: {:?}", result);
+
+    let written = std::fs::read_to_string(&output_file)
+        .expect("container should have written groups_output.txt");
+    let gids: Vec<&str> = written.split_whitespace().collect();
+    assert!(
+        gids.contains(&"4242") && gids.contains(&"4343"),
+        "container process should carry host supplementary groups, got `id -G`: {written:?}"
+    );
+
+    let _ = std::process::Command::new("docker")
+        .args(["rmi", "-f", "capsule-test-groups"])
+        .output();
+}
+
+#[test]
+#[requires_docker]
 fn build_derived_image_builds_and_returns_image_name() {
     let capsule_dir = tempfile::tempdir().expect("temp dir");
     let base = tempfile::tempdir().expect("temp dir");

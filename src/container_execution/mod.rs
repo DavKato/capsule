@@ -68,6 +68,67 @@ pub struct ExecutionConfig {
     pub host_uid: u32,
     /// Host group ID — paired with `host_uid` for the `--user` flag.
     pub host_gid: u32,
+    /// Host supplementary group IDs, each passed as `--group-add <gid>`.
+    /// Docker drops the image's supplementary groups whenever `--user` names a
+    /// gid, so without these a bind-mounted host resource that the host user
+    /// reaches through group membership (e.g. `/var/run/docker.sock`, owned by
+    /// `root:docker`) is unreachable inside the container (issue #304).
+    pub host_groups: Vec<u32>,
+}
+
+/// Supplementary group IDs of the current process, excluding `primary_gid`.
+///
+/// Mirrors the host user's full Unix identity into the container: together with
+/// `--user uid:gid`, passing these via `--group-add` grants exactly the access
+/// the host user already has on the host, no more. Returns an empty list when
+/// the groups cannot be read.
+#[cfg(unix)]
+pub fn host_supplementary_groups(primary_gid: u32) -> Vec<u32> {
+    // SAFETY: getgroups(0, NULL) only reports the count; the second call writes
+    // at most `len` entries into a buffer of exactly that length.
+    let len = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if len <= 0 {
+        return Vec::new();
+    }
+    let mut groups = vec![0 as libc::gid_t; len as usize];
+    let written = unsafe { libc::getgroups(len, groups.as_mut_ptr()) };
+    if written < 0 {
+        return Vec::new();
+    }
+    groups.truncate(written as usize);
+    // `libc::gid_t` is `u32` on every Unix target, so no conversion is needed.
+    let mut out: Vec<u32> = Vec::with_capacity(groups.len());
+    for gid in groups {
+        if gid != primary_gid && !out.contains(&gid) {
+            out.push(gid);
+        }
+    }
+    out
+}
+
+#[cfg(not(unix))]
+pub fn host_supplementary_groups(_primary_gid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(all(test, unix))]
+mod host_groups_tests {
+    use super::host_supplementary_groups;
+
+    #[test]
+    fn excludes_primary_gid_and_has_no_duplicates() {
+        // SAFETY: getgid has no preconditions and cannot fail.
+        let primary = unsafe { libc::getgid() };
+        let groups = host_supplementary_groups(primary);
+        assert!(
+            !groups.contains(&primary),
+            "primary gid {primary} must not be repeated: {groups:?}"
+        );
+        let mut deduped = groups.clone();
+        deduped.sort_unstable();
+        deduped.dedup();
+        assert_eq!(deduped.len(), groups.len(), "duplicates in {groups:?}");
+    }
 }
 
 /// Outcome of a single iteration.

@@ -190,14 +190,21 @@ fn run_iteration_adds_host_supplementary_groups_to_container_process() {
         .unwrap();
     child.wait().expect("docker build should complete");
 
+    // Run as the workspace owner (as production does) so the container can
+    // write into the temp workdir regardless of the CI runner's uid.
+    let (host_uid, host_gid) = {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(workdir.path()).unwrap();
+        (meta.uid(), meta.gid())
+    };
     let result = run_iteration(
         &ExecutionConfig {
             image: "capsule-test-groups".to_string(),
             prompt: "hello".to_string(),
             pwd: workdir.path().to_path_buf(),
             claude_dir: std::env::temp_dir(),
-            host_uid: 1000,
-            host_gid: 1000,
+            host_uid,
+            host_gid,
             host_groups: vec![4242, 4343],
             ..ExecutionConfig::default()
         },

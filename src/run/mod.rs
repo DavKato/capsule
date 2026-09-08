@@ -184,6 +184,7 @@ impl RunSession {
         };
         #[cfg(not(unix))]
         let (host_uid, host_gid) = (0u32, 0u32);
+        let host_groups = capsule::container_execution::host_supplementary_groups(host_gid);
         let base_cfg = ExecutionConfig {
             image: self.image.clone(),
             prompt: String::new(),
@@ -209,6 +210,7 @@ impl RunSession {
             volumes: self.cfg.volumes.clone(),
             host_uid,
             host_gid,
+            host_groups,
         };
         let stage_volumes = build_stage_volumes(&self.cfg);
         let resume = self.resume.take();

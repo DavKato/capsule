@@ -142,6 +142,7 @@ dependencies = [
  "crossterm",
  "ctrlc",
  "include_dir",
+ "libc",
  "predicates",
  "schemars",
  "serde",

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-08
+
+### Fixed
+
+- Containers now carry the host user's supplementary groups (`--group-add`), so bind-mounted resources reachable through group membership on the host — such as `/var/run/docker.sock` via `docker.volumes` — are accessible inside the container
+- The capsule skill is packaged as `skills/capsule/SKILL.md` so the skills CLI finds it; the README install command now points at the correct path
+
 ## [0.8.0] - 2026-05-21
 
 ### Added
@@ -83,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-token-lifetime-minutes` flag (credential lifetime is now managed internally)
 - `before-all.sh` / `before-each.sh` convention (presence now triggers a migration error)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/DavKato/capsule/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/DavKato/capsule/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/DavKato/capsule/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/DavKato/capsule/compare/v0.7.0...v0.7.1

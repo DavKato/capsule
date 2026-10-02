@@ -17,6 +17,21 @@ pub struct PipelineState {
     pub loop_iterations: HashMap<usize, u32>,
     #[serde(default, with = "env_as_map")]
     pub env: Vec<(String, String)>,
+    /// Where to re-enter the loop at `current_idx`. Set only when a stage inside a
+    /// loop was interrupted; `None` restarts the loop from its first stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_position: Option<LoopPosition>,
+    /// `--input` not yet delivered because the first stage was interrupted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+}
+
+/// Position inside a loop entry at which an interrupted run stopped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoopPosition {
+    pub stage_idx: usize,
+    /// Iteration the interrupted stage belonged to (1-based).
+    pub iteration: u32,
 }
 
 /// Serialize/deserialize `HashMap<usize, u32>` with string keys for JSON compat.

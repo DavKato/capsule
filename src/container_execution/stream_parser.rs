@@ -189,7 +189,13 @@ impl Default for StreamParser {
 }
 
 fn is_auth_error(msg: &Value) -> bool {
-    msg.pointer("/error/type").and_then(Value::as_str) == Some("authentication_failed")
+    // Claude Code puts the error on assistant messages as a bare string
+    // (`SDKAssistantMessage.error`); the `{ "type": ... }` object form is also accepted.
+    let error = msg.get("error");
+    let kind = error
+        .and_then(Value::as_str)
+        .or_else(|| error.and_then(|e| e.get("type")).and_then(Value::as_str));
+    kind == Some("authentication_failed")
 }
 
 fn is_init_event(msg: &Value) -> bool {
@@ -624,6 +630,22 @@ mod tests {
         let mut p = StreamParser::new();
         p.feed(AUTH_FAIL_LINE);
         assert!(p.auth_failed());
+    }
+
+    #[test]
+    fn assistant_message_with_string_error_sets_auth_failed() {
+        let mut p = StreamParser::new();
+        p.feed(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]},"error":"authentication_failed","session_id":"sess_01"}"#,
+        );
+        assert!(p.auth_failed());
+    }
+
+    #[test]
+    fn assistant_message_with_other_string_error_does_not_set_auth_failed() {
+        let mut p = StreamParser::new();
+        p.feed(r#"{"type":"assistant","message":{"content":[]},"error":"rate_limit"}"#);
+        assert!(!p.auth_failed());
     }
 
     #[test]

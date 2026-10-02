@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::config::{PipelineConfig, PipelineEntry};
 
 pub use prompt::SYSTEM_PREAMBLE;
-pub use state::PipelineState;
+pub use state::{LoopPosition, PipelineState};
 pub use summary::{
     build_summary_artifact, CapHitKind, FailExitKind, IterationCounters, PipelineOutcome,
     RunSummary, TerminalReason,
@@ -92,39 +92,47 @@ impl<R: StageRunner> PipelineExecutor<R> {
         let name_to_entry = build_name_index(&self.config);
         let max_pipeline = self.config.max_stages;
 
-        let (mut current_idx, mut loop_iterations, mut progress) = match self.initial_state.take() {
-            Some(s) => (
-                s.current_idx,
-                s.loop_iterations,
-                PipelineProgress {
-                    retry_counts: s.retry_counts,
-                    failure_totals: s.failure_totals,
-                    global_counter: s.global_counter,
-                    input: self.input.take(),
-                    last_stage: s.last_stage,
-                    last_verdict: s.last_verdict,
-                    fail_exit_info: None,
-                },
-            ),
-            None => (
-                0,
-                HashMap::new(),
-                PipelineProgress {
-                    retry_counts: HashMap::new(),
-                    failure_totals: HashMap::new(),
-                    global_counter: 0,
-                    input: self.input.take(),
-                    last_stage: None,
-                    last_verdict: None,
-                    fail_exit_info: None,
-                },
-            ),
-        };
+        let (mut current_idx, mut loop_iterations, mut resume_position, mut progress) =
+            match self.initial_state.take() {
+                Some(s) => (
+                    s.current_idx,
+                    s.loop_iterations,
+                    s.loop_position,
+                    PipelineProgress {
+                        retry_counts: s.retry_counts,
+                        failure_totals: s.failure_totals,
+                        global_counter: s.global_counter,
+                        input: self.input.take().or(s.input),
+                        last_stage: s.last_stage,
+                        last_verdict: s.last_verdict,
+                        fail_exit_info: None,
+                        interrupt_info: None,
+                    },
+                ),
+                None => (
+                    0,
+                    HashMap::new(),
+                    None,
+                    PipelineProgress {
+                        retry_counts: HashMap::new(),
+                        failure_totals: HashMap::new(),
+                        global_counter: 0,
+                        input: self.input.take(),
+                        last_stage: None,
+                        last_verdict: None,
+                        fail_exit_info: None,
+                        interrupt_info: None,
+                    },
+                ),
+            };
+        let mut loop_position = None;
 
         let (outcome, cap_hit) = 'pipeline: loop {
             if current_idx >= self.config.entries.len() {
                 break (PipelineOutcome::Done, None);
             }
+            // Only the first entry of a resumed run may re-enter a loop mid-way.
+            let resume_at = resume_position.take();
 
             match &self.config.entries[current_idx] {
                 PipelineEntry::Stage(stage) => {
@@ -154,12 +162,18 @@ impl<R: StageRunner> PipelineExecutor<R> {
                                     &mut progress,
                                     max_pipeline,
                                     stage_idx,
+                                    None,
                                 )?,
                                 entry_idx,
                                 &mut loop_iterations,
                             ) {
                                 LoopControl::Advance(next) => current_idx = next,
                                 LoopControl::Break(o, cap) => break 'pipeline (o, cap),
+                                LoopControl::Interrupted(pos) => {
+                                    current_idx = entry_idx;
+                                    loop_position = Some(pos);
+                                    break 'pipeline (PipelineOutcome::Interrupted, None);
+                                }
                             }
                         }
                         StageOutcome::Done => break (PipelineOutcome::Done, None),
@@ -169,23 +183,33 @@ impl<R: StageRunner> PipelineExecutor<R> {
                         StageOutcome::Exit(ExitKind::FailRoute) => {
                             break (PipelineOutcome::Exit { from_fail: true }, None)
                         }
+                        StageOutcome::Interrupted => break (PipelineOutcome::Interrupted, None),
                     }
                 }
                 PipelineEntry::Loop(loop_config) => {
                     let entry_idx = current_idx;
+                    let (start_stage, resume_iteration) = match resume_at {
+                        Some(pos) => (pos.stage_idx, Some(pos.iteration)),
+                        None => (0, None),
+                    };
                     match handle_loop_outcome(
                         run_loop(
                             &mut self.runner,
                             loop_config,
                             &mut progress,
                             max_pipeline,
-                            0,
+                            start_stage,
+                            resume_iteration,
                         )?,
                         entry_idx,
                         &mut loop_iterations,
                     ) {
                         LoopControl::Advance(next) => current_idx = next,
                         LoopControl::Break(o, cap) => break (o, cap),
+                        LoopControl::Interrupted(pos) => {
+                            loop_position = Some(pos);
+                            break (PipelineOutcome::Interrupted, None);
+                        }
                     }
                 }
             }
@@ -207,6 +231,13 @@ impl<R: StageRunner> PipelineExecutor<R> {
                 TerminalReason::FailExit { stage, kind }
             }
             PipelineOutcome::CapHit => TerminalReason::CapHit,
+            PipelineOutcome::Interrupted => {
+                let (stage, error) = progress
+                    .interrupt_info
+                    .take()
+                    .expect("interrupt_info is set when a stage is interrupted");
+                TerminalReason::Interrupted { stage, error }
+            }
         };
 
         let pipeline_state = PipelineState {
@@ -218,6 +249,8 @@ impl<R: StageRunner> PipelineExecutor<R> {
             last_verdict: progress.last_verdict.clone(),
             loop_iterations: loop_iterations.clone(),
             env: vec![],
+            loop_position,
+            input: progress.input.take(),
         };
 
         Ok((
@@ -1023,6 +1056,11 @@ mod tests {
             }),
             loop_iterations: loop_iters,
             env: vec![("KEY".to_string(), "val".to_string())],
+            loop_position: Some(LoopPosition {
+                stage_idx: 1,
+                iteration: 2,
+            }),
+            input: Some("my-input".to_string()),
         }
     }
 
@@ -1039,6 +1077,9 @@ mod tests {
         assert_eq!(v["last_verdict"]["notes"], "oops");
         assert_eq!(v["loop_iterations"]["0"], 3);
         assert_eq!(v["env"]["KEY"], "val");
+        assert_eq!(v["loop_position"]["stage_idx"], 1);
+        assert_eq!(v["loop_position"]["iteration"], 2);
+        assert_eq!(v["input"], "my-input");
     }
 
     #[test]
@@ -1333,5 +1374,169 @@ mod tests {
                 kind: FailExitKind::MaxFailure { limit: 3 },
             }
         );
+    }
+
+    /// Runner whose responses may be errors; records each invoked stage and prompt.
+    struct ScriptedRunner {
+        responses: VecDeque<Result<Option<Verdict>, &'static str>>,
+        calls: Vec<(String, String)>,
+    }
+
+    impl ScriptedRunner {
+        fn new(responses: impl IntoIterator<Item = Result<Option<Verdict>, &'static str>>) -> Self {
+            Self {
+                responses: responses.into_iter().collect(),
+                calls: Vec::new(),
+            }
+        }
+
+        fn stages(&self) -> Vec<&str> {
+            self.calls.iter().map(|(s, _)| s.as_str()).collect()
+        }
+    }
+
+    impl StageRunner for ScriptedRunner {
+        fn run(
+            &mut self,
+            stage_name: &str,
+            prompt: &str,
+            _model: Option<&str>,
+            _setup: Option<&str>,
+            _retry: Option<&RetryInfo>,
+        ) -> anyhow::Result<Option<Verdict>> {
+            self.calls
+                .push((stage_name.to_string(), prompt.to_string()));
+            self.responses
+                .pop_front()
+                .expect("ScriptedRunner: no more responses queued")
+                .map_err(|e| anyhow::anyhow!(e))
+        }
+    }
+
+    fn impl_review_loop() -> PipelineEntry {
+        PipelineEntry::Loop(LoopConfig {
+            max_iteration: Some(5),
+            stages: vec![stage("impl"), stage("review")],
+        })
+    }
+
+    #[test]
+    fn stage_error_ends_pipeline_as_interrupted() {
+        let config = pipeline(vec![
+            single_stage_entry(stage("a")),
+            single_stage_entry(stage("b")),
+        ]);
+        let (result, _) =
+            PipelineExecutor::new(config, ScriptedRunner::new([Ok(pass()), Err("boom")]))
+                .run()
+                .unwrap();
+        assert_eq!(result.outcome, PipelineOutcome::Interrupted);
+        assert_eq!(
+            result.summary.terminal_reason,
+            TerminalReason::Interrupted {
+                stage: "b".to_string(),
+                error: "boom".to_string(),
+            }
+        );
+        let state = result.pipeline_state;
+        assert_eq!(state.current_idx, 1);
+        assert_eq!(state.global_counter, 1, "interrupted stage is not counted");
+        assert_eq!(state.last_stage.as_deref(), Some("a"));
+        assert_eq!(state.last_verdict, pass());
+        assert_eq!(state.loop_position, None);
+    }
+
+    #[test]
+    fn resume_after_interrupt_reruns_the_interrupted_stage() {
+        let mut b = stage("b");
+        b.prompt = Some("task-b".to_string());
+        let config = pipeline(vec![single_stage_entry(stage("a")), single_stage_entry(b)]);
+        let a_pass = Some(Verdict {
+            status: VerdictStatus::Pass,
+            notes: Some("a-notes".to_string()),
+        });
+        let (first, _) = PipelineExecutor::new(
+            config.clone(),
+            ScriptedRunner::new([Ok(a_pass), Err("boom")]),
+        )
+        .run()
+        .unwrap();
+
+        let (result, runner) = PipelineExecutor::resume(
+            config,
+            ScriptedRunner::new([Ok(pass())]),
+            first.pipeline_state,
+        )
+        .run()
+        .unwrap();
+        assert_eq!(result.outcome, PipelineOutcome::Done);
+        assert_eq!(runner.stages(), ["b"]);
+        let prompt = &runner.calls[0].1;
+        assert!(prompt.contains("task-b"));
+        assert!(
+            prompt.contains("a-notes"),
+            "note block comes from stage a: {prompt}"
+        );
+    }
+
+    #[test]
+    fn loop_interrupt_resumes_at_the_same_stage_and_iteration() {
+        let config = pipeline(vec![impl_review_loop()]);
+        let (first, _) = PipelineExecutor::new(
+            config.clone(),
+            ScriptedRunner::new([Ok(pass()), Err("boom")]),
+        )
+        .run()
+        .unwrap();
+        let state = first.pipeline_state;
+        assert_eq!(state.current_idx, 0);
+        assert_eq!(
+            state.loop_position,
+            Some(LoopPosition {
+                stage_idx: 1,
+                iteration: 1,
+            })
+        );
+
+        let (result, runner) =
+            PipelineExecutor::resume(config, ScriptedRunner::new([Ok(done())]), state)
+                .run()
+                .unwrap();
+        assert_eq!(result.outcome, PipelineOutcome::Done);
+        assert_eq!(runner.stages(), ["review"]);
+        assert_eq!(result.summary.iteration_counters.loops.get(&0), Some(&1));
+    }
+
+    #[test]
+    fn loop_interrupt_after_route_into_loop_points_at_the_loop_entry() {
+        let mut a = stage("a");
+        a.on_pass = OnPass::Stage("review".to_string());
+        let config = pipeline(vec![single_stage_entry(a), impl_review_loop()]);
+        let (first, _) =
+            PipelineExecutor::new(config, ScriptedRunner::new([Ok(pass()), Err("boom")]))
+                .run()
+                .unwrap();
+        let state = first.pipeline_state;
+        assert_eq!(state.current_idx, 1);
+        assert_eq!(state.loop_position.map(|p| p.stage_idx), Some(1));
+    }
+
+    #[test]
+    fn input_survives_an_interrupted_first_stage() {
+        let config = pipeline(vec![single_stage_entry(stage("a"))]);
+        let (first, _) = PipelineExecutor::new(config.clone(), ScriptedRunner::new([Err("boom")]))
+            .with_input(Some("my-input".to_string()))
+            .run()
+            .unwrap();
+        assert_eq!(first.pipeline_state.input.as_deref(), Some("my-input"));
+
+        let (_, runner) = PipelineExecutor::resume(
+            config,
+            ScriptedRunner::new([Ok(pass())]),
+            first.pipeline_state,
+        )
+        .run()
+        .unwrap();
+        assert!(runner.calls[0].1.contains("my-input"));
     }
 }

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-02
+
+### Fixed
+
+- A run that stops on a stage error (container failure, expired auth) or Ctrl-C now writes `last-run.json` with `terminal_reason: "interrupted"`, so `capsule resume` re-enters the interrupted stage — inside a loop, the same stage and iteration — continuing that stage's own session
+- Ctrl-C (or SIGTERM) stops the running container and saves `last-run.json` before exiting; a second Ctrl-C quits immediately
+- Host credentials are re-synced with the container copy before every stage, so a token refreshed on either side mid-run no longer makes later stages fail authentication
+- Authentication failures reported by current Claude Code (`"error": "authentication_failed"` on assistant messages) are detected again, so the automatic resume-retry fires
+
 ## [0.8.1] - 2026-09-08
 
 ### Fixed
@@ -90,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-token-lifetime-minutes` flag (credential lifetime is now managed internally)
 - `before-all.sh` / `before-each.sh` convention (presence now triggers a migration error)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/DavKato/capsule/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/DavKato/capsule/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/DavKato/capsule/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/DavKato/capsule/compare/v0.7.1...v0.7.2

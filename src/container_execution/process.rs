@@ -16,32 +16,60 @@ pub struct StreamResult {
     pub last_usage_snapshot: Option<UsageSnapshot>,
 }
 
+/// A stage container ended without a usable result. Carries the Claude session the
+/// container started (if any) so `capsule resume` can continue that session.
+#[derive(Debug)]
+pub struct StageFailure {
+    pub session_id: Option<String>,
+    message: String,
+}
+
+impl std::fmt::Display for StageFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StageFailure {}
+
+impl StageFailure {
+    /// The run was stopped by Ctrl-C or a termination signal.
+    pub fn interrupted(session_id: Option<String>) -> Self {
+        Self {
+            session_id,
+            message: "interrupted by signal".to_string(),
+        }
+    }
+}
+
 pub fn post_stream_error(
     result: &StreamResult,
     status: &std::process::ExitStatus,
     context: &str,
 ) -> Option<anyhow::Error> {
-    if result.auth_failed {
-        return Some(anyhow::anyhow!(
+    let message = if result.auth_failed {
+        format!(
             "Claude authentication failed on {context}. \
              Run `claude auth login` on the host to refresh credentials, then retry."
-        ));
-    }
-    if result.submit_verdict_missing {
-        return Some(anyhow::anyhow!(
-            "The `submit_verdict` MCP tool was not registered. \
-             Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
-             the capsule binary is not on PATH inside the container, \
-             or `.mcp.json` was not mounted."
-        ));
-    }
-    if !status.success() {
-        return Some(anyhow::anyhow!(
+        )
+    } else if result.submit_verdict_missing {
+        "The `submit_verdict` MCP tool was not registered. \
+         Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
+         the capsule binary is not on PATH inside the container, \
+         or `.mcp.json` was not mounted."
+            .to_string()
+    } else if !status.success() {
+        format!(
             "container exited with code {} during {context}",
             status.code().unwrap_or(-1)
-        ));
-    }
-    None
+        )
+    } else {
+        return None;
+    };
+    Some(anyhow::Error::new(StageFailure {
+        session_id: result.session_id.clone(),
+        message,
+    }))
 }
 
 fn stream_output(reader: BufReader<impl std::io::Read>, verbose: bool) -> Result<StreamResult> {
@@ -352,6 +380,17 @@ mod tests {
     fn post_stream_error_returns_none_when_all_clear() {
         let result = clear_result();
         assert!(post_stream_error(&result, &success_status(), "test").is_none());
+    }
+
+    #[test]
+    fn post_stream_error_carries_session_id() {
+        let result = StreamResult {
+            session_id: Some("sess_01".to_string()),
+            ..clear_result()
+        };
+        let err = post_stream_error(&result, &failure_status(), "iteration").unwrap();
+        let failure = err.downcast_ref::<StageFailure>().unwrap();
+        assert_eq!(failure.session_id.as_deref(), Some("sess_01"));
     }
 
     #[test]

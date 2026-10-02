@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -10,7 +11,7 @@ use crate::verdict::Verdict;
 
 use super::{
     container_name_for, post_stream_error, run_container, run_iteration, ExecutionConfig,
-    IterationOutcome, ModelUsage, UsageSnapshot,
+    IterationOutcome, ModelUsage, StageFailure, UsageSnapshot,
 };
 
 pub struct CredentialsGuard {
@@ -64,6 +65,29 @@ impl CredentialsGuard {
             .context("failed to re-read credentials temp file")?;
         Ok(())
     }
+
+    /// Reconcile the temp copy with the host file before a stage starts, so a long
+    /// run never launches a container on a refresh token the other side has already
+    /// rotated. The host wins when both changed, matching the write-back rule in `Drop`.
+    fn sync_with_host(&mut self) -> Result<()> {
+        let src = self.claude_dir.join(".credentials.json");
+        let host_mtime = src
+            .metadata()
+            .and_then(|m| m.modified())
+            .context("failed to read credentials file mtime")?;
+        if host_mtime != self.host_mtime {
+            std::fs::copy(&src, self.tempfile.path())
+                .context("failed to re-copy host credentials")?;
+        } else {
+            let current = std::fs::read(self.tempfile.path())
+                .context("failed to read credentials temp file")?;
+            if current == self.original_bytes {
+                return Ok(());
+            }
+            std::fs::write(&src, &current).context("failed to write back credentials")?;
+        }
+        self.reset_baseline()
+    }
 }
 
 impl Drop for CredentialsGuard {
@@ -101,6 +125,8 @@ pub struct DockerStageRunner {
     last_usage_snapshot: Option<UsageSnapshot>,
     credentials_guard: Option<CredentialsGuard>,
     resume_session_id: Option<String>,
+    /// Set by the signal handler; the stage in flight and any later stage fail as interrupted.
+    cancelled: Arc<AtomicBool>,
     /// Merged volumes (top-level + per-stage) keyed by stage name.
     /// Falls back to `base_cfg.volumes` for unknown stage names.
     stage_volumes: HashMap<String, Vec<String>>,
@@ -112,6 +138,7 @@ impl DockerStageRunner {
         active_container: Arc<Mutex<Option<String>>>,
         credentials_guard: Option<CredentialsGuard>,
         resume_session_id: Option<String>,
+        cancelled: Arc<AtomicBool>,
         stage_volumes: HashMap<String, Vec<String>>,
     ) -> Self {
         Self {
@@ -123,6 +150,7 @@ impl DockerStageRunner {
             last_usage_snapshot: None,
             credentials_guard,
             resume_session_id,
+            cancelled,
             stage_volumes,
         }
     }
@@ -156,7 +184,12 @@ impl StageRunner for DockerStageRunner {
             .get(stage_name)
             .cloned()
             .unwrap_or_else(|| self.base_cfg.volumes.clone());
-        let result = self.execute_stage(prompt, model, setup, volumes);
+        // Only this stage's session may be resumed if it is interrupted.
+        self.session_id = None;
+        let mut result = self.execute_stage(prompt, model, setup, volumes);
+        if self.is_cancelled() {
+            result = settle_after_signal(result, self.session_id.as_deref());
+        }
         let duration = start.elapsed();
         crate::display::clear_stage();
         let usage_str = self
@@ -178,6 +211,11 @@ impl StageRunner for DockerStageRunner {
                 );
             }
             Err(e) => {
+                // Point `capsule resume` at the failed stage's own session; a stage that
+                // never started one must re-run from its prompt, not continue the previous stage.
+                self.session_id = e
+                    .downcast_ref::<StageFailure>()
+                    .and_then(|f| f.session_id.clone());
                 let error_verdict = crate::verdict::Verdict {
                     status: crate::verdict::VerdictStatus::Fail,
                     notes: Some(format!("{e:#}")),
@@ -197,6 +235,10 @@ impl StageRunner for DockerStageRunner {
 }
 
 impl DockerStageRunner {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
     fn execute_stage(
         &mut self,
         prompt: &str,
@@ -211,6 +253,14 @@ impl DockerStageRunner {
         }
         cfg.setup = setup.map(|s| s.to_string());
         cfg.volumes = volumes;
+        if self.is_cancelled() {
+            return Err(StageFailure::interrupted(None).into());
+        }
+        if let Some(guard) = self.credentials_guard.as_mut() {
+            if let Err(e) = guard.sync_with_host() {
+                crate::display::warning(&format!("failed to sync credentials with host: {e:#}"));
+            }
+        }
         if let Some(session_id) = self.resume_session_id.take() {
             let name = format!("{}-resume-pipeline", container_name_for(self.iteration));
             let (result, status) =
@@ -272,6 +322,9 @@ impl DockerStageRunner {
         cfg: &ExecutionConfig,
         session_id: &str,
     ) -> anyhow::Result<Option<Verdict>> {
+        if self.is_cancelled() {
+            return Err(StageFailure::interrupted(Some(session_id.to_string())).into());
+        }
         crate::display::warning(&format!(
             "auth failed — host token valid, attempting resume-retry (session {session_id})"
         ));
@@ -296,6 +349,24 @@ impl DockerStageRunner {
         self.last_usage_snapshot = result.last_usage_snapshot;
         Ok(result.verdict)
     }
+}
+
+/// After a signal, a stage that produced no verdict was cut short: either `docker stop`
+/// made the container fail, or Claude exited cleanly on the SIGINT forwarded by
+/// `docker run`. Report both as an interruption that keeps the stage's session.
+/// A verdict submitted before the signal stands.
+fn settle_after_signal(
+    result: anyhow::Result<Option<Verdict>>,
+    stage_session_id: Option<&str>,
+) -> anyhow::Result<Option<Verdict>> {
+    let session_id = match result {
+        Ok(Some(verdict)) => return Ok(Some(verdict)),
+        Ok(None) => stage_session_id.map(String::from),
+        Err(e) => e
+            .downcast_ref::<StageFailure>()
+            .and_then(|f| f.session_id.clone()),
+    };
+    Err(StageFailure::interrupted(session_id).into())
 }
 
 #[cfg(test)]
@@ -354,5 +425,118 @@ mod tests {
         drop(guard);
 
         assert_eq!(std::fs::read(&creds_path).unwrap(), b"original");
+    }
+
+    #[test]
+    fn sync_copies_host_refresh_into_the_container_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        std::fs::write(&creds_path, b"host-refreshed").unwrap();
+        guard.sync_with_host().unwrap();
+
+        assert_eq!(std::fs::read(guard.path()).unwrap(), b"host-refreshed");
+    }
+
+    #[test]
+    fn sync_writes_container_refresh_back_to_host_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        std::fs::write(guard.path(), b"container-refreshed").unwrap();
+        guard.sync_with_host().unwrap();
+
+        assert_eq!(std::fs::read(&creds_path).unwrap(), b"container-refreshed");
+    }
+
+    #[test]
+    fn sync_prefers_host_when_both_refreshed() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        std::fs::write(guard.path(), b"container-refreshed").unwrap();
+        std::fs::write(&creds_path, b"host-refreshed").unwrap();
+        guard.sync_with_host().unwrap();
+
+        assert_eq!(std::fs::read(guard.path()).unwrap(), b"host-refreshed");
+        assert_eq!(std::fs::read(&creds_path).unwrap(), b"host-refreshed");
+    }
+
+    #[test]
+    fn container_refresh_after_sync_is_written_back_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join(".credentials.json");
+        std::fs::write(&creds_path, b"original").unwrap();
+
+        let mut guard = CredentialsGuard::new(dir.path()).unwrap().unwrap();
+        std::fs::write(&creds_path, b"host-refreshed").unwrap();
+        guard.sync_with_host().unwrap();
+        std::fs::write(guard.path(), b"container-refreshed").unwrap();
+        drop(guard);
+
+        assert_eq!(std::fs::read(&creds_path).unwrap(), b"container-refreshed");
+    }
+
+    fn cancelled_runner() -> DockerStageRunner {
+        DockerStageRunner::new(
+            ExecutionConfig::default(),
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+            Arc::new(AtomicBool::new(true)),
+            HashMap::new(),
+        )
+    }
+
+    #[test]
+    fn cancelled_runner_fails_the_stage_as_interrupted_without_starting_it() {
+        let mut runner = cancelled_runner();
+        let err = runner.run("impl", "prompt", None, None, None).unwrap_err();
+        let failure = err.downcast_ref::<StageFailure>().unwrap();
+        assert_eq!(failure.to_string(), "interrupted by signal");
+        assert_eq!(failure.session_id, None);
+        assert_eq!(runner.session_id(), None);
+    }
+
+    #[test]
+    fn container_failure_after_signal_is_an_interrupt_that_keeps_its_session() {
+        let result = crate::container_execution::StreamResult {
+            auth_failed: false,
+            submit_verdict_missing: false,
+            verdict: None,
+            session_id: Some("sess_01".to_string()),
+            model_usage: None,
+            last_usage_snapshot: None,
+        };
+        let status = std::process::Command::new("false").status().unwrap();
+        let exit_err = post_stream_error(&result, &status, "iteration").unwrap();
+        let err = settle_after_signal(Err(exit_err), None).unwrap_err();
+        let failure = err.downcast_ref::<StageFailure>().unwrap();
+        assert_eq!(failure.to_string(), "interrupted by signal");
+        assert_eq!(failure.session_id.as_deref(), Some("sess_01"));
+    }
+
+    #[test]
+    fn clean_exit_without_verdict_after_signal_is_an_interrupt() {
+        let err = settle_after_signal(Ok(None), Some("sess_02")).unwrap_err();
+        let failure = err.downcast_ref::<StageFailure>().unwrap();
+        assert_eq!(failure.to_string(), "interrupted by signal");
+        assert_eq!(failure.session_id.as_deref(), Some("sess_02"));
+    }
+
+    #[test]
+    fn verdict_submitted_before_signal_stands() {
+        let verdict = Verdict {
+            status: crate::verdict::VerdictStatus::Pass,
+            notes: None,
+        };
+        let settled = settle_after_signal(Ok(Some(verdict.clone())), Some("sess_03")).unwrap();
+        assert_eq!(settled, Some(verdict));
     }
 }

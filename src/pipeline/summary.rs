@@ -13,6 +13,8 @@ pub enum PipelineOutcome {
     Exit { from_fail: bool },
     /// An iteration cap was exceeded.
     CapHit,
+    /// A stage errored before producing a verdict (container failure, auth failure, …).
+    Interrupted,
 }
 
 /// Identifies which limit triggered a `FailExit`.
@@ -37,6 +39,8 @@ pub enum TerminalReason {
     FailExit { stage: String, kind: FailExitKind },
     /// Iteration cap hit in a multi-stage pipeline.
     CapHit,
+    /// A stage errored before producing a verdict; carries the stage and the error text.
+    Interrupted { stage: String, error: String },
 }
 
 /// Identifies which counter tripped when `CapHit` is the terminal reason.
@@ -79,6 +83,7 @@ pub fn build_summary_artifact(
         TerminalReason::Exit => "exit",
         TerminalReason::FailExit { .. } => "fail-exit",
         TerminalReason::CapHit => "cap-hit",
+        TerminalReason::Interrupted { .. } => "interrupted",
     };
     let cap_hit_counter = match &summary.cap_hit {
         None => serde_json::Value::Null,

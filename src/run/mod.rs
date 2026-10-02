@@ -10,6 +10,7 @@ use capsule::update_check;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod env;
@@ -36,7 +37,8 @@ pub(crate) struct RunSession {
     extra_env_tempfile: Option<tempfile::NamedTempFile>,
     credentials_guard: Option<CredentialsGuard>,
     active_container: Arc<Mutex<Option<String>>>,
-    resume: Option<(String, PipelineState)>,
+    cancelled: Arc<AtomicBool>,
+    resume: Option<(Option<String>, PipelineState)>,
     env_pairs: Vec<(String, String)>,
 }
 
@@ -107,16 +109,29 @@ impl RunSession {
 
         let active_container: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let handler_container = Arc::clone(&active_container);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let handler_cancelled = Arc::clone(&cancelled);
 
-        ctrlc::set_handler(move || {
-            if let Ok(slot) = handler_container.lock() {
-                if let Some(name) = slot.as_ref() {
-                    let _ = Command::new("docker").args(["stop", name]).output();
+        ctrlc::set_handler(
+            move || match on_signal(&handler_cancelled, &handler_container) {
+                SignalAction::Exit => {
+                    capsule::display::teardown();
+                    std::process::exit(1);
                 }
-            }
-            capsule::display::teardown();
-            std::process::exit(1);
-        })
+                SignalAction::Stop { container } => {
+                    capsule::display::warning(
+                        "interrupted — stopping the container and saving last-run.json \
+                         (press Ctrl-C again to quit immediately)",
+                    );
+                    if let Some(name) = container {
+                        // Off the handler thread, so a second signal is not queued behind `docker stop`.
+                        std::thread::spawn(move || {
+                            let _ = Command::new("docker").args(["stop", &name]).output();
+                        });
+                    }
+                }
+            },
+        )
         .context("failed to register Ctrl-C handler")?;
 
         Ok(Self {
@@ -133,6 +148,7 @@ impl RunSession {
             extra_env_tempfile,
             credentials_guard,
             active_container,
+            cancelled,
             resume: None,
             env_pairs,
         })
@@ -214,12 +230,13 @@ impl RunSession {
         };
         let stage_volumes = build_stage_volumes(&self.cfg);
         let resume = self.resume.take();
-        let resume_session_id = resume.as_ref().map(|(id, _)| id.clone());
+        let resume_session_id = resume.as_ref().and_then(|(id, _)| id.clone());
         let runner = DockerStageRunner::new(
             base_cfg,
             Arc::clone(&self.active_container),
             credentials_guard,
             resume_session_id,
+            Arc::clone(&self.cancelled),
             stage_volumes,
         );
         let (mut result, runner) = if let Some((_, state)) = resume {
@@ -235,9 +252,9 @@ impl RunSession {
         result.summary.session_id = runner.session_id().map(String::from);
         result.pipeline_state.env = self.env_pairs.clone();
         let state_to_write = match result.summary.terminal_reason {
-            TerminalReason::FailExit { .. } | TerminalReason::CapHit => {
-                Some(&result.pipeline_state)
-            }
+            TerminalReason::FailExit { .. }
+            | TerminalReason::CapHit
+            | TerminalReason::Interrupted { .. } => Some(&result.pipeline_state),
             _ => None,
         };
         summary::write_last_run(&self.cfg.capsule_dir, &result.summary, state_to_write)?;
@@ -351,11 +368,62 @@ fn check_old_scripts(capsule_dir: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq)]
+enum SignalAction {
+    /// Stop the running container (if any) and let the pipeline end as interrupted,
+    /// so last-run.json is written.
+    Stop { container: Option<String> },
+    /// A previous signal is still being handled; quit at once.
+    Exit,
+}
+
+fn on_signal(cancelled: &AtomicBool, active_container: &Mutex<Option<String>>) -> SignalAction {
+    if cancelled.swap(true, Ordering::SeqCst) {
+        return SignalAction::Exit;
+    }
+    SignalAction::Stop {
+        container: active_container.lock().ok().and_then(|slot| slot.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{check_docker, check_old_scripts, run_host_setup};
+    use super::{check_docker, check_old_scripts, on_signal, run_host_setup, SignalAction};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    #[test]
+    fn first_signal_stops_the_running_container() {
+        let cancelled = AtomicBool::new(false);
+        let container = Mutex::new(Some("capsule-run-3".to_string()));
+        assert_eq!(
+            on_signal(&cancelled, &container),
+            SignalAction::Stop {
+                container: Some("capsule-run-3".to_string())
+            }
+        );
+        assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn first_signal_between_stages_only_marks_the_run_cancelled() {
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(
+            on_signal(&cancelled, &Mutex::new(None)),
+            SignalAction::Stop { container: None }
+        );
+        assert!(cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn second_signal_exits() {
+        let cancelled = AtomicBool::new(false);
+        let container = Mutex::new(Some("capsule-run-3".to_string()));
+        on_signal(&cancelled, &container);
+        assert_eq!(on_signal(&cancelled, &container), SignalAction::Exit);
+    }
 
     #[test]
     fn host_setup_none_is_ok() {

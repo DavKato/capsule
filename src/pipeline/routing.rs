@@ -5,6 +5,7 @@ use crate::config::{LoopConfig, OnFail, OnPass, StageConfig};
 use crate::verdict::{Verdict, VerdictStatus};
 
 use super::prompt::{inject_input, inject_note_block};
+use super::state::LoopPosition;
 use super::summary::{CapHitKind, FailExitKind, PipelineOutcome};
 use super::StageRunner;
 
@@ -69,6 +70,25 @@ pub(super) struct PipelineProgress {
     pub(super) last_verdict: Option<Verdict>,
     /// Set whenever a fail-route exit is triggered; read by the executor to enrich `TerminalReason`.
     pub(super) fail_exit_info: Option<(String, FailExitKind)>,
+    /// Set when a stage errors: (stage name, error text).
+    pub(super) interrupt_info: Option<(String, String)>,
+}
+
+impl PipelineProgress {
+    /// Undo the bookkeeping done before the interrupted stage ran, so a resume
+    /// re-runs it as if it had never started.
+    fn record_interrupt(
+        &mut self,
+        stage: &StageConfig,
+        prev_stage: Option<String>,
+        pending_input: Option<String>,
+        err: &anyhow::Error,
+    ) {
+        self.global_counter -= 1;
+        self.last_stage = prev_stage;
+        self.input = pending_input;
+        self.interrupt_info = Some((stage.name.clone(), format!("{err:#}")));
+    }
 }
 
 #[derive(Clone)]
@@ -87,6 +107,7 @@ pub(super) enum StageOutcome {
     AdvanceIntoLoop { entry_idx: usize, stage_idx: usize },
     Done,
     Exit(ExitKind),
+    Interrupted,
 }
 
 pub(super) enum RouteTarget {
@@ -97,12 +118,14 @@ pub(super) enum RouteTarget {
 pub(super) enum LoopControl {
     Advance(usize),
     Break(PipelineOutcome, Option<CapHitKind>),
+    Interrupted(LoopPosition),
 }
 
 pub(super) enum LoopOutcome {
     LoopDone { iterations: u32 },
     Exit { kind: ExitKind, iterations: u32 },
     CapHit { kind: LoopCapKind, iterations: u32 },
+    Interrupted { stage_idx: usize, iterations: u32 },
 }
 
 pub(super) fn run_loop(
@@ -111,6 +134,7 @@ pub(super) fn run_loop(
     progress: &mut PipelineProgress,
     max_stages: u32,
     start_stage_idx: usize,
+    resume_iteration: Option<u32>,
 ) -> anyhow::Result<LoopOutcome> {
     let loop_name_to_idx: HashMap<String, usize> = loop_config
         .stages
@@ -119,9 +143,10 @@ pub(super) fn run_loop(
         .map(|(i, s)| (s.name.clone(), i))
         .collect();
 
-    let mut iteration_count: u32 = 0;
+    let mut iteration_count: u32 = resume_iteration.unwrap_or(0);
     let mut stage_idx: usize = start_stage_idx;
-    let mut retrying_top = false;
+    // A resumed iteration was already counted before the interruption.
+    let mut retrying_top = resume_iteration.is_some();
 
     loop {
         if stage_idx >= loop_config.stages.len() {
@@ -152,21 +177,31 @@ pub(super) fn run_loop(
 
         let stage = &loop_config.stages[stage_idx];
         let base_prompt = stage.prompt.as_deref().unwrap_or("");
+        let pending_input = progress.input.clone();
         let with_input = inject_input(&mut progress.input, base_prompt);
         let effective_prompt = inject_note_block(
             progress.last_stage.as_deref(),
             &progress.last_verdict,
             &with_input,
         );
-        progress.last_stage = Some(stage.name.clone());
+        let prev_stage = progress.last_stage.replace(stage.name.clone());
         let retry = retry_info(progress, stage);
-        let verdict = runner.run(
+        let verdict = match runner.run(
             &stage.name,
             &effective_prompt,
             stage.model.as_deref(),
             stage.setup.as_deref(),
             retry.as_ref(),
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                progress.record_interrupt(stage, prev_stage, pending_input, &e);
+                return Ok(LoopOutcome::Interrupted {
+                    stage_idx,
+                    iterations: iteration_count,
+                });
+            }
+        };
         progress.last_verdict = verdict.clone();
 
         if matches!(
@@ -310,6 +345,16 @@ pub(super) fn handle_loop_outcome(
                 Some(CapHitKind::MaxStages { limit }),
             )
         }
+        LoopOutcome::Interrupted {
+            stage_idx,
+            iterations,
+        } => {
+            loop_iterations.insert(entry_idx, iterations);
+            LoopControl::Interrupted(LoopPosition {
+                stage_idx,
+                iteration: iterations,
+            })
+        }
     }
 }
 
@@ -320,21 +365,28 @@ pub(super) fn run_stage(
     progress: &mut PipelineProgress,
 ) -> anyhow::Result<StageOutcome> {
     let base_prompt = stage.prompt.as_deref().unwrap_or("");
+    let pending_input = progress.input.clone();
     let with_input = inject_input(&mut progress.input, base_prompt);
     let effective_prompt = inject_note_block(
         progress.last_stage.as_deref(),
         &progress.last_verdict,
         &with_input,
     );
-    progress.last_stage = Some(stage.name.clone());
+    let prev_stage = progress.last_stage.replace(stage.name.clone());
     let retry = retry_info(progress, stage);
-    let verdict = runner.run(
+    let verdict = match runner.run(
         &stage.name,
         &effective_prompt,
         stage.model.as_deref(),
         stage.setup.as_deref(),
         retry.as_ref(),
-    )?;
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            progress.record_interrupt(stage, prev_stage, pending_input, &e);
+            return Ok(StageOutcome::Interrupted);
+        }
+    };
     progress.last_verdict = verdict.clone();
 
     if matches!(

@@ -33,6 +33,8 @@ capsule run --verbose                          # show unfiltered container outpu
 
 Resumes from the last interrupted run using `.capsule/last-run.json`. Use after auth failures, network drops, or manual interruptions.
 
+The run re-enters at the stage that was interrupted (inside a loop: same stage, same iteration). On Ctrl-C, capsule stops the container and saves `last-run.json` before exiting; a second Ctrl-C quits without saving.
+
 ```sh
 capsule resume
 capsule resume --env KEY=newvalue    # merge run environment on top of persisted pairs

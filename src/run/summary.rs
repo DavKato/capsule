@@ -12,6 +12,8 @@ pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
         TerminalReason::Done | TerminalReason::Exit => return ExitDecision::Success,
         TerminalReason::FailExit { .. } => "pipeline ended with fail-exit (no verdict emitted)",
         TerminalReason::CapHit => "pipeline ended with cap-hit (no verdict emitted)",
+        // last_verdict belongs to the stage before the interrupted one.
+        TerminalReason::Interrupted { error, .. } => return ExitDecision::Failure(error.clone()),
     };
     let notes = summary
         .last_verdict
@@ -50,6 +52,9 @@ pub(super) fn forced_exit_message(summary: &RunSummary) -> Option<String> {
             };
             Some(msg)
         }
+        TerminalReason::Interrupted { stage, .. } => Some(format!(
+            "Stage '{stage}' was interrupted — pipeline stopped."
+        )),
         _ => None,
     }
 }
@@ -75,17 +80,15 @@ fn is_workspace_dirty() -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn parse_resume_state(capsule_dir: &Path) -> Result<(String, PipelineState)> {
+pub(super) fn parse_resume_state(capsule_dir: &Path) -> Result<(Option<String>, PipelineState)> {
     let path = capsule_dir.join("last-run.json");
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("{} not found — run `capsule run` first", path.display()))?;
     let json: serde_json::Value =
         serde_json::from_str(&content).context("failed to parse last-run.json")?;
 
-    let session_id = json["session_id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("last-run.json has no session_id — cannot resume"))?
-        .to_string();
+    // No session means the interrupted stage never started one; it re-runs from its prompt.
+    let session_id = json["session_id"].as_str().map(String::from);
 
     let state_json = &json["pipeline_state"];
     if state_json.is_null() {
@@ -101,10 +104,13 @@ pub(super) fn parse_resume_state(capsule_dir: &Path) -> Result<(String, Pipeline
 }
 
 pub(super) fn resume_hint(session_id: Option<&str>, reason: &TerminalReason) -> Option<String> {
-    session_id?;
     match reason {
         TerminalReason::FailExit { .. } | TerminalReason::CapHit => {
+            session_id?;
             Some("To continue the session, run: capsule resume".to_string())
+        }
+        TerminalReason::Interrupted { .. } => {
+            Some("To retry the interrupted stage, run: capsule resume".to_string())
         }
         _ => None,
     }
@@ -162,6 +168,8 @@ mod tests {
             }),
             loop_iterations: loop_iters,
             env: vec![],
+            loop_position: None,
+            input: None,
         }
     }
 
@@ -336,7 +344,7 @@ mod tests {
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
 
         let (session_id, restored) = parse_resume_state(dir.path()).unwrap();
-        assert_eq!(session_id, "sess_xyz");
+        assert_eq!(session_id.as_deref(), Some("sess_xyz"));
         assert_eq!(restored.current_idx, 2);
         assert_eq!(restored.global_counter, 7);
         assert_eq!(restored.retry_counts.get("stage-a"), Some(&2));
@@ -365,14 +373,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_resume_state_errors_when_no_session_id() {
+    fn parse_resume_state_accepts_missing_session_id() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = minimal_summary(fail_exit("stage-a", FailExitKind::Route));
+        let mut s = minimal_summary(TerminalReason::Interrupted {
+            stage: "stage-a".to_string(),
+            error: "container exited with code 1".to_string(),
+        });
         s.session_id = None;
         let state = make_pipeline_state();
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
-        let err = parse_resume_state(dir.path()).unwrap_err();
-        assert!(err.to_string().contains("no session_id"), "err: {err}");
+        let (session_id, restored) = parse_resume_state(dir.path()).unwrap();
+        assert_eq!(session_id, None);
+        assert_eq!(restored, state);
     }
 
     #[test]
@@ -392,6 +404,8 @@ mod tests {
                 ("PARENT".to_string(), "42".to_string()),
                 ("MODE".to_string(), "test".to_string()),
             ],
+            loop_position: None,
+            input: None,
         };
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
         let (_, restored) = parse_resume_state(dir.path()).unwrap();
@@ -461,7 +475,7 @@ mod tests {
         )
         .unwrap();
         let (session_id, restored) = parse_resume_state(dir.path()).unwrap();
-        assert_eq!(session_id, "sess_legacy");
+        assert_eq!(session_id.as_deref(), Some("sess_legacy"));
         assert_eq!(restored.current_idx, 1);
         assert_eq!(restored.global_counter, 5);
         assert_eq!(
@@ -549,6 +563,8 @@ mod tests {
                 ("PARENT".to_string(), "79".to_string()),
                 ("MODE".to_string(), "dry".to_string()),
             ],
+            loop_position: None,
+            input: None,
         };
         let json = serde_json::to_value(&state).unwrap();
         let env = json["env"].as_object().expect("env must be an object");
@@ -570,6 +586,48 @@ mod tests {
             }
             _ => panic!("expected Failure"),
         }
+    }
+
+    fn interrupted(stage: &str, error: &str) -> TerminalReason {
+        TerminalReason::Interrupted {
+            stage: stage.to_string(),
+            error: error.to_string(),
+        }
+    }
+
+    #[test]
+    fn failure_decision_on_interrupt_carries_the_error_not_the_previous_verdict() {
+        let mut s = minimal_summary(interrupted("review", "container exited with code 1"));
+        s.last_verdict = Some(Verdict {
+            status: VerdictStatus::Pass,
+            notes: Some("impl done".to_string()),
+        });
+        match exit_decision_from_summary(&s) {
+            ExitDecision::Failure(notes) => assert_eq!(notes, "container exited with code 1"),
+            _ => panic!("expected Failure"),
+        }
+    }
+
+    #[test]
+    fn resume_hint_shown_on_interrupt_without_session_id() {
+        assert!(resume_hint(None, &interrupted("review", "boom")).is_some());
+    }
+
+    #[test]
+    fn interrupted_run_is_resumable_from_last_run_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = minimal_summary(interrupted("review", "boom"));
+        s.session_id = Some("sess_review".to_string());
+        let state = make_pipeline_state();
+        write_last_run(dir.path(), &s, Some(&state)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("last-run.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["terminal_reason"], "interrupted");
+        let (session_id, restored) = parse_resume_state(dir.path()).unwrap();
+        assert_eq!(session_id.as_deref(), Some("sess_review"));
+        assert_eq!(restored, state);
     }
 
     #[test]

@@ -7,4 +7,5 @@
 /.cargo-cache/
 .capsule/.env
 .capsule*/last-run.json
+.capsule*/logs/
 .claude/settings.local.json

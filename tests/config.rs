@@ -2,6 +2,7 @@ use capsule::config::{
     resolve, CliOverrides, Config, GitIdentity, GithubScope, OnFail, OnPass, PipelineEntry,
     MAX_RETRIES_DEFAULT, MAX_STAGES_DEFAULT,
 };
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn no_cli() -> CliOverrides {
@@ -355,6 +356,85 @@ fn old_field_min_token_lifetime_minutes_produces_removed_error() {
         chain.contains("min_token_lifetime_minutes") && chain.contains("has been removed"),
         "error should mention field name and removal reason; got: {chain}"
     );
+}
+
+#[test]
+fn old_field_log_file_points_to_log() {
+    let dir = capsule_dir_with_config("stages:\n  - name: s\nlog_file: run.log\n");
+    let err = resolve(dir.path(), no_cli()).unwrap_err();
+    let chain: String = err
+        .chain()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    assert!(
+        chain.contains("log_file") && chain.contains("`log: <dir>`"),
+        "error should point to the `log` field; got: {chain}"
+    );
+}
+
+fn resolve_with(yaml: &str, cli: CliOverrides) -> Config {
+    let dir = capsule_dir_with_config(yaml);
+    let mut cfg = resolve(dir.path(), cli).unwrap();
+    // Report directories relative to the temp capsule dir so tests can compare them.
+    let strip = |p: Option<PathBuf>| {
+        p.map(|p| {
+            p.strip_prefix(dir.path())
+                .map_or(p.clone(), |r| r.to_path_buf())
+        })
+    };
+    cfg.log_dir = strip(cfg.log_dir);
+    cfg.verdict_log_dir = strip(cfg.verdict_log_dir);
+    cfg
+}
+
+#[test]
+fn logs_are_off_by_default() {
+    let cfg = resolve_with("stages:\n  - name: s\n", no_cli());
+    assert_eq!(cfg.log_dir, None);
+    assert_eq!(cfg.verdict_log_dir, None);
+}
+
+#[test]
+fn log_true_uses_capsule_logs_dir() {
+    let cfg = resolve_with(
+        "log: true\nverdict_log: false\nstages:\n  - name: s\n",
+        no_cli(),
+    );
+    assert_eq!(cfg.log_dir, Some(PathBuf::from("logs")));
+    assert_eq!(cfg.verdict_log_dir, None);
+}
+
+#[test]
+fn log_path_is_relative_to_capsule_dir_or_absolute() {
+    let cfg = resolve_with(
+        "log: ../run-logs\nverdict_log: /var/log/capsule\nstages:\n  - name: s\n",
+        no_cli(),
+    );
+    assert_eq!(cfg.log_dir, Some(PathBuf::from("../run-logs")));
+    assert_eq!(cfg.verdict_log_dir, Some(PathBuf::from("/var/log/capsule")));
+}
+
+#[test]
+fn log_path_expands_tilde() {
+    let home = std::env::var("HOME").unwrap();
+    let cfg = resolve_with("verdict_log: ~/logs/x\nstages:\n  - name: s\n", no_cli());
+    assert_eq!(
+        cfg.verdict_log_dir,
+        Some(PathBuf::from(home).join("logs/x"))
+    );
+}
+
+#[test]
+fn cli_flags_enable_logs_in_the_configured_or_default_dir() {
+    let cli = CliOverrides {
+        log: true,
+        verdict_log: true,
+        ..Default::default()
+    };
+    let cfg = resolve_with("verdict_log: /tmp/v\nstages:\n  - name: s\n", cli);
+    assert_eq!(cfg.log_dir, Some(PathBuf::from("logs")));
+    assert_eq!(cfg.verdict_log_dir, Some(PathBuf::from("/tmp/v")));
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::config::{PipelineConfig, PipelineEntry};
 
 pub use prompt::SYSTEM_PREAMBLE;
-pub use state::{LoopPosition, PipelineState};
+pub use state::{LoopPosition, PipelineState, RunLogs};
 pub use summary::{
     build_summary_artifact, CapHitKind, FailExitKind, IterationCounters, PipelineOutcome,
     RunSummary, TerminalReason,
@@ -251,6 +251,7 @@ impl<R: StageRunner> PipelineExecutor<R> {
             env: vec![],
             loop_position,
             input: progress.input.take(),
+            run_logs: None,
         };
 
         Ok((
@@ -1061,6 +1062,11 @@ mod tests {
                 iteration: 2,
             }),
             input: Some("my-input".to_string()),
+            run_logs: Some(RunLogs {
+                run_id: "2026-10-16_14-14-03".to_string(),
+                log_dir: None,
+                verdict_log_dir: Some(PathBuf::from("/home/u/logs")),
+            }),
         }
     }
 
@@ -1080,6 +1086,16 @@ mod tests {
         assert_eq!(v["loop_position"]["stage_idx"], 1);
         assert_eq!(v["loop_position"]["iteration"], 2);
         assert_eq!(v["input"], "my-input");
+        assert_eq!(v["run_logs"]["run_id"], "2026-10-16_14-14-03");
+        assert_eq!(v["run_logs"]["verdict_log_dir"], "/home/u/logs");
+    }
+
+    #[test]
+    fn state_saved_before_run_logs_existed_resumes_without_them() {
+        let mut v = serde_json::to_value(full_state()).unwrap();
+        v.as_object_mut().unwrap().remove("run_logs");
+        let restored: PipelineState = serde_json::from_value(v).unwrap();
+        assert_eq!(restored.run_logs, None);
     }
 
     #[test]

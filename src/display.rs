@@ -276,14 +276,80 @@ fn timer_wake() -> &'static (Mutex<()>, Condvar) {
 }
 
 static LOG_FILE: OnceLock<Mutex<BufWriter<std::fs::File>>> = OnceLock::new();
+static VERDICT_LOG: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 
-pub fn set_log_file(path: &Path) -> anyhow::Result<()> {
-    let file = std::fs::File::create(path)
-        .map_err(|e| anyhow::anyhow!("failed to open log file {}: {e}", path.display()))?;
+/// Open `path` for appending, creating it and its parent directories as needed.
+fn open_append(path: &Path) -> anyhow::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", parent.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| anyhow::anyhow!("failed to open log file {}: {e}", path.display()))
+}
+
+/// Tee all display output to `path`, appending so a resumed run extends its own log.
+pub fn set_log_file(path: &Path, header: &str) -> anyhow::Result<()> {
+    let file = open_append(path)?;
     LOG_FILE
         .set(Mutex::new(BufWriter::new(file)))
         .map_err(|_| anyhow::anyhow!("log file already set"))?;
+    log_line(header);
     Ok(())
+}
+
+/// Append each stage's verdict to `path` as a short human-readable entry.
+pub fn set_verdict_log(path: &Path, header: &str) -> anyhow::Result<()> {
+    let file = open_append(path)?;
+    // Blank line between runs, but not at the top of a new file.
+    let separator = if file.metadata().is_ok_and(|m| m.len() > 0) {
+        "\n"
+    } else {
+        ""
+    };
+    VERDICT_LOG
+        .set(Mutex::new(file))
+        .map_err(|_| anyhow::anyhow!("verdict log already set"))?;
+    verdict_log_write(&format!("{separator}{header}\n"));
+    Ok(())
+}
+
+fn verdict_log_write(text: &str) {
+    if let Some(m) = VERDICT_LOG.get() {
+        if let Ok(mut f) = m.lock() {
+            let _ = f.write_all(text.as_bytes());
+        }
+    }
+}
+
+/// One verdict-log entry: a summary line, then the notes indented beneath it.
+fn verdict_entry(
+    timestamp: &str,
+    stage_name: &str,
+    iteration: u32,
+    verdict: Option<&Verdict>,
+    duration: Duration,
+) -> String {
+    let status = verdict.map_or("FAIL (no verdict)".to_string(), |v| {
+        verdict_color_label(&v.status).1.to_uppercase()
+    });
+    let mut entry = format!(
+        "{timestamp}  {stage_name} · iter {iteration}  {status}  {}\n",
+        format_duration(duration)
+    );
+    if let Some(notes) = verdict.and_then(|v| v.notes.as_deref()) {
+        for line in notes.lines() {
+            if line.is_empty() {
+                entry.push('\n');
+            } else {
+                entry.push_str(&format!("    {line}\n"));
+            }
+        }
+    }
+    entry
 }
 
 fn log_write(text: &str) {
@@ -1415,6 +1481,9 @@ pub fn session_footer(
             log_line(&format!("Notes: {notes}"));
         }
     }
+    verdict_log_write(&verdict_entry(
+        &ts, stage_name, iteration, verdict, duration,
+    ));
 }
 
 const FOOTER_BG: Color = Color::AnsiValue(236);
@@ -3262,5 +3331,42 @@ mod tests {
             !LAST_WAS_TEXT.load(Ordering::Relaxed),
             "agent_text with parent_tool_use_id must be suppressed regardless of buffer existence"
         );
+    }
+
+    #[test]
+    fn verdict_entry_indents_each_notes_line() {
+        let v = Verdict {
+            status: VerdictStatus::Fail,
+            notes: Some("tests failed\n\nsee src/a.rs".to_string()),
+        };
+        let entry = verdict_entry(
+            "2026-10-16 14:14",
+            "review",
+            2,
+            Some(&v),
+            Duration::from_secs(107),
+        );
+        assert_eq!(
+            entry,
+            "2026-10-16 14:14  review · iter 2  FAIL  01:47\n    tests failed\n\n    see src/a.rs\n"
+        );
+    }
+
+    #[test]
+    fn verdict_entry_marks_a_missing_verdict() {
+        let entry = verdict_entry("2026-10-16 14:14", "main", 1, None, Duration::from_secs(5));
+        assert_eq!(
+            entry,
+            "2026-10-16 14:14  main · iter 1  FAIL (no verdict)  00:05\n"
+        );
+    }
+
+    #[test]
+    fn open_append_creates_parent_dirs_and_keeps_existing_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logs").join("run.log");
+        open_append(&path).unwrap().write_all(b"first\n").unwrap();
+        open_append(&path).unwrap().write_all(b"second\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
     }
 }

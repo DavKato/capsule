@@ -27,7 +27,8 @@ capsule run --verbose                          # show unfiltered container outpu
 | `--capsule-dir` | `.capsule` | Config directory path |
 | `--commit-as` | `user` | Git commit identity: `user` (host config) or `capsule` (generic) |
 | `--github-token-from local\|global` | — | Inject `GH_TOKEN` into containers |
-| `--log-file` | — | Write run output to a file in addition to the terminal |
+| `--log` | off | Write run output to `<run-id>.log` (dir: `log:` or `.capsule/logs/`) |
+| `--verdict-log` | off | Append verdicts to `verdicts.log` (dir: `verdict_log:` or default) |
 
 ## capsule resume
 

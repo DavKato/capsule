@@ -14,6 +14,7 @@ Load before editing any `.capsule/` file — maps each file to its ownership, pu
 | `docker.volumes` | Host volumes to bind-mount into containers | At `docker run` invocation |
 | `.env` | Env-var defaults and secrets (gitignore) | Sourced on host before top-level `setup` |
 | `prompts/<stage>.md` | Stage prompt content | Mounted into container per invocation |
+| `logs/` | Default dir for `log` / `verdict_log` output (gitignore) | Appended during each run |
 
 ## config.yml
 
@@ -86,6 +87,25 @@ Relative source paths (e.g. `./local`) are resolved against the host workspace (
 ## .env
 
 Env-var defaults and secrets (`KEY=value`, one per line). Should be gitignored — may hold tokens (e.g. `GH_TOKEN` with `--github-token-from local`). Loaded on the host before the top-level `setup` runs; values flow into all containers and setup commands. Override at runtime with `capsule run --env KEY=value`.
+
+## logs/
+
+Default directory for the two optional logs; keep it gitignored. Both are off unless enabled in `config.yml` (or by the `capsule run` flag in parentheses):
+
+```yaml
+log: true                        # (--log) full output → .capsule/logs/<run-id>.log
+verdict_log: ~/logs/my-project   # (--verdict-log) → ~/logs/my-project/verdicts.log
+```
+
+`true` uses `.capsule/logs/`; a string names the directory (relative to `.capsule/`, absolute, or `~/…`). `<run-id>` is the start time, e.g. `2026-10-16_14-26-23`. `verdicts.log` collects every run:
+
+```
+── run 2026-10-16_14-26-23 · started 2026-10-16 14:26 ──
+2026-10-16 14:26  review · iter 1  FAIL  01:47
+    tests failed in src/a.rs
+```
+
+`capsule resume` appends to the same files, under a `resumed` header.
 
 ## Prompt files
 

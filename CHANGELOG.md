@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-16
+
+### Added
+
+- Top-level `teardown` in `config.yml`: a host-side command or script that runs once after the run ends — pass, fail, cap hit, or first Ctrl-C, including `capsule resume`. It receives the `--env` values plus `CAPSULE_RESULT` (`success`, `failed`, `cap_hit`, `interrupted`, or `error`); a failing teardown makes `capsule` exit 1
+- `log` and `verdict_log` in `config.yml` (`true` for `.capsule/logs/`, or a directory), also `--log` / `--verdict-log` on `capsule run`: `log` writes the full output to `<run-id>.log`, one file per run; `verdict_log` appends every stage's verdict and notes to `verdicts.log`. `capsule resume` appends to the same files
+
+### Removed
+
+- `log_file` config field and `--log-file` flag, which overwrote the file on every run — use `log: <dir>` or `--log` instead
+
 ## [0.8.2] - 2026-10-02
 
 ### Fixed
@@ -99,7 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-token-lifetime-minutes` flag (credential lifetime is now managed internally)
 - `before-all.sh` / `before-each.sh` convention (presence now triggers a migration error)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/DavKato/capsule/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/DavKato/capsule/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/DavKato/capsule/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/DavKato/capsule/compare/v0.7.2...v0.8.0

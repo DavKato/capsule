@@ -46,6 +46,8 @@ Add a `setup` field to `config.yml`. The value can be an inline shell command or
 ```yaml
 # Top-level: runs once on host before any container
 setup: scripts/bootstrap.sh
+# Top-level: runs once on host after the run ends (gets CAPSULE_RESULT)
+teardown: scripts/commit.sh
 
 stages:
   - name: main

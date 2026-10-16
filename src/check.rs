@@ -74,6 +74,9 @@ fn check_hook_scripts(cfg: &Config, issues: &mut CheckReport) {
     if let Some(ref value) = cfg.setup {
         check_setup_value(value, "setup", &cfg.capsule_dir, issues);
     }
+    if let Some(ref value) = cfg.teardown {
+        check_setup_value(value, "teardown", &cfg.capsule_dir, issues);
+    }
     for stage in all_stages(&cfg.pipeline) {
         if let Some(ref value) = stage.setup {
             let location = format!("stages.{}.setup", stage.name);

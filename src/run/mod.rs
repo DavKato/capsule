@@ -22,6 +22,37 @@ pub(crate) enum ExitDecision {
     Failure(String),
 }
 
+pub(crate) struct RunOutcome {
+    pub(crate) decision: ExitDecision,
+    /// How the pipeline ended, passed to the host teardown as `CAPSULE_RESULT`.
+    pub(crate) result: &'static str,
+}
+
+/// `CAPSULE_RESULT` when `execute()` itself returned an error.
+pub(crate) const RESULT_ERROR: &str = "error";
+
+/// The host `teardown` command, split off the session because `execute()` consumes it.
+pub(crate) struct HostTeardown {
+    command: Option<String>,
+    capsule_dir: PathBuf,
+    env_pairs: Vec<(String, String)>,
+}
+
+impl HostTeardown {
+    /// Runs the command with `CAPSULE_RESULT=<result>` added to the run environment.
+    /// A no-op when `teardown` is not configured.
+    pub(crate) fn run(&self, result: &str) -> Result<()> {
+        let mut env_pairs = self.env_pairs.clone();
+        env_pairs.push(("CAPSULE_RESULT".to_string(), result.to_string()));
+        run_host_command(
+            "teardown",
+            self.command.as_deref(),
+            &self.capsule_dir,
+            &env_pairs,
+        )
+    }
+}
+
 pub(crate) struct RunSession {
     cfg: Config,
     image: String,
@@ -45,6 +76,14 @@ pub(crate) struct RunSession {
 impl RunSession {
     pub(crate) fn log_file(&self) -> Option<&std::path::Path> {
         self.cfg.log_file.as_deref()
+    }
+
+    pub(crate) fn host_teardown(&self) -> HostTeardown {
+        HostTeardown {
+            command: self.cfg.teardown.clone(),
+            capsule_dir: self.cfg.capsule_dir.clone(),
+            env_pairs: self.env_pairs.clone(),
+        }
     }
 
     /// Phases 1-10: resolve config, load env/tokens, build images,
@@ -94,7 +133,7 @@ impl RunSession {
         };
         let image = build_derived_image(&build_cfg)?.unwrap_or_else(|| "capsule".to_string());
 
-        run_host_setup(cfg.setup.as_deref(), &cfg.capsule_dir, &env_pairs)?;
+        run_host_command("setup", cfg.setup.as_deref(), &cfg.capsule_dir, &env_pairs)?;
 
         let extra_env_tempfile = env::build_extra_env_tempfile(&env_pairs)?;
 
@@ -177,9 +216,9 @@ impl RunSession {
     }
 
     /// Phase 11: run the pipeline until terminal or cap hit.
-    /// Returns ExitDecision so main() owns process::exit and RunSession drops
+    /// Returns RunOutcome so main() owns process::exit and RunSession drops
     /// before the process terminates (ensures NamedTempFile cleanup runs).
-    pub(crate) fn execute(mut self) -> Result<ExitDecision> {
+    pub(crate) fn execute(mut self) -> Result<RunOutcome> {
         let update_rx = update_check::spawn_check();
         if let Some(warning) =
             env::token_lifetime_warning(token_remaining_minutes(&self.claude_dir))
@@ -268,7 +307,10 @@ impl RunSession {
             capsule::display::capsule_info(&hint);
         }
         update_check::maybe_print_notice(update_rx);
-        Ok(summary::exit_decision_from_summary(&result.summary))
+        Ok(RunOutcome {
+            decision: summary::exit_decision_from_summary(&result.summary),
+            result: summary::run_result(&result.summary.terminal_reason),
+        })
     }
 }
 
@@ -313,13 +355,14 @@ fn check_docker() -> Result<()> {
     Ok(())
 }
 
-/// Runs the host-level setup command if configured.
-fn run_host_setup(
-    setup: Option<&str>,
+/// Runs a host-level `setup` / `teardown` command if configured. `name` labels errors.
+fn run_host_command(
+    name: &str,
+    value: Option<&str>,
     capsule_dir: &std::path::Path,
     env_pairs: &[(String, String)],
 ) -> Result<()> {
-    let Some(value) = setup else {
+    let Some(value) = value else {
         return Ok(());
     };
 
@@ -340,11 +383,11 @@ fn run_host_setup(
 
     let status = cmd
         .status()
-        .with_context(|| format!("failed to run setup: {value}"))?;
+        .with_context(|| format!("failed to run {name}: {value}"))?;
 
     if !status.success() {
         anyhow::bail!(
-            "setup exited with code {} (value: {value:?})",
+            "{name} exited with code {} (value: {value:?})",
             status.code().unwrap_or(-1)
         );
     }
@@ -388,7 +431,9 @@ fn on_signal(cancelled: &AtomicBool, active_container: &Mutex<Option<String>>) -
 
 #[cfg(test)]
 mod tests {
-    use super::{check_docker, check_old_scripts, on_signal, run_host_setup, SignalAction};
+    use super::{
+        check_docker, check_old_scripts, on_signal, run_host_command, HostTeardown, SignalAction,
+    };
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -428,7 +473,7 @@ mod tests {
     #[test]
     fn host_setup_none_is_ok() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let result = run_host_setup(None, dir.path(), &[]);
+        let result = run_host_command("setup", None, dir.path(), &[]);
         assert!(result.is_ok(), "None setup must return Ok: {result:?}");
     }
 
@@ -439,7 +484,7 @@ mod tests {
         fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let result = run_host_setup(Some("setup.sh"), dir.path(), &[]);
+        let result = run_host_command("setup", Some("setup.sh"), dir.path(), &[]);
         assert!(
             result.is_ok(),
             "file-path setup exit 0 must return Ok: {result:?}"
@@ -453,7 +498,7 @@ mod tests {
         fs::write(&script, "#!/bin/sh\nexit 42\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let result = run_host_setup(Some("setup.sh"), dir.path(), &[]);
+        let result = run_host_command("setup", Some("setup.sh"), dir.path(), &[]);
         assert!(result.is_err(), "file-path setup exit 42 must return Err");
         let msg = format!("{:?}", result.unwrap_err());
         assert!(
@@ -465,7 +510,7 @@ mod tests {
     #[test]
     fn host_setup_inline_command_success_is_ok() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let result = run_host_setup(Some("exit 0"), dir.path(), &[]);
+        let result = run_host_command("setup", Some("exit 0"), dir.path(), &[]);
         assert!(
             result.is_ok(),
             "inline command exit 0 must return Ok: {result:?}"
@@ -475,7 +520,7 @@ mod tests {
     #[test]
     fn host_setup_inline_command_failure_is_err() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let result = run_host_setup(Some("exit 7"), dir.path(), &[]);
+        let result = run_host_command("setup", Some("exit 7"), dir.path(), &[]);
         assert!(result.is_err(), "inline command exit 7 must return Err");
         let msg = format!("{:?}", result.unwrap_err());
         assert!(
@@ -494,7 +539,7 @@ mod tests {
         fs::write(&script, script_body).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-        run_host_setup(Some("setup.sh"), dir.path(), &[]).expect("should succeed");
+        run_host_command("setup", Some("setup.sh"), dir.path(), &[]).expect("should succeed");
         assert!(
             sentinel.exists(),
             "file-path setup should have created sentinel file"
@@ -509,7 +554,7 @@ mod tests {
         let inline = format!("echo \"$MY_TEST_VAR\" > {out_str}");
 
         let pairs = vec![("MY_TEST_VAR".to_string(), "hello_env".to_string())];
-        run_host_setup(Some(&inline), dir.path(), &pairs).expect("should succeed");
+        run_host_command("setup", Some(&inline), dir.path(), &pairs).expect("should succeed");
 
         let content = fs::read_to_string(&out_file).expect("output file should exist");
         assert!(
@@ -522,13 +567,54 @@ mod tests {
     fn host_setup_missing_file_is_err() {
         let dir = tempfile::tempdir().expect("temp dir");
         // "setup.sh" has no whitespace → treated as file path, but file does not exist.
-        let result = run_host_setup(Some("setup.sh"), dir.path(), &[]);
+        let result = run_host_command("setup", Some("setup.sh"), dir.path(), &[]);
         assert!(result.is_err(), "missing file path must return Err");
         let msg = format!("{:?}", result.unwrap_err());
         assert!(
             msg.contains("not found"),
             "error must mention file not found, got: {msg}"
         );
+    }
+
+    fn teardown(dir: &std::path::Path, command: Option<&str>) -> HostTeardown {
+        HostTeardown {
+            command: command.map(String::from),
+            capsule_dir: dir.to_path_buf(),
+            env_pairs: vec![("PARENT".to_string(), "79".to_string())],
+        }
+    }
+
+    #[test]
+    fn host_teardown_receives_result_and_run_env() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out_file = dir.path().join("out.txt");
+        let inline = format!(
+            "echo \"$CAPSULE_RESULT $PARENT\" > {}",
+            out_file.to_string_lossy()
+        );
+
+        teardown(dir.path(), Some(&inline))
+            .run("interrupted")
+            .expect("should succeed");
+
+        let content = fs::read_to_string(&out_file).expect("output file should exist");
+        assert_eq!(content.trim(), "interrupted 79");
+    }
+
+    #[test]
+    fn host_teardown_unset_is_noop() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert!(teardown(dir.path(), None).run("success").is_ok());
+    }
+
+    #[test]
+    fn host_teardown_failure_names_teardown() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let err = teardown(dir.path(), Some("exit 3"))
+            .run("success")
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("teardown exited with code 3"), "got: {msg}");
     }
 
     #[test]

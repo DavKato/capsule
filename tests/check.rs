@@ -142,6 +142,20 @@ fn check_missing_setup_file_fails() {
 }
 
 #[test]
+fn check_missing_teardown_file_fails() {
+    let output = cmd()
+        .args(["check", "--capsule-dir"])
+        .arg(fixture("invalid-missing-teardown-file"))
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("teardown") && stdout.contains("file not found"),
+        "expected teardown file-not-found error in output, got:\n{stdout}"
+    );
+}
+
+#[test]
 fn check_old_before_each_sh_fails() {
     let output = cmd()
         .args(["check", "--capsule-dir"])

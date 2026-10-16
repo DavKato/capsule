@@ -305,6 +305,35 @@ fn pick_template_interactive() -> Result<String> {
     Ok(entries[n - 1].name.clone())
 }
 
+/// Runs the pipeline, then the host teardown, and exits non-zero if either failed.
+fn run_session(session: RunSession) -> Result<()> {
+    if let Some(path) = session.log_file() {
+        capsule::display::set_log_file(path)?;
+    }
+    capsule::display::init();
+    let teardown = session.host_teardown();
+    let outcome = session.execute();
+    capsule::display::teardown();
+    let result = outcome.as_ref().map_or(run::RESULT_ERROR, |o| o.result);
+    let teardown_failed = match teardown.run(result) {
+        Ok(()) => false,
+        Err(e) => {
+            capsule::display::warning(&format!("teardown failed: {e:#}"));
+            true
+        }
+    };
+    match outcome?.decision {
+        run::ExitDecision::Success if !teardown_failed => Ok(()),
+        run::ExitDecision::Success => std::process::exit(1),
+        run::ExitDecision::Failure(notes) => {
+            if !notes.is_empty() {
+                capsule::display::info(&notes);
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -312,21 +341,7 @@ fn main() -> Result<()> {
         Commands::Resume { capsule_dir, env } => {
             let env = parse_env_pairs(env)?;
             let session = RunSession::prepare_resume(capsule_dir, env)?;
-            if let Some(path) = session.log_file() {
-                capsule::display::set_log_file(path)?;
-            }
-            capsule::display::init();
-            let result = session.execute();
-            capsule::display::teardown();
-            match result? {
-                run::ExitDecision::Success => Ok(()),
-                run::ExitDecision::Failure(notes) => {
-                    if !notes.is_empty() {
-                        capsule::display::info(&notes);
-                    }
-                    std::process::exit(1);
-                }
-            }
+            run_session(session)
         }
         Commands::Completion { shell } => {
             let mut cmd = Cli::command();
@@ -470,21 +485,7 @@ fn main() -> Result<()> {
                 log_file,
             };
             let session = RunSession::prepare(capsule_dir, overrides)?;
-            if let Some(path) = session.log_file() {
-                capsule::display::set_log_file(path)?;
-            }
-            capsule::display::init();
-            let result = session.execute();
-            capsule::display::teardown();
-            match result? {
-                run::ExitDecision::Success => Ok(()),
-                run::ExitDecision::Failure(notes) => {
-                    if !notes.is_empty() {
-                        capsule::display::info(&notes);
-                    }
-                    std::process::exit(1);
-                }
-            }
+            run_session(session)
         }
     }
 }

@@ -227,6 +227,13 @@
       },
       "type": "array"
     },
+    "teardown": {
+      "description": "Host-side teardown command or script path, run once after the pipeline ends (pass, fail, or Ctrl-C). Receives the outcome in `CAPSULE_RESULT`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "verbose": {
       "description": "Enable verbose output.",
       "type": [

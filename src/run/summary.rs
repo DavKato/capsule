@@ -24,6 +24,17 @@ pub(super) fn exit_decision_from_summary(summary: &RunSummary) -> ExitDecision {
     ExitDecision::Failure(notes)
 }
 
+/// `CAPSULE_RESULT` value for the host teardown.
+pub(super) fn run_result(reason: &TerminalReason) -> &'static str {
+    match reason {
+        TerminalReason::Done | TerminalReason::Exit => "success",
+        TerminalReason::FailExit { .. } => "failed",
+        TerminalReason::CapHit => "cap_hit",
+        // Ctrl-C, or a stage errored before producing a verdict.
+        TerminalReason::Interrupted { .. } => "interrupted",
+    }
+}
+
 pub(super) fn forced_exit_message(summary: &RunSummary) -> Option<String> {
     match &summary.terminal_reason {
         TerminalReason::FailExit { stage, kind } => {
@@ -121,7 +132,7 @@ mod tests {
     use super::super::ExitDecision;
     use super::{
         exit_decision_from_summary, forced_exit_message, is_workspace_dirty, parse_resume_state,
-        resume_hint, write_last_run,
+        resume_hint, run_result, write_last_run,
     };
     use capsule::pipeline::{
         build_summary_artifact, CapHitKind, FailExitKind, IterationCounters, PipelineState,
@@ -171,6 +182,27 @@ mod tests {
             loop_position: None,
             input: None,
         }
+    }
+
+    #[test]
+    fn run_result_maps_each_terminal_reason() {
+        assert_eq!(run_result(&TerminalReason::Done), "success");
+        assert_eq!(run_result(&TerminalReason::Exit), "success");
+        assert_eq!(
+            run_result(&TerminalReason::FailExit {
+                stage: "test".into(),
+                kind: FailExitKind::MaxRetries { limit: 2 },
+            }),
+            "failed"
+        );
+        assert_eq!(run_result(&TerminalReason::CapHit), "cap_hit");
+        assert_eq!(
+            run_result(&TerminalReason::Interrupted {
+                stage: "test".into(),
+                error: "interrupted".into(),
+            }),
+            "interrupted"
+        );
     }
 
     #[test]

@@ -470,6 +470,19 @@ stages:
 }
 
 #[test]
+fn top_level_teardown_is_parsed() {
+    let yaml = "\
+teardown: scripts/commit.sh
+stages:
+  - name: main
+    prompt: prompts/main.md
+";
+    let dir = capsule_dir_with_config(yaml);
+    let cfg: Config = resolve(dir.path(), no_cli()).unwrap();
+    assert_eq!(cfg.teardown.as_deref(), Some("scripts/commit.sh"));
+}
+
+#[test]
 fn per_stage_setup_is_parsed() {
     let yaml = "\
 stages:

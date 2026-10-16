@@ -10,6 +10,7 @@ Load before editing any `.capsule/` file — maps each file to its ownership, pu
 | `Dockerfile` | Container OS packages and tools | At image build time |
 | `setup` (top-level) | Host-side setup command or script (optional) | Once on host, before any stage |
 | `setup` (per-stage) | Per-invocation container setup (optional) | Inside each container, before prompt |
+| `teardown` (top-level) | Host-side teardown command or script (optional) | Once on host, after the run |
 | `docker.volumes` | Host volumes to bind-mount into containers | At `docker run` invocation |
 | `.env` | Env-var defaults and secrets (gitignore) | Sourced on host before top-level `setup` |
 | `prompts/<stage>.md` | Stage prompt content | Mounted into container per invocation |
@@ -34,6 +35,19 @@ The value can be an inline shell command (contains whitespace) or a path to a sc
 
 ```yaml
 setup: scripts/bootstrap.sh
+```
+
+## teardown (top-level)
+
+Runs **once on the host** after the pipeline ends, whether it passed, failed, hit a cap, or was stopped by the first Ctrl-C. Use it for host-only steps such as committing files the stages wrote. It gets the same environment as `setup`, plus `CAPSULE_RESULT`: `success`, `failed`, `cap_hit`, `interrupted`, or `error`. It does not run if startup or `setup` fails. A non-zero exit makes `capsule` exit 1 but leaves `last-run.json` as written.
+
+```yaml
+teardown: scripts/commit-tickets.sh
+```
+
+```sh
+# scripts/commit-tickets.sh
+[ "$CAPSULE_RESULT" = success ] && git -C docs commit -am "tickets: update"
 ```
 
 ## setup (per-stage)

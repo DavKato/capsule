@@ -109,6 +109,8 @@ pub struct Config {
     pub log_file: Option<PathBuf>,
     /// Host-side setup command or script path, run before any container starts.
     pub setup: Option<String>,
+    /// Host-side teardown command or script path, run once after the pipeline ends.
+    pub teardown: Option<String>,
     /// Top-level volumes from `docker.volumes` in `config.yml`.
     pub volumes: Vec<String>,
 }
@@ -204,6 +206,9 @@ struct MultiStageConfigFile {
     log_file: Option<String>,
     /// Host-side setup command or script path, run before any container starts.
     setup: Option<String>,
+    /// Host-side teardown command or script path, run once after the pipeline ends
+    /// (pass, fail, or Ctrl-C). Receives the outcome in `CAPSULE_RESULT`.
+    teardown: Option<String>,
     /// Docker runtime options for all stages.
     docker: Option<DockerConfig>,
 }
@@ -433,6 +438,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     });
     let rebuild = cli.rebuild;
     let setup = file_cfg.as_ref().and_then(|f| f.setup.clone());
+    let teardown = file_cfg.as_ref().and_then(|f| f.teardown.clone());
     let volumes = file_cfg
         .as_ref()
         .and_then(|f| f.docker.as_ref())
@@ -462,6 +468,7 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
         pipeline,
         log_file,
         setup,
+        teardown,
         volumes,
     })
 }

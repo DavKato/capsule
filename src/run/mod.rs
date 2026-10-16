@@ -5,7 +5,7 @@ use capsule::container_execution::{
     ExecutionConfig,
 };
 use capsule::image_build::{build_base_image, build_derived_image, BuildConfig};
-use capsule::pipeline::{PipelineExecutor, PipelineState, TerminalReason};
+use capsule::pipeline::{PipelineExecutor, PipelineState, RunLogs, TerminalReason};
 use capsule::update_check;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -71,11 +71,28 @@ pub(crate) struct RunSession {
     cancelled: Arc<AtomicBool>,
     resume: Option<(Option<String>, PipelineState)>,
     env_pairs: Vec<(String, String)>,
+    /// Fixed at `capsule run`; restored from `last-run.json` by `capsule resume`.
+    run_logs: RunLogs,
 }
 
 impl RunSession {
-    pub(crate) fn log_file(&self) -> Option<&std::path::Path> {
-        self.cfg.log_file.as_deref()
+    /// Open the full log and the verdict log, whichever this run has enabled.
+    pub(crate) fn open_logs(&self) -> Result<()> {
+        let logs = &self.run_logs;
+        let verb = if self.resume.is_some() {
+            "resumed"
+        } else {
+            "started"
+        };
+        let started = chrono::Local::now().format("%Y-%m-%d %H:%M");
+        let header = format!("── run {} · {verb} {started} ──", logs.run_id);
+        if let Some(dir) = &logs.log_dir {
+            capsule::display::set_log_file(&dir.join(format!("{}.log", logs.run_id)), &header)?;
+        }
+        if let Some(dir) = &logs.verdict_log_dir {
+            capsule::display::set_verdict_log(&dir.join("verdicts.log"), &header)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn host_teardown(&self) -> HostTeardown {
@@ -173,6 +190,12 @@ impl RunSession {
         )
         .context("failed to register Ctrl-C handler")?;
 
+        let run_logs = RunLogs {
+            run_id: chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
+            log_dir: cfg.log_dir.clone(),
+            verdict_log_dir: cfg.verdict_log_dir.clone(),
+        };
+
         Ok(Self {
             cfg,
             image,
@@ -190,6 +213,7 @@ impl RunSession {
             cancelled,
             resume: None,
             env_pairs,
+            run_logs,
         })
     }
 
@@ -211,6 +235,10 @@ impl RunSession {
             ..Default::default()
         };
         let mut session = Self::prepare(capsule_dir, overrides)?;
+        // Runs saved before run_logs existed fall back to config.yml.
+        if let Some(run_logs) = resume_data.1.run_logs.clone() {
+            session.run_logs = run_logs;
+        }
         session.resume = Some(resume_data);
         Ok(session)
     }
@@ -290,6 +318,7 @@ impl RunSession {
         };
         result.summary.session_id = runner.session_id().map(String::from);
         result.pipeline_state.env = self.env_pairs.clone();
+        result.pipeline_state.run_logs = Some(self.run_logs.clone());
         let state_to_write = match result.summary.terminal_reason {
             TerminalReason::FailExit { .. }
             | TerminalReason::CapHit

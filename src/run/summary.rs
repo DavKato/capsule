@@ -181,6 +181,7 @@ mod tests {
             env: vec![],
             loop_position: None,
             input: None,
+            run_logs: None,
         }
     }
 
@@ -438,6 +439,7 @@ mod tests {
             ],
             loop_position: None,
             input: None,
+            run_logs: None,
         };
         write_last_run(dir.path(), &s, Some(&state)).unwrap();
         let (_, restored) = parse_resume_state(dir.path()).unwrap();
@@ -597,6 +599,7 @@ mod tests {
             ],
             loop_position: None,
             input: None,
+            run_logs: None,
         };
         let json = serde_json::to_value(&state).unwrap();
         let env = json["env"].as_object().expect("env must be an object");

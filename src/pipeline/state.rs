@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +25,20 @@ pub struct PipelineState {
     /// `--input` not yet delivered because the first stage was interrupted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
+    /// Where this run logs, so `capsule resume` appends to the same files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_logs: Option<RunLogs>,
+}
+
+/// A run's log destinations, fixed when the run starts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunLogs {
+    /// Start time; names the full log file (`<run-id>.log`).
+    pub run_id: String,
+    /// Directory for the full log; `None` when it is off.
+    pub log_dir: Option<PathBuf>,
+    /// Directory for `verdicts.log`; `None` when it is off.
+    pub verdict_log_dir: Option<PathBuf>,
 }
 
 /// Position inside a loop entry at which an interrupted run stopped.

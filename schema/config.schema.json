@@ -57,6 +57,18 @@
         }
       ]
     },
+    "LogSetting": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "description": "Directory, relative to `.capsule/`; `~` and absolute paths are accepted.",
+          "type": "string"
+        }
+      ],
+      "description": "`log` / `verdict_log` value: `true` writes to `.capsule/logs/`, a string names the directory."
+    },
     "Loop": {
       "properties": {
         "max_iteration": {
@@ -190,12 +202,9 @@
       "$ref": "#/definitions/GithubScope",
       "description": "Token injection source for GitHub access inside capsules."
     },
-    "log_file": {
-      "description": "File path to tee all display output.",
-      "type": [
-        "string",
-        "null"
-      ]
+    "log": {
+      "$ref": "#/definitions/LogSetting",
+      "description": "Write all run output to `<dir>/<run-id>.log`, one file per run. `true` uses `.capsule/logs/`; a string names the directory."
     },
     "max_stages": {
       "description": "Maximum total stage invocations across the entire pipeline.",
@@ -240,6 +249,10 @@
         "boolean",
         "null"
       ]
+    },
+    "verdict_log": {
+      "$ref": "#/definitions/LogSetting",
+      "description": "Append each stage's verdict to `<dir>/verdicts.log`. `true` uses `.capsule/logs/`; a string names the directory."
     }
   },
   "required": [

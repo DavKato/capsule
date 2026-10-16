@@ -87,9 +87,14 @@ enum Commands {
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
 
-        /// Write run output to a file in addition to the terminal
+        /// Also write run output to <run-id>.log, in config.yml's `log` dir or .capsule/logs/
         #[arg(long)]
-        log_file: Option<PathBuf>,
+        log: bool,
+
+        /// Append each stage's verdict to verdicts.log, in config.yml's `verdict_log` dir
+        /// or .capsule/logs/
+        #[arg(long)]
+        verdict_log: bool,
     },
 
     /// Resume pipeline from the last interrupted run (reads last-run.json)
@@ -307,9 +312,7 @@ fn pick_template_interactive() -> Result<String> {
 
 /// Runs the pipeline, then the host teardown, and exits non-zero if either failed.
 fn run_session(session: RunSession) -> Result<()> {
-    if let Some(path) = session.log_file() {
-        capsule::display::set_log_file(path)?;
-    }
+    session.open_logs()?;
     capsule::display::init();
     let teardown = session.host_teardown();
     let outcome = session.execute();
@@ -462,7 +465,8 @@ fn main() -> Result<()> {
             github_token_from,
             input,
             env,
-            log_file,
+            log,
+            verdict_log,
         } => {
             let commit_as = match commit_as {
                 CliGitIdentity::User => Some(GitIdentity::User),
@@ -482,7 +486,8 @@ fn main() -> Result<()> {
                 github_token_from,
                 input,
                 env,
-                log_file,
+                log,
+                verdict_log,
             };
             let session = RunSession::prepare(capsule_dir, overrides)?;
             run_session(session)

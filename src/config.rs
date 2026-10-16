@@ -25,6 +25,15 @@ pub enum GitIdentity {
     Capsule,
 }
 
+/// `log` / `verdict_log` value: `true` writes to `.capsule/logs/`, a string names the directory.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum LogSetting {
+    Enabled(bool),
+    /// Directory, relative to `.capsule/`; `~` and absolute paths are accepted.
+    Dir(String),
+}
+
 /// GitHub token injection scope.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -105,8 +114,10 @@ pub struct Config {
     /// When None, no token is injected.
     pub github_token_from: Option<GithubScope>,
     pub pipeline: PipelineConfig,
-    /// When Some, tee all display output to this file path.
-    pub log_file: Option<PathBuf>,
+    /// Directory for the full per-run log (`<run-id>.log`); `None` disables it.
+    pub log_dir: Option<PathBuf>,
+    /// Directory for `verdicts.log`; `None` disables it.
+    pub verdict_log_dir: Option<PathBuf>,
     /// Host-side setup command or script path, run before any container starts.
     pub setup: Option<String>,
     /// Host-side teardown command or script path, run once after the pipeline ends.
@@ -129,8 +140,10 @@ pub struct CliOverrides {
     pub input: Option<String>,
     /// KEY=VALUE pairs injected into every container and setup command for this run.
     pub env: Vec<(String, String)>,
-    /// When Some, tee all display output to this file path.
-    pub log_file: Option<PathBuf>,
+    /// `--log`: enable the full log, in `config.yml`'s `log` directory if it names one.
+    pub log: bool,
+    /// `--verdict-log`: enable the verdict log, in `config.yml`'s `verdict_log` directory if set.
+    pub verdict_log: bool,
 }
 
 // ── Multi-stage serde types ───────────────────────────────────────────────────
@@ -202,8 +215,12 @@ struct MultiStageConfigFile {
     commit_as: Option<GitIdentity>,
     /// Token injection source for GitHub access inside capsules.
     github_token_from: Option<GithubScope>,
-    /// File path to tee all display output.
-    log_file: Option<String>,
+    /// Write all run output to `<dir>/<run-id>.log`, one file per run.
+    /// `true` uses `.capsule/logs/`; a string names the directory.
+    log: Option<LogSetting>,
+    /// Append each stage's verdict to `<dir>/verdicts.log`.
+    /// `true` uses `.capsule/logs/`; a string names the directory.
+    verdict_log: Option<LogSetting>,
     /// Host-side setup command or script path, run before any container starts.
     setup: Option<String>,
     /// Host-side teardown command or script path, run once after the pipeline ends
@@ -221,10 +238,16 @@ fn check_old_field_names(val: &serde_yaml::Value) -> Result<()> {
         ("github", "github_token_from"),
         ("max_pipeline_iterations", "max_stages"),
     ];
-    const REMOVED: &[(&str, &str)] = &[(
-        "min_token_lifetime_minutes",
-        "this field has been removed; token lifetime is now checked automatically",
-    )];
+    const REMOVED: &[(&str, &str)] = &[
+        (
+            "min_token_lifetime_minutes",
+            "this field has been removed; token lifetime is now checked automatically",
+        ),
+        (
+            "log_file",
+            "replaced by `log: true` or `log: <dir>`, which writes each run to <dir>/<run-id>.log",
+        ),
+    ];
     if let serde_yaml::Value::Mapping(map) = val {
         for (old, new) in OLD_TO_NEW {
             if map.contains_key(*old) {
@@ -430,12 +453,16 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
     let github_token_from = cli
         .github_token_from
         .or_else(|| file_cfg.as_ref().and_then(|f| f.github_token_from.clone()));
-    let log_file = cli.log_file.or_else(|| {
-        file_cfg
-            .as_ref()
-            .and_then(|f| f.log_file.as_ref())
-            .map(PathBuf::from)
-    });
+    let log_dir = resolve_log_dir(
+        file_cfg.as_ref().and_then(|f| f.log.as_ref()),
+        cli.log,
+        capsule_dir,
+    );
+    let verdict_log_dir = resolve_log_dir(
+        file_cfg.as_ref().and_then(|f| f.verdict_log.as_ref()),
+        cli.verdict_log,
+        capsule_dir,
+    );
     let rebuild = cli.rebuild;
     let setup = file_cfg.as_ref().and_then(|f| f.setup.clone());
     let teardown = file_cfg.as_ref().and_then(|f| f.teardown.clone());
@@ -466,11 +493,38 @@ pub fn resolve(capsule_dir: &Path, cli: CliOverrides) -> Result<Config> {
         commit_as,
         github_token_from,
         pipeline,
-        log_file,
+        log_dir,
+        verdict_log_dir,
         setup,
         teardown,
         volumes,
     })
+}
+
+/// A CLI flag turns a log on; `config.yml` turns it on and may pick its directory.
+fn resolve_log_dir(file: Option<&LogSetting>, cli_on: bool, capsule_dir: &Path) -> Option<PathBuf> {
+    match file {
+        Some(LogSetting::Dir(dir)) => Some(expand_dir(dir, capsule_dir)),
+        Some(LogSetting::Enabled(true)) => Some(capsule_dir.join("logs")),
+        Some(LogSetting::Enabled(false)) | None if cli_on => Some(capsule_dir.join("logs")),
+        Some(LogSetting::Enabled(false)) | None => None,
+    }
+}
+
+/// `~` → `$HOME`; other relative paths are taken from `capsule_dir`.
+fn expand_dir(dir: &str, capsule_dir: &Path) -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    if dir == "~" {
+        if let Some(h) = home() {
+            return h;
+        }
+    }
+    if let Some(rest) = dir.strip_prefix("~/") {
+        if let Some(h) = home() {
+            return h.join(rest);
+        }
+    }
+    capsule_dir.join(dir)
 }
 
 /// Generate the JSON Schema for `config.yml`.

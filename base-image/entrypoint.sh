@@ -31,8 +31,17 @@ MODEL_FLAG=""
 if [ -n "${CAPSULE_MODEL}" ]; then
   MODEL_FLAG="--model ${CAPSULE_MODEL}"
 fi
+# Organizations can disable bypass mode (managed setting
+# permissions.disableBypassPermissionsMode); Claude Code then silently ignores
+# --dangerously-skip-permissions and starts in default mode, where -p denies every
+# call that would prompt. The allow list keeps stages working in that case.
+PERMISSION_FLAGS=(
+  --dangerously-skip-permissions
+  --allowedTools Bash Edit Write NotebookEdit Read Glob Grep WebFetch WebSearch
+  mcp__capsule__submit_verdict
+)
 if [ -n "${CAPSULE_RESUME_SESSION}" ]; then
-  claude --dangerously-skip-permissions ${MODEL_FLAG} --resume "${CAPSULE_RESUME_SESSION}" -p "Continue where you left off." --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json
+  claude "${PERMISSION_FLAGS[@]}" ${MODEL_FLAG} --resume "${CAPSULE_RESUME_SESSION}" -p "Continue where you left off." --verbose --output-format stream-json
 else
-  cat /home/claude/prompt.txt | claude --dangerously-skip-permissions ${MODEL_FLAG} -p --verbose --output-format stream-json --mcp-config /home/claude/.mcp.json
+  cat /home/claude/prompt.txt | claude "${PERMISSION_FLAGS[@]}" ${MODEL_FLAG} -p --verbose --output-format stream-json
 fi

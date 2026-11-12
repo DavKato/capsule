@@ -52,16 +52,6 @@ pub fn detect_compose_network(pwd: &std::path::Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Returns the JSON content for a per-run `.mcp.json` file that points
-/// `capsule mcp-serve` at the given binary path inside the container.
-pub fn make_mcp_config(capsule_container_bin: &std::path::Path) -> String {
-    let bin = capsule_container_bin.to_string_lossy();
-    serde_json::json!({
-        "mcpServers": {"capsule": {"command": bin.as_ref(), "args": ["mcp-serve"]}}
-    })
-    .to_string()
-}
-
 fn read_expires_at(claude_dir: &std::path::Path) -> Option<u64> {
     let path = claude_dir.join(".credentials.json");
     let content = std::fs::read_to_string(&path).ok()?;
@@ -94,18 +84,6 @@ pub fn host_token_is_expired(claude_dir: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn make_mcp_config_contains_binary_path_and_mcp_serve() {
-        let bin = std::path::Path::new("/usr/local/bin/capsule");
-        let cfg = make_mcp_config(bin);
-        let v: serde_json::Value = serde_json::from_str(&cfg).expect("valid JSON");
-        assert_eq!(
-            v["mcpServers"]["capsule"]["command"],
-            "/usr/local/bin/capsule"
-        );
-        assert_eq!(v["mcpServers"]["capsule"]["args"][0], "mcp-serve");
-    }
 
     #[test]
     fn host_token_expired_when_expires_at_in_past() {

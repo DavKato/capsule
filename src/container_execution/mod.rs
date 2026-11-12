@@ -5,9 +5,7 @@ mod runner;
 mod stream_parser;
 
 pub use docker_args::{build_docker_args, container_name_for};
-pub use infra::{
-    detect_compose_network, host_token_is_expired, make_mcp_config, token_remaining_minutes,
-};
+pub use infra::{detect_compose_network, host_token_is_expired, token_remaining_minutes};
 pub use process::{post_stream_error, run_container, run_iteration, StageFailure, StreamResult};
 pub use runner::{CredentialsGuard, DockerStageRunner};
 pub use stream_parser::{

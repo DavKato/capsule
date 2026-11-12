@@ -31,6 +31,14 @@ ENV PATH="/home/claude/.npm-global/bin:${PATH}"
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
+# Register the submit_verdict MCP server at user scope (/home/claude/.claude.json,
+# never mounted from the host). Not via `--mcp-config`: orgs with the managed
+# setting `disableSideloadFlags` reject that flag. /usr/local/bin/capsule is
+# bind-mounted from the host at run time. Must precede the chmod below so any
+# runtime uid can read the file.
+RUN /home/claude/.local/bin/claude mcp add-json --scope user capsule \
+    '{"command":"/usr/local/bin/capsule","args":["mcp-serve"]}'
+
 # Make home dir world-accessible so the container can run as any uid via --user.
 RUN chmod -R o+rwX /home/claude
 

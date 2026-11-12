@@ -1,5 +1,5 @@
 use super::docker_args::{build_docker_args, container_name_for};
-use super::infra::{host_token_is_expired, make_mcp_config};
+use super::infra::host_token_is_expired;
 use super::stream_parser::{ModelUsage, StreamParser, TextDisplay, ToolEvent, UsageSnapshot};
 use super::{ExecutionConfig, IterationOutcome};
 use anyhow::{Context, Result};
@@ -55,8 +55,8 @@ pub fn post_stream_error(
     } else if result.submit_verdict_missing {
         "The `submit_verdict` MCP tool was not registered. \
          Likely causes: the base image is stale (run `capsule run --rebuild` to force a rebuild), \
-         the capsule binary is not on PATH inside the container, \
-         or `.mcp.json` was not mounted."
+         `CLAUDE_CONFIG_DIR` is set in the env file (it hides the server registered in the image), \
+         or the organization's `allowedMcpServers` does not allow the `capsule` server."
             .to_string()
     } else if !status.success() {
         format!(
@@ -201,17 +201,6 @@ pub fn run_container(
     let prompt_path = prompt_file.path().to_owned();
 
     const CAPSULE_CONTAINER_BIN: &str = "/usr/local/bin/capsule";
-    let mcp_config = make_mcp_config(std::path::Path::new(CAPSULE_CONTAINER_BIN));
-    let mut mcp_file = tempfile::Builder::new()
-        .prefix("capsule-mcp-")
-        .suffix(".json")
-        .tempfile()
-        .context("failed to create mcp config temp file")?;
-    mcp_file
-        .write_all(mcp_config.as_bytes())
-        .context("failed to write mcp config")?;
-    mcp_file.flush().context("failed to flush mcp config")?;
-    let mcp_path = mcp_file.path().to_owned();
 
     let capsule_host_bin =
         std::env::current_exe().context("failed to resolve capsule binary path")?;
@@ -234,10 +223,6 @@ pub fn run_container(
         "--mount=type=bind,src={},dst={},readonly",
         capsule_host_bin.display(),
         CAPSULE_CONTAINER_BIN
-    ));
-    docker_args.push(format!(
-        "--mount=type=bind,src={},dst=/home/claude/.mcp.json,readonly",
-        mcp_path.display()
     ));
     if let Some(sid) = resume_session_id {
         docker_args.push(format!("-e=CAPSULE_RESUME_SESSION={sid}"));

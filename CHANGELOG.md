@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-12
+
+### Fixed
+
+- Stages no longer exit at startup when the organization's managed settings set `disableSideloadFlags`: the `submit_verdict` MCP server is now registered in the base image instead of being passed with `--mcp-config`
+- Stages keep working when the organization disables bypass permissions mode (`permissions.disableBypassPermissionsMode`): Claude Code then ignores `--dangerously-skip-permissions`, so capsule also passes an explicit tool allow list and warns that the session is not in `bypassPermissions` mode. Writes to protected paths such as `.git/` and calls matched by your own `ask` rules are still refused in that case
+- A `submit_verdict` call that Claude Code refused is no longer recorded as the stage's verdict
+- Derived images (`.capsule/Dockerfile`) are rebuilt when the base image changes, not only when the derived Dockerfile does
+
 ## [0.9.0] - 2026-10-16
 
 ### Added
@@ -110,7 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-token-lifetime-minutes` flag (credential lifetime is now managed internally)
 - `before-all.sh` / `before-each.sh` convention (presence now triggers a migration error)
 
-[Unreleased]: https://github.com/DavKato/capsule/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/DavKato/capsule/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/DavKato/capsule/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/DavKato/capsule/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/DavKato/capsule/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/DavKato/capsule/compare/v0.8.0...v0.8.1

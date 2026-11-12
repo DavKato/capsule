@@ -27,6 +27,16 @@ fn fnv1a_hash(content: &str) -> String {
     format!("{hash:016x}")
 }
 
+fn base_image_hash() -> String {
+    fnv1a_hash(&format!("{DOCKERFILE}{ENTRYPOINT_SH}{GIT_WRAPPER_SH}"))
+}
+
+/// Hash of a derived image: covers the base image's inputs too, so a derived
+/// image built `FROM capsule` is rebuilt when the base (e.g. its entrypoint) changes.
+fn derived_image_hash(derived_dockerfile: &str) -> String {
+    fnv1a_hash(&format!("{}{derived_dockerfile}", base_image_hash()))
+}
+
 fn image_label(name: &str, label: &str) -> Option<String> {
     let out = Command::new("docker")
         .args([
@@ -82,7 +92,7 @@ pub struct BuildConfig {
 /// embedded Dockerfile. Auto-rebuilds (with layer cache) when the hash
 /// differs. With `rebuild: true`, always rebuilds using `--no-cache`.
 pub fn build_base_image(rebuild: bool) -> Result<()> {
-    let hash = fnv1a_hash(&format!("{DOCKERFILE}{ENTRYPOINT_SH}{GIT_WRAPPER_SH}"));
+    let hash = base_image_hash();
 
     if !rebuild && image_exists(BASE_IMAGE) {
         if image_label(BASE_IMAGE, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
@@ -146,13 +156,15 @@ pub fn build_derived_image(cfg: &BuildConfig) -> Result<Option<String>> {
     let name = derived_image_name(&cfg.pwd);
     let content = std::fs::read_to_string(&dockerfile)
         .with_context(|| format!("failed to read {}", dockerfile.display()))?;
-    let hash = fnv1a_hash(&content);
+    let hash = derived_image_hash(&content);
 
     if !cfg.rebuild && image_exists(&name) {
         if image_label(&name, DOCKERFILE_HASH_LABEL).as_deref() == Some(&hash) {
             return Ok(Some(name));
         }
-        crate::display::capsule_info(&format!("Derived Dockerfile changed — rebuilding {name}…"));
+        crate::display::capsule_info(&format!(
+            "Base or derived Dockerfile changed — rebuilding {name}…"
+        ));
     } else {
         crate::display::capsule_info(&format!("Building derived image {name}…"));
     }
@@ -237,6 +249,18 @@ mod tests {
         let h = fnv1a_hash("any content here");
         assert_eq!(h.len(), 16, "expected 16 hex chars, got: {h}");
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()), "not all hex: {h}");
+    }
+
+    // ── derived_image_hash ────────────────────────────────────────────────────
+
+    #[test]
+    fn derived_image_hash_covers_base_image_inputs() {
+        let derived = "FROM capsule\nRUN echo hi\n";
+        assert_ne!(
+            derived_image_hash(derived),
+            fnv1a_hash(derived),
+            "derived hash must change when the base image inputs change"
+        );
     }
 
     // ── derived_image_name ────────────────────────────────────────────────────

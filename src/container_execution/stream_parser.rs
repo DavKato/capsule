@@ -70,6 +70,10 @@ impl UsageSnapshot {
 
 pub struct StreamParser {
     verdict: Option<Verdict>,
+    /// A `submit_verdict` call whose `tool_result` hasn't arrived yet, keyed by
+    /// `tool_use_id`. It becomes the verdict only if the call succeeds: a call the
+    /// permission system refused must not count.
+    pending_verdict: Option<(String, Verdict)>,
     auth_failed: bool,
     init_seen: bool,
     submit_verdict_registered: bool,
@@ -85,6 +89,7 @@ impl StreamParser {
     pub fn new() -> Self {
         Self {
             verdict: None,
+            pending_verdict: None,
             auth_failed: false,
             init_seen: false,
             submit_verdict_registered: false,
@@ -111,6 +116,14 @@ impl StreamParser {
         if is_init_event(&msg) {
             self.init_seen = true;
             self.session_id = extract_session_id(&msg);
+            if let Some(mode) = non_bypass_permission_mode(&msg) {
+                crate::display::warning(&format!(
+                    "Claude is running in `{mode}` permission mode, not `bypassPermissions` \
+                     (your organization may disable it). Only capsule's allow list applies: \
+                     writes to protected paths such as .git/ and calls matched by your `ask` \
+                     rules will be refused."
+                ));
+            }
             if let Some(tools) = extract_init_tools(&msg) {
                 self.submit_verdict_registered = tools.iter().any(|t| {
                     let name = t.as_str().or_else(|| t.get("name").and_then(Value::as_str));
@@ -118,13 +131,11 @@ impl StreamParser {
                 });
             }
         }
-        if let Some(v) = extract_verdict(&msg) {
-            if self.verdict.is_some() {
-                crate::display::warning("submit_verdict called more than once; using latest");
-            }
-            self.verdict = Some(v);
+        if let Some(pending) = extract_verdict(&msg) {
+            self.pending_verdict = Some(pending);
         }
         let (tool_events, text_displays) = extract_assistant_content(&msg);
+        self.settle_pending_verdict(&tool_events);
         self.last_tool_events = tool_events;
         self.last_text_displays = text_displays;
         self.last_usage_snapshot = extract_usage_snapshot(&msg);
@@ -135,6 +146,33 @@ impl StreamParser {
             self.last_parsed_value = Some(msg);
         }
         self.verdict.as_ref()
+    }
+
+    fn settle_pending_verdict(&mut self, tool_events: &[ToolEvent]) {
+        for event in tool_events {
+            let ToolEvent::Result(result) = event else {
+                continue;
+            };
+            if self
+                .pending_verdict
+                .as_ref()
+                .is_none_or(|(id, _)| *id != result.tool_use_id)
+            {
+                continue;
+            }
+            let (_, verdict) = self.pending_verdict.take().expect("checked above");
+            if result.is_error {
+                crate::display::warning(&format!(
+                    "submit_verdict call failed; ignoring it: {}",
+                    result.content.as_deref().unwrap_or("(no message)")
+                ));
+                continue;
+            }
+            if self.verdict.is_some() {
+                crate::display::warning("submit_verdict called more than once; using latest");
+            }
+            self.verdict = Some(verdict);
+        }
     }
 
     pub fn verdict(&self) -> Option<&Verdict> {
@@ -201,6 +239,12 @@ fn is_auth_error(msg: &Value) -> bool {
 fn is_init_event(msg: &Value) -> bool {
     msg.get("type").and_then(Value::as_str) == Some("system")
         && msg.get("subtype").and_then(Value::as_str) == Some("init")
+}
+
+/// The init event's `permissionMode`, when present and not `bypassPermissions`.
+fn non_bypass_permission_mode(msg: &Value) -> Option<&str> {
+    let mode = msg.get("permissionMode")?.as_str()?;
+    (mode != "bypassPermissions").then_some(mode)
 }
 
 fn extract_session_id(msg: &Value) -> Option<String> {
@@ -366,7 +410,8 @@ fn extract_model_usage(msg: &Value) -> Option<ModelUsage> {
         .max_by_key(|u| u.context_window)
 }
 
-fn extract_verdict(msg: &Value) -> Option<Verdict> {
+/// Returns the `tool_use_id` and verdict of a `submit_verdict` call in an assistant message.
+fn extract_verdict(msg: &Value) -> Option<(String, Verdict)> {
     if msg.get("type")?.as_str()? != "assistant" {
         return None;
     }
@@ -387,7 +432,8 @@ fn extract_verdict(msg: &Value) -> Option<Verdict> {
                 .get("notes")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            return Some(Verdict { status, notes });
+            let id = block.get("id")?.as_str()?.to_owned();
+            return Some((id, Verdict { status, notes }));
         }
     }
     None
@@ -404,6 +450,22 @@ mod tests {
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking..."}]}}"#;
     const RESULT_LINE: &str = r#"{"type":"result","subtype":"success","result":"done"}"#;
     const AUTH_FAIL_LINE: &str = r#"{"type":"result","subtype":"error","error":{"type":"authentication_failed","message":"invalid token"}}"#;
+
+    fn tool_result_line(tool_use_id: &str, is_error: bool) -> String {
+        format!(
+            r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{tool_use_id}","content":"x","is_error":{is_error}}}]}}}}"#
+        )
+    }
+
+    /// Feeds a `submit_verdict` call and its successful result, as Claude Code streams them.
+    fn feed_call<'a>(
+        p: &'a mut StreamParser,
+        call: &str,
+        tool_use_id: &str,
+    ) -> Option<&'a Verdict> {
+        p.feed(call);
+        p.feed(&tool_result_line(tool_use_id, false))
+    }
 
     #[test]
     fn last_parsed_value_some_for_typed_json() {
@@ -480,7 +542,7 @@ mod tests {
     #[test]
     fn pass_line_returns_pass_verdict() {
         let mut p = StreamParser::new();
-        let v = p.feed(PASS_LINE).unwrap();
+        let v = feed_call(&mut p, PASS_LINE, "toolu_01abc").unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
         assert_eq!(v.notes.as_deref(), Some("all done"));
     }
@@ -488,14 +550,14 @@ mod tests {
     #[test]
     fn fail_line_returns_fail_verdict() {
         let mut p = StreamParser::new();
-        let v = p.feed(FAIL_LINE).unwrap();
+        let v = feed_call(&mut p, FAIL_LINE, "toolu_02def").unwrap();
         assert_eq!(v.status, VerdictStatus::Fail);
     }
 
     #[test]
     fn fail_verdict_preserves_notes() {
         let mut p = StreamParser::new();
-        let v = p.feed(FAIL_LINE).unwrap();
+        let v = feed_call(&mut p, FAIL_LINE, "toolu_02def").unwrap();
         assert_eq!(v.status, VerdictStatus::Fail);
         assert_eq!(v.notes.as_deref(), Some("tests broke"));
     }
@@ -503,16 +565,16 @@ mod tests {
     #[test]
     fn last_wins_on_duplicate_calls() {
         let mut p = StreamParser::new();
-        p.feed(PASS_LINE);
-        let v = p.feed(FAIL_LINE).unwrap();
+        feed_call(&mut p, PASS_LINE, "toolu_01abc");
+        let v = feed_call(&mut p, FAIL_LINE, "toolu_02def").unwrap();
         assert_eq!(v.status, VerdictStatus::Fail);
     }
 
     #[test]
     fn fail_then_pass_last_wins_is_pass() {
         let mut p = StreamParser::new();
-        p.feed(FAIL_LINE);
-        let v = p.feed(PASS_LINE).unwrap();
+        feed_call(&mut p, FAIL_LINE, "toolu_02def");
+        let v = feed_call(&mut p, PASS_LINE, "toolu_01abc").unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
     }
 
@@ -529,7 +591,7 @@ mod tests {
     fn verdict_without_notes_is_valid() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_03","name":"submit_verdict","input":{"status":"pass"}}]}}"#;
         let mut p = StreamParser::new();
-        let v = p.feed(line).unwrap();
+        let v = feed_call(&mut p, line, "toolu_03").unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
         assert!(v.notes.is_none());
     }
@@ -538,7 +600,7 @@ mod tests {
     fn done_status_returns_done_verdict() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_04","name":"submit_verdict","input":{"status":"done","notes":"scope complete"}}]}}"#;
         let mut p = StreamParser::new();
-        let v = p.feed(line).unwrap();
+        let v = feed_call(&mut p, line, "toolu_04").unwrap();
         assert_eq!(v.status, VerdictStatus::Done);
         assert_eq!(v.notes.as_deref(), Some("scope complete"));
     }
@@ -554,9 +616,57 @@ mod tests {
     fn mcp_prefixed_verdict_is_extracted() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_06","name":"mcp__capsule__submit_verdict","input":{"status":"pass","notes":"done"}}]}}"#;
         let mut p = StreamParser::new();
-        let v = p.feed(line).unwrap();
+        let v = feed_call(&mut p, line, "toolu_06").unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
         assert_eq!(v.notes.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn verdict_call_without_result_is_not_a_verdict_yet() {
+        let mut p = StreamParser::new();
+        assert!(p.feed(PASS_LINE).is_none());
+    }
+
+    #[test]
+    fn refused_verdict_call_is_ignored() {
+        // Claude Code returns an error tool_result when the permission system refuses the call.
+        let mut p = StreamParser::new();
+        p.feed(PASS_LINE);
+        assert!(p.feed(&tool_result_line("toolu_01abc", true)).is_none());
+    }
+
+    #[test]
+    fn refused_retry_keeps_earlier_successful_verdict() {
+        let mut p = StreamParser::new();
+        feed_call(&mut p, FAIL_LINE, "toolu_02def");
+        p.feed(PASS_LINE);
+        let v = p.feed(&tool_result_line("toolu_01abc", true)).unwrap();
+        assert_eq!(v.status, VerdictStatus::Fail);
+    }
+
+    #[test]
+    fn result_for_another_tool_does_not_settle_verdict() {
+        let mut p = StreamParser::new();
+        p.feed(PASS_LINE);
+        assert!(p.feed(&tool_result_line("toolu_other", false)).is_none());
+        assert!(p.feed(&tool_result_line("toolu_01abc", false)).is_some());
+    }
+
+    #[test]
+    fn non_bypass_permission_mode_is_reported() {
+        let init = |mode: &str| -> Value {
+            serde_json::from_str(&format!(
+                r#"{{"type":"system","subtype":"init","permissionMode":"{mode}"}}"#
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            non_bypass_permission_mode(&init("default")),
+            Some("default")
+        );
+        assert_eq!(non_bypass_permission_mode(&init("bypassPermissions")), None);
+        let no_mode: Value = serde_json::from_str(SYSTEM_INIT_WITH_VERDICT_TOOL).unwrap();
+        assert_eq!(non_bypass_permission_mode(&no_mode), None);
     }
 
     #[test]
@@ -569,7 +679,7 @@ mod tests {
     #[test]
     fn verdict_persists_across_non_verdict_lines() {
         let mut p = StreamParser::new();
-        p.feed(PASS_LINE);
+        feed_call(&mut p, PASS_LINE, "toolu_01abc");
         let v = p.feed(TEXT_LINE).unwrap();
         assert_eq!(v.status, VerdictStatus::Pass);
     }
